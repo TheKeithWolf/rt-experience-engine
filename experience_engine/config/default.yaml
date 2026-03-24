@@ -1,0 +1,304 @@
+# Royal Tumble — Experience Engine Master Configuration
+# All values externalized here — zero magic constants in code.
+
+board:
+  num_reels: 7
+  num_rows: 7
+  min_cluster_size: 5
+
+gravity:
+  # (dx, dy) offsets from empty cell to potential donor
+  # (0,-1)=directly above, (1,-1)=above-right, (-1,-1)=above-left
+  donor_priorities:
+    - [0, -1]
+    - [1, -1]
+    - [-1, -1]
+  max_settle_passes: 100
+
+grid_multiplier:
+  initial_value: 0
+  first_hit_value: 1
+  increment: 1
+  cap: 100
+  minimum_contribution: 1
+
+boosters:
+  spawn_thresholds:
+    - { booster: "W",   min_size: 7,  max_size: 8 }
+    - { booster: "R",   min_size: 9,  max_size: 10 }
+    - { booster: "B",   min_size: 11, max_size: 12 }
+    - { booster: "LB",  min_size: 13, max_size: 14 }
+    - { booster: "SLB", min_size: 15, max_size: 49 }
+  spawn_order: ["W", "R", "B", "LB", "SLB"]
+  rocket_tie_orientation: "H"
+  bomb_blast_radius: 1
+  immune_to_rocket: ["W", "S"]
+  immune_to_bomb: ["W", "S"]
+  chain_initiators: ["R", "B"]
+
+paytable:
+  entries:
+    # L1 — lowest pay symbol
+    - { symbol: "L1", tier_min: 5,  tier_max: 6,  payout: 0.1 }
+    - { symbol: "L1", tier_min: 7,  tier_max: 8,  payout: 0.2 }
+    - { symbol: "L1", tier_min: 9,  tier_max: 10, payout: 0.5 }
+    - { symbol: "L1", tier_min: 11, tier_max: 12, payout: 1.0 }
+    - { symbol: "L1", tier_min: 13, tier_max: 14, payout: 2.0 }
+    - { symbol: "L1", tier_min: 15, tier_max: 49, payout: 5.0 }
+    # L2
+    - { symbol: "L2", tier_min: 5,  tier_max: 6,  payout: 0.2 }
+    - { symbol: "L2", tier_min: 7,  tier_max: 8,  payout: 0.3 }
+    - { symbol: "L2", tier_min: 9,  tier_max: 10, payout: 0.7 }
+    - { symbol: "L2", tier_min: 11, tier_max: 12, payout: 1.2 }
+    - { symbol: "L2", tier_min: 13, tier_max: 14, payout: 2.5 }
+    - { symbol: "L2", tier_min: 15, tier_max: 49, payout: 6.0 }
+    # L3
+    - { symbol: "L3", tier_min: 5,  tier_max: 6,  payout: 0.3 }
+    - { symbol: "L3", tier_min: 7,  tier_max: 8,  payout: 0.4 }
+    - { symbol: "L3", tier_min: 9,  tier_max: 10, payout: 0.9 }
+    - { symbol: "L3", tier_min: 11, tier_max: 12, payout: 1.4 }
+    - { symbol: "L3", tier_min: 13, tier_max: 14, payout: 3.0 }
+    - { symbol: "L3", tier_min: 15, tier_max: 49, payout: 7.0 }
+    # L4
+    - { symbol: "L4", tier_min: 5,  tier_max: 6,  payout: 0.4 }
+    - { symbol: "L4", tier_min: 7,  tier_max: 8,  payout: 0.5 }
+    - { symbol: "L4", tier_min: 9,  tier_max: 10, payout: 1.1 }
+    - { symbol: "L4", tier_min: 11, tier_max: 12, payout: 1.6 }
+    - { symbol: "L4", tier_min: 13, tier_max: 14, payout: 3.5 }
+    - { symbol: "L4", tier_min: 15, tier_max: 49, payout: 8.0 }
+    # H1
+    - { symbol: "H1", tier_min: 5,  tier_max: 6,  payout: 0.5 }
+    - { symbol: "H1", tier_min: 7,  tier_max: 8,  payout: 1.0 }
+    - { symbol: "H1", tier_min: 9,  tier_max: 10, payout: 4.0 }
+    - { symbol: "H1", tier_min: 11, tier_max: 12, payout: 8.0 }
+    - { symbol: "H1", tier_min: 13, tier_max: 14, payout: 10.0 }
+    - { symbol: "H1", tier_min: 15, tier_max: 49, payout: 20.0 }
+    # H2
+    - { symbol: "H2", tier_min: 5,  tier_max: 6,  payout: 0.7 }
+    - { symbol: "H2", tier_min: 7,  tier_max: 8,  payout: 1.5 }
+    - { symbol: "H2", tier_min: 9,  tier_max: 10, payout: 6.0 }
+    - { symbol: "H2", tier_min: 11, tier_max: 12, payout: 10.0 }
+    - { symbol: "H2", tier_min: 13, tier_max: 14, payout: 12.5 }
+    - { symbol: "H2", tier_min: 15, tier_max: 49, payout: 22.5 }
+    # H3 — highest pay symbol
+    - { symbol: "H3", tier_min: 5,  tier_max: 6,  payout: 0.9 }
+    - { symbol: "H3", tier_min: 7,  tier_max: 8,  payout: 2.0 }
+    - { symbol: "H3", tier_min: 9,  tier_max: 10, payout: 8.0 }
+    - { symbol: "H3", tier_min: 11, tier_max: 12, payout: 12.0 }
+    - { symbol: "H3", tier_min: 13, tier_max: 14, payout: 15.0 }
+    - { symbol: "H3", tier_min: 15, tier_max: 49, payout: 25.0 }
+
+centipayout:
+  multiplier: 100
+  rounding_base: 10
+
+win_levels:
+  tiers:
+    - { level: 1,  min_payout: 0.0,    max_payout: 0.1 }
+    - { level: 2,  min_payout: 0.1,    max_payout: 1.0 }
+    - { level: 3,  min_payout: 1.0,    max_payout: 2.0 }
+    - { level: 4,  min_payout: 2.0,    max_payout: 5.0 }
+    - { level: 5,  min_payout: 5.0,    max_payout: 10.0 }
+    - { level: 6,  min_payout: 10.0,   max_payout: 25.0 }
+    - { level: 7,  min_payout: 25.0,   max_payout: 100.0 }
+    - { level: 8,  min_payout: 100.0,  max_payout: 2000.0 }
+    - { level: 9,  min_payout: 2000.0, max_payout: 5000.0 }
+    # Final tier — no upper bound (inf represented as very large number)
+    - { level: 10, min_payout: 5000.0, max_payout: .inf }
+
+freespin:
+  min_scatters_to_trigger: 4
+  max_scatters_on_board: 5
+  awards:
+    - [4, 10]
+    - [5, 10]
+  grid_multipliers_persist: true
+
+wincap:
+  max_payout: 5000.0
+  halt_cascade: true
+
+solvers:
+  wfc_max_backtracks: 500
+  wfc_min_symbol_weight: 0.01
+  csp_max_solve_time_ms: 5000
+  asp_max_models: 10
+  asp_rand_freq: 0.5
+  max_retries_per_instance: 100
+  max_construction_retries: 100 
+  # Retry generation when validation fails (e.g., terminal board max_component, payout overflow)
+  max_validation_retries: 250
+  # BoardSymbolNonAdjacency applied for cascade steps 0 through this index —
+  # deep steps (3+) have boards too dense for strict non-adjacency enforcement
+  board_adjacency_max_step: 2
+
+diagnostics:
+  targets:
+    - { metric: "rtp_total", min_value: 0.0, max_value: 5.0 }
+    - { metric: "hit_rate", min_value: 0.0, max_value: 1.0 }
+    - { metric: "dead_spin_rate", min_value: 0.0, max_value: 1.0 }
+    - { metric: "spatial_cv", min_value: null, max_value: 1.0 }
+    - { metric: "freespin_trigger_rate", min_value: 0.0, max_value: 1.0 }
+    - { metric: "wincap_hit_rate", min_value: 0.0, max_value: 1.0 }
+
+population:
+  total_budget: 10000
+  min_instances_per_archetype: 1
+  # Uniform weights — auto-renormalized to sum to 1.0 at load time
+  family_weights:
+    dead: 1.0
+    t1: 1.0
+    wild: 1.0
+    rocket: 1.0
+    bomb: 1.0
+    lb: 1.0
+    slb: 1.0
+    chain: 1.0
+    trigger: 1.0
+    wincap: 1.0
+  archetype_weights:
+    dead:
+      dead_empty: 1.0
+      dead_near_miss_low: 1.0
+      dead_near_miss_high: 1.0
+      dead_near_miss_multi: 1.0
+      dead_scatter_2: 1.0
+      dead_scatter_2_near_miss: 1.0
+      dead_near_miss_high_multi: 1.0
+      dead_saturated: 1.0
+      dead_scatter_3: 1.0
+      dead_scatter_3_near_miss: 1.0
+      dead_scatter_3_near_miss_high: 1.0
+    t1:
+      t1_single: 1.0
+      t1_near_miss: 1.0
+      t1_multi: 1.0
+      t1_cascade_1: 1.0
+      t1_cascade_2: 1.0
+      t1_near_miss_cascade: 1.0
+      t1_scatter_2: 1.0
+      t1_scatter_3: 1.0
+      t1_multi_cascade: 1.0
+      t1_cascade_3plus: 1.0
+      t1_low_cascade: 1.0
+      t1_cascade_scatter_3: 1.0
+    wild:
+      wild_idle: 1.0
+      wild_bridge_small: 1.0
+      wild_bridge_large: 1.0
+      wild_enable_rocket: 1.0
+      wild_enable_bomb: 1.0
+      wild_multi: 1.0
+      wild_near_miss_single: 1.0
+      wild_near_miss_multi: 1.0
+      wild_near_miss_high_idle: 1.0
+      wild_late_save: 1.0
+      wild_late_save_high: 1.0
+      wild_storm_low: 1.0
+      wild_storm_bridge_chain: 1.0
+      wild_scatter_tease: 1.0
+      wild_scatter_cascade_tease: 1.0
+      wild_escalation_fizzle: 1.0
+      wild_rocket_tease: 1.0
+    rocket:
+      rocket_idle: 1.0
+      rocket_h_fire: 1.0
+      rocket_v_fire: 1.0
+      rocket_fire_dead: 1.0
+      rocket_fire_cascade: 1.0
+      rocket_chain_rocket: 1.0
+      rocket_chain_bomb: 1.0
+      rocket_chain_lb: 1.0
+      rocket_chain_slb: 1.0
+      rocket_dual: 1.0
+      rocket_near_miss_spawn: 1.0
+      rocket_near_miss_orientation: 1.0
+      rocket_near_miss_dual_idle: 1.0
+      rocket_late_save: 1.0
+      rocket_late_save_chain: 1.0
+      rocket_storm_low: 1.0
+      rocket_storm_cross: 1.0
+      rocket_scatter_tease: 1.0
+      rocket_scatter_storm_tease: 1.0
+      rocket_escalation_fizzle: 1.0
+      rocket_chain_fizzle: 1.0
+      rocket_bomb_tease: 1.0
+    bomb:
+      bomb_idle: 1.0
+      bomb_fire: 1.0
+      bomb_fire_dead: 1.0
+      bomb_chain_rocket: 1.0
+      bomb_chain_bomb: 1.0
+      bomb_chain_lb: 1.0
+      bomb_chain_slb: 1.0
+      bomb_multi: 1.0
+    lb:
+      lb_fire_low: 1.0
+      lb_fire_high: 1.0
+      lb_cascade: 1.0
+      lb_chain_triggered: 1.0
+    slb:
+      slb_fire: 1.0
+      slb_cascade: 1.0
+      slb_chain_triggered: 1.0
+      slb_multiplier_stack: 1.0
+    chain:
+      chain_2_mixed: 1.0
+      chain_3_plus: 1.0
+      multi_booster_parallel: 1.0
+      cascade_to_booster_to_cascade: 1.0
+      booster_phase_multi: 1.0
+    trigger:
+      trigger_4s: 1.0
+      trigger_4s_with_win: 1.0
+      trigger_5s: 1.0
+      trigger_5s_with_booster: 1.0
+    wincap:
+      near_wincap: 1.0
+      wincap: 1.0
+
+symbols:
+  standard: ["L1", "L2", "L3", "L4", "H1", "H2", "H3"]
+  low_tier: ["L1", "L2", "L3", "L4"]
+  high_tier: ["H1", "H2", "H3"]
+  payout_rank:
+    L1: 1
+    L2: 2
+    L3: 3
+    L4: 4
+    H1: 5
+    H2: 6
+    H3: 7
+
+anticipation:
+  trigger_threshold: 3
+
+output:
+  # Zstandard compression for book JSONL files
+  compression: false
+  # Base output directory (relative to game root)
+  output_dir: "games/royal_tumble/experience_engine/library"
+  # Multiprocessing worker count — 1 = serial mode
+  num_workers: 1
+  # Bet mode name — controls file naming (books_{mode}.jsonl, lookUpTable_{mode}.csv)
+  mode_name: "base"
+  # Post-optimization audit: flag archetypes with survival rate below this threshold
+  audit_survival_threshold: 0.10
+
+reasoner:
+  # Fraction of max payout budget — below this means "running low" (pacing too slow)
+  payout_low_fraction: 0.3
+  # Fraction of max payout budget — above this means "running high" (risk of overshoot)
+  payout_high_fraction: 0.85
+  # Steps of slack before dormant booster arming becomes urgent (0 = must arm immediately)
+  arming_urgency_horizon: 1
+  # Default max connected component size for terminal dead boards when signature
+  # doesn't specify — prevents visible near-cluster groupings on dead spins
+  terminal_dead_default_max_component: 4
+  # Maximum hypothetical boards a strategy may evaluate per step (computation budget)
+  max_forward_simulations_per_step: 10
+  # Cap on strategic cells per step intent — prevents over-constraining future steps
+  # SeedPlanner typically places 5-15 cells; 16 gives headroom without over-constraining WFC
+  max_strategic_cells_per_step: 16
+  # How many gravity-settle steps ahead strategies may chain-simulate (1 = immediate only)
+  lookahead_depth: 2

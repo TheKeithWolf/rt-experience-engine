@@ -1,0 +1,166 @@
+"""Booster setup strategy — arranges boosters for chain spatial requirements.
+
+Works backward from chain geometry to determine where each booster must
+be positioned, then builds clusters whose centroids spawn boosters at
+those required positions.
+"""
+
+from __future__ import annotations
+
+import random
+
+from ...board_filler.propagators import NoClusterPropagator, NoSpecialSymbolPropagator
+from ...config.schema import MasterConfig
+from ...primitives.board import Position
+from ...primitives.booster_rules import BoosterRules
+from ...primitives.symbols import Symbol, SymbolTier
+from ..context import BoardContext
+from ..evaluators import ChainEvaluator, SpawnEvaluator
+from ..intent import StepIntent, StepType
+from ..progress import ProgressTracker
+from ..services.cluster_builder import ClusterBuilder
+from ..services.forward_simulator import ForwardSimulator
+from ..services.seed_planner import SeedPlanner
+from ...archetypes.registry import ArchetypeSignature
+from ...pipeline.protocols import Range
+from ...variance.hints import VarianceHints
+
+
+class BoosterSetupStrategy:
+    """Plans spatial arrangement for booster chains.
+
+    Determines which boosters still need to spawn, finds positions where
+    their cluster centroids must land, and builds clusters that produce
+    the correct centroid. Uses ChainEvaluator for chain validity and
+    SpawnEvaluator for cluster size → booster mapping.
+    """
+
+    __slots__ = (
+        "_config", "_forward_sim", "_cluster_builder", "_seed_planner",
+        "_chain_eval", "_spawn_eval", "_booster_rules", "_rng",
+    )
+
+    def __init__(
+        self,
+        config: MasterConfig,
+        forward_sim: ForwardSimulator,
+        cluster_builder: ClusterBuilder,
+        seed_planner: SeedPlanner,
+        chain_eval: ChainEvaluator,
+        spawn_eval: SpawnEvaluator,
+        rng: random.Random,
+    ) -> None:
+        self._config = config
+        self._forward_sim = forward_sim
+        self._cluster_builder = cluster_builder
+        self._seed_planner = seed_planner
+        self._chain_eval = chain_eval
+        self._spawn_eval = spawn_eval
+        self._booster_rules = BoosterRules(config.boosters, config.board, config.symbols)
+        self._rng = rng
+
+    def plan_step(
+        self,
+        context: BoardContext,
+        progress: ProgressTracker,
+        signature: ArchetypeSignature,
+        variance: VarianceHints,
+    ) -> StepIntent:
+        # Determine which booster types still need to spawn for the chain
+        missing_boosters = self._determine_missing_boosters(
+            context, progress, signature,
+        )
+
+        # Boundary analysis for merge-aware placement
+        boundary = self._cluster_builder.analyze_boundary(context)
+
+        constrained: dict[Position, Symbol] = {}
+        expected_spawns: list[str] = []
+
+        from ..services.merge_policy import MergePolicy
+
+        for booster_type in missing_boosters:
+            # Determine cluster size needed to spawn this booster type
+            size_range = self._spawn_eval.size_range_for_booster(booster_type)
+            if size_range is None:
+                continue
+
+            cluster_size = self._cluster_builder.select_size(
+                progress, signature, variance, self._rng,
+                size_range=Range(size_range[0], size_range[1]),
+                target_booster=booster_type,
+            )
+
+            cluster_symbol = self._cluster_builder.select_symbol(
+                progress, signature, variance, self._rng,
+                boundary=boundary, planned_size=cluster_size,
+            )
+
+            # EXPLOIT merge when survivors can push total size past spawn threshold,
+            # AVOID otherwise (exact size needed for correct booster type)
+            survivor_count = boundary.acceptable_merge_symbols.get(cluster_symbol, 0)
+            merged_total = cluster_size + survivor_count
+            booster_for_merged = self._spawn_eval.booster_for_size(merged_total)
+            policy = (
+                MergePolicy.EXPLOIT
+                if booster_for_merged == booster_type and survivor_count > 0
+                else MergePolicy.AVOID
+            )
+
+            result = self._cluster_builder.find_positions(
+                context, cluster_size, self._rng, variance,
+                symbol=cluster_symbol, boundary=boundary, merge_policy=policy,
+                avoid_positions=frozenset(constrained),
+            )
+
+            for pos in result.planned_positions:
+                constrained[pos] = cluster_symbol
+            expected_spawns.append(booster_type)
+
+        # Determine tier from the first cluster symbol placed
+        cluster_tier = None
+        if constrained:
+            first_sym = next(iter(constrained.values()))
+            cluster_tier = SymbolTier.LOW if first_sym.value <= 4 else SymbolTier.HIGH
+
+        # No forward sim seeds needed — the chain arrangement IS the plan
+        return StepIntent(
+            step_type=StepType.CASCADE_CLUSTER,
+            constrained_cells=constrained,
+            strategic_cells={},
+            expected_cluster_count=Range(len(missing_boosters), len(missing_boosters)),
+            expected_cluster_sizes=[],
+            expected_cluster_tier=cluster_tier,
+            expected_spawns=expected_spawns,
+            expected_arms=[],
+            expected_fires=[],
+            wfc_propagators=[
+                NoSpecialSymbolPropagator(self._config.symbols),
+                NoClusterPropagator(self._config.board.min_cluster_size),
+            ],
+            wfc_symbol_weights=variance.symbol_weights,
+            predicted_post_gravity=None,
+            terminal_near_misses=None,
+            terminal_dormant_boosters=None,
+            is_terminal=False,
+        )
+
+    def _determine_missing_boosters(
+        self,
+        context: BoardContext,
+        progress: ProgressTracker,
+        signature: ArchetypeSignature,
+    ) -> list[str]:
+        """Identify booster types that still need to spawn for the chain.
+
+        Compares the signature's required booster spawns against what has
+        already spawned. Returns types with unmet minimums.
+        """
+        remaining = progress.remaining_booster_spawns()
+        existing_types = {b.booster_type for b in context.dormant_boosters}
+
+        missing: list[str] = []
+        for btype, needed_range in remaining.items():
+            if needed_range.min_val > 0 and btype not in existing_types:
+                missing.append(btype)
+        return missing

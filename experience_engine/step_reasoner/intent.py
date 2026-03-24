@@ -1,0 +1,79 @@
+"""Step intent — what the reasoner wants a cascade step to achieve.
+
+StepType classifies the purpose of a step. StepIntent captures the full
+specification: which cells are constrained, what clusters are expected,
+which boosters should spawn/arm/fire, and how WFC should be configured.
+
+Consumers must not mutate container fields (dicts, lists) after construction —
+frozen=True prevents reassignment of references but not in-place mutation.
+"""
+
+from __future__ import annotations
+
+import enum
+from dataclasses import dataclass
+
+from ..archetypes.registry import TerminalNearMissSpec
+from ..board_filler.propagators import Propagator
+from ..pipeline.protocols import Range
+from ..primitives.board import Position
+from ..primitives.gravity import SettleResult
+from ..primitives.symbols import Symbol, SymbolTier
+
+
+class StepType(enum.Enum):
+    """Classification of what a cascade step accomplishes.
+
+    Each value maps to a strategy in the StrategyRegistry (Step 5).
+    """
+
+    INITIAL = "initial"
+    CASCADE_CLUSTER = "cascade_cluster"
+    BOOSTER_ARM = "booster_arm"
+    BOOSTER_FIRE = "booster_fire"
+    TERMINAL_DEAD = "terminal_dead"
+    TERMINAL_NEAR_MISS = "terminal_near_miss"
+
+
+@dataclass(frozen=True, slots=True)
+class StepIntent:
+    """What the reasoner wants a single cascade step to produce.
+
+    Three cell categories:
+    - constrained: MUST be this symbol at this position (cluster cores, scatters)
+    - strategic: SHOULD be this symbol — gravity will carry it where a future
+      step needs it (wild bridge seeds, booster arm setups)
+    - noise: everything else — WFC fills freely with propagator constraints
+
+    Frozen after construction. The execution layer reads these fields to
+    configure CSP constraints and WFC propagators.
+    """
+
+    step_type: StepType
+
+    # Cell classifications
+    constrained_cells: dict[Position, Symbol]
+    strategic_cells: dict[Position, Symbol]
+
+    # Expected cluster outcomes
+    expected_cluster_count: Range
+    expected_cluster_sizes: list[Range]
+    expected_cluster_tier: SymbolTier | None
+
+    # Booster lifecycle expectations
+    expected_spawns: list[str]
+    expected_arms: list[str]
+    expected_fires: list[str]
+
+    # WFC configuration — propagators prevent unintended clusters,
+    # weights steer symbol distribution for this step
+    wfc_propagators: list[Propagator]
+    wfc_symbol_weights: dict[Symbol, float]
+
+    # Gravity simulation result the reasoner already computed (None if skipped)
+    predicted_post_gravity: SettleResult | None
+
+    # Terminal step constraints
+    terminal_near_misses: TerminalNearMissSpec | None
+    terminal_dormant_boosters: list[str] | None
+    is_terminal: bool
