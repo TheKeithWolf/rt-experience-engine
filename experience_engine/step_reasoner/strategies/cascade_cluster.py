@@ -174,6 +174,8 @@ class CascadeClusterStrategy:
             predicted_post_gravity=None,
             terminal_near_misses=None,
             terminal_dormant_boosters=None,
+            # Cluster positions will explode — gates gravity-aware WFC mechanisms
+            planned_explosion=frozenset(result.planned_positions),
             is_terminal=False,
         )
 

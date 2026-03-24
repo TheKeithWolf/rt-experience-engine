@@ -156,6 +156,8 @@ class WildBridgeStrategy:
             predicted_post_gravity=None,
             terminal_near_misses=None,
             terminal_dormant_boosters=None,
+            # Both bridge cluster and wilds explode — union feeds gravity-aware WFC
+            planned_explosion=frozenset(bridge_positions) | frozenset(context.active_wilds),
             is_terminal=False,
         )
 

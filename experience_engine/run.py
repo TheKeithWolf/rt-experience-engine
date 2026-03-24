@@ -222,7 +222,7 @@ def _build_pipeline(
     assessor = StepAssessor(spawn_eval, chain_eval, payout_eval, config.reasoner)
     selector = StrategySelector(DEFAULT_SELECTION_RULES)
     reasoner = StepReasoner(strategy_registry, selector, assessor)
-    executor = StepExecutor(config)
+    executor = StepExecutor(config, gravity_dag=gravity_dag)
     step_validator = StepValidator(config)
     simulator = StepTransitionSimulator(gravity_dag, config)
 

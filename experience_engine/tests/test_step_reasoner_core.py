@@ -223,8 +223,8 @@ def gravity_dag(default_config: MasterConfig) -> GravityDAG:
 
 
 @pytest.fixture
-def step_executor(default_config: MasterConfig) -> StepExecutor:
-    return StepExecutor(default_config)
+def step_executor(default_config: MasterConfig, gravity_dag: GravityDAG) -> StepExecutor:
+    return StepExecutor(default_config, gravity_dag=gravity_dag)
 
 
 @pytest.fixture
@@ -792,7 +792,7 @@ class TestInstanceGeneratorIntegration:
         selector = StrategySelector(DEFAULT_SELECTION_RULES)
         reasoner = StepReasoner(strategy_registry, selector, assessor)
 
-        executor = StepExecutor(config)
+        executor = StepExecutor(config, gravity_dag=gravity_dag)
         validator = StepValidator(config)
         simulator = StepTransitionSimulator(gravity_dag, config)
 

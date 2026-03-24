@@ -132,6 +132,146 @@ class WFCBoardFiller:
         # Solve loop with backtracking
         return self._solve(result, cells, effective_weights, rng)
 
+    def fill_step(
+        self,
+        board: Board,
+        pinned: frozenset[Position],
+        noise_cells: list[Position],
+        constraints,
+        rng: random.Random | None = None,
+    ) -> Board:
+        """Fill empty cells using gravity-aware WFC mechanisms.
+
+        New entry point for gravity-aware fills. The existing fill() method
+        is unchanged — this method adds spatial weight selection, post-gravity
+        propagation, and gravity-group collapse ordering via FillConstraints.
+
+        Args:
+            board: Input board with pinned cells pre-filled.
+            pinned: Positions that must not be modified.
+            noise_cells: Empty, non-pinned positions to fill.
+            constraints: FillConstraints bundling all three gravity mechanisms.
+            rng: Random instance for deterministic reproducibility.
+
+        Returns:
+            A new Board with all cells filled.
+
+        Raises:
+            FillFailed: If backtrack limit exceeded.
+        """
+        if rng is None:
+            rng = random.Random()
+
+        result = board.copy()
+
+        # Build cell states for every empty, non-pinned position
+        cells: dict[Position, CellState] = {}
+        for pos in result.all_positions():
+            if result.get(pos) is None and pos not in pinned:
+                cells[pos] = CellState(set(self._standard_symbols))
+
+        if not cells:
+            return result
+
+        # Use propagators from constraints — includes both strategy-specified
+        # and gravity-aware propagators (PostGravityPropagator is in the list)
+        original_propagators = self._propagators
+        self._propagators = constraints.propagators
+
+        try:
+            # Initial propagation from all already-filled positions
+            self._initial_propagation(result, cells)
+
+            # Solve with gravity-aware extension points
+            return self._solve_step(result, cells, constraints, rng)
+        finally:
+            # Restore original propagators — fill_step doesn't permanently modify state
+            self._propagators = original_propagators
+
+    def _solve_step(
+        self,
+        board: Board,
+        cells: dict[Position, CellState],
+        constraints,
+        rng: random.Random,
+    ) -> Board:
+        """WFC solve loop with three gravity-aware extension points.
+
+        1. Cell selection: gravity-group ordering when present, else min-entropy
+        2. Symbol selection: spatial weights when present, else flat weights
+        3. Propagation: constraints.propagators iterated uniformly (LSP)
+        """
+        decision_stack: list[_DecisionRecord] = []
+        backtrack_count = 0
+
+        while True:
+            # Extension point 1: cell selection
+            if constraints.gravity_groups is not None:
+                target = constraints.gravity_groups.select_next(cells)
+            else:
+                target = self._select_min_entropy(cells, board, rng)
+
+            if target is None:
+                return board
+
+            # Snapshot for backtracking
+            board_snapshot = board.copy()
+            cells_snapshot = {
+                pos: cs.snapshot()
+                for pos, cs in cells.items()
+                if not cs.collapsed
+            }
+
+            # Extension point 2: symbol selection
+            if constraints.spatial_weights is not None:
+                symbol = self._spatial_weighted_select(
+                    target, cells[target].possibilities,
+                    constraints.spatial_weights, rng,
+                )
+            else:
+                symbol = self._weighted_select(
+                    cells[target].possibilities,
+                    constraints.flat_symbol_weights, rng,
+                )
+
+            cells[target].collapse_to(symbol)
+            board.set(target, symbol)
+
+            # Post-collapse validation and propagation (extension point 3
+            # is implicit — self._propagators is set to constraints.propagators)
+            if not self._validate_placement(board, target):
+                contradiction = True
+            else:
+                contradiction = self._propagate_from(board, cells, target)
+
+            if contradiction:
+                backtrack_count += 1
+                if backtrack_count > self._max_backtracks:
+                    raise FillFailed(
+                        f"Exceeded max backtracks ({self._max_backtracks})"
+                    )
+
+                board = self._restore_board(board, board_snapshot)
+                self._restore_cells(cells, cells_snapshot)
+                cells[target].remove(symbol)
+
+                while cells[target].entropy == 0 and decision_stack:
+                    record = decision_stack.pop()
+                    board = self._restore_board(board, record.board_snapshot)
+                    self._restore_cells(cells, record.cells_snapshot)
+                    target = record.position
+                    cells[target].remove(record.chosen_symbol)
+
+                if cells[target].entropy == 0:
+                    raise FillFailed(
+                        "All possibilities exhausted during backtracking"
+                    )
+                continue
+
+            decision_stack.append(
+                _DecisionRecord(target, symbol, board_snapshot, cells_snapshot)
+            )
+
     def _compute_effective_weights(
         self, weights: dict[Symbol, float] | None
     ) -> dict[Symbol, float]:
@@ -320,25 +460,51 @@ class WFCBoardFiller:
         Symbols sorted by integer value for deterministic ordering regardless
         of frozenset iteration order. Weights floored to config minimum.
         """
-        # Sort by symbol value for deterministic iteration
         sorted_syms = sorted(possibilities, key=lambda s: s.value)
+        sym_weights = [weights.get(sym, self._min_weight) for sym in sorted_syms]
+        return self._weighted_choice(sorted_syms, sym_weights, rng)
 
-        # Build cumulative weight list
-        cumulative: list[float] = []
+    def _spatial_weighted_select(
+        self,
+        pos: Position,
+        possibilities: frozenset[Symbol],
+        spatial_weights,
+        rng: random.Random,
+    ) -> Symbol:
+        """Choose a symbol using position-dependent spatial weights.
+
+        Gets per-cell weights from the SpatialWeightMap, filters to available
+        possibilities, then delegates to _weighted_choice for selection.
+        """
+        cell_weights = spatial_weights.get_weights(pos)
+        sorted_syms = sorted(possibilities, key=lambda s: s.value)
+        sym_weights = [cell_weights.get(sym, self._min_weight) for sym in sorted_syms]
+        return self._weighted_choice(sorted_syms, sym_weights, rng)
+
+    @staticmethod
+    def _weighted_choice(
+        symbols: list[Symbol],
+        weights: list[float],
+        rng: random.Random,
+    ) -> Symbol:
+        """Core weighted random selection — shared by flat and spatial selection.
+
+        Cumulative weight scan with uniform random draw. Deterministic given
+        the same rng state and sorted input.
+        """
         total = 0.0
-        for sym in sorted_syms:
-            w = weights.get(sym, self._min_weight)
+        cumulative: list[float] = []
+        for w in weights:
             total += w
             cumulative.append(total)
 
-        # Weighted random selection
         r = rng.random() * total
         for i, cum_w in enumerate(cumulative):
             if r <= cum_w:
-                return sorted_syms[i]
+                return symbols[i]
 
         # Floating-point edge case — return last symbol
-        return sorted_syms[-1]
+        return symbols[-1]
 
     def _validate_placement(self, board: Board, position: Position) -> bool:
         """Check all propagators accept the just-collapsed cell's placement.

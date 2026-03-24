@@ -151,6 +151,8 @@ class InitialClusterStrategy:
             predicted_post_gravity=predicted_post_gravity,
             terminal_near_misses=None,
             terminal_dormant_boosters=None,
+            # All cluster positions will explode — gates gravity-aware WFC mechanisms
+            planned_explosion=frozenset(multi_result.all_occupied),
             is_terminal=False,
         )
 

@@ -142,6 +142,8 @@ class BoosterSetupStrategy:
             predicted_post_gravity=None,
             terminal_near_misses=None,
             terminal_dormant_boosters=None,
+            # Setup cluster positions will explode — gates gravity-aware WFC
+            planned_explosion=frozenset(constrained),
             is_terminal=False,
         )
 

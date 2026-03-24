@@ -302,3 +302,21 @@ reasoner:
   max_strategic_cells_per_step: 16
   # How many gravity-settle steps ahead strategies may chain-simulate (1 = immediate only)
   lookahead_depth: 2
+
+# Gravity-aware WFC tuning — controls spatial weight suppression zones
+# that prevent unintended post-gravity cluster merges during board filling
+gravity_wfc:
+  # Zone 1: boundary suppression — how strongly same-tier symbols are suppressed
+  # at cells immediately adjacent to the planned cluster (lower = stronger)
+  cluster_boundary_tier_suppression: 0.15
+  # Zone 2: BFS radius for extended neighborhood (in cells from cluster edge)
+  extended_neighborhood_radius: 2
+  # Zone 2: suppression multiplier for same-tier symbols in extended neighborhood
+  extended_neighborhood_suppression: 0.5
+  # Zone 3: suppression for same-tier symbols in columns below the cluster —
+  # prevents gravity from compressing same-tier symbols into merges
+  compression_column_suppression: 0.7
+  # Zone 4: suppression for the seed symbol near strategic cell positions
+  strategic_cell_neighbor_suppression: 0.2
+  # Absolute floor for spatial weights — prevents zero-probability symbols
+  min_symbol_weight: 0.01

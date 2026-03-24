@@ -21,6 +21,7 @@ from .schema import (
     DiagnosticsConfig,
     FreespinConfig,
     GravityConfig,
+    GravityWfcConfig,
     GridMultiplierConfig,
     MasterConfig,
     OutputConfig,
@@ -69,6 +70,7 @@ def load_config(path: Path) -> MasterConfig:
     anticipation = _build_anticipation(raw.get("anticipation", {}))
     output = _build_output(raw.get("output"))
     reasoner = _build_reasoner(raw.get("reasoner", {}))
+    gravity_wfc = _build_gravity_wfc(raw.get("gravity_wfc"))
 
     # Cross-field validations
     _validate_spawn_thresholds(boosters.spawn_thresholds)
@@ -91,6 +93,7 @@ def load_config(path: Path) -> MasterConfig:
         anticipation=anticipation,
         reasoner=reasoner,
         output=output,
+        gravity_wfc=gravity_wfc,
     )
 
 
@@ -345,6 +348,42 @@ def _build_reasoner(data: dict[str, Any]) -> ReasonerConfig:
         ),
         lookahead_depth=int(
             _require(data, "lookahead_depth", "reasoner.lookahead_depth")
+        ),
+    )
+
+
+def _build_gravity_wfc(data: dict[str, Any] | None) -> GravityWfcConfig | None:
+    """Build GravityWfcConfig from YAML data, or None if section is absent.
+
+    Optional section — configs without gravity_wfc get None, which disables
+    the gravity-aware WFC mechanisms (baseline fill path used instead).
+    """
+    if data is None:
+        return None
+    return GravityWfcConfig(
+        cluster_boundary_tier_suppression=float(
+            _require(data, "cluster_boundary_tier_suppression",
+                     "gravity_wfc.cluster_boundary_tier_suppression")
+        ),
+        extended_neighborhood_radius=int(
+            _require(data, "extended_neighborhood_radius",
+                     "gravity_wfc.extended_neighborhood_radius")
+        ),
+        extended_neighborhood_suppression=float(
+            _require(data, "extended_neighborhood_suppression",
+                     "gravity_wfc.extended_neighborhood_suppression")
+        ),
+        compression_column_suppression=float(
+            _require(data, "compression_column_suppression",
+                     "gravity_wfc.compression_column_suppression")
+        ),
+        strategic_cell_neighbor_suppression=float(
+            _require(data, "strategic_cell_neighbor_suppression",
+                     "gravity_wfc.strategic_cell_neighbor_suppression")
+        ),
+        min_symbol_weight=float(
+            _require(data, "min_symbol_weight",
+                     "gravity_wfc.min_symbol_weight")
         ),
     )
 

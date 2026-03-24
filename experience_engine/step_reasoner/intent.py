@@ -76,4 +76,8 @@ class StepIntent:
     # Terminal step constraints
     terminal_near_misses: TerminalNearMissSpec | None
     terminal_dormant_boosters: list[str] | None
-    is_terminal: bool
+
+    # Positions that will explode after this step's fill — gates gravity-aware
+    # WFC mechanisms. None for terminal/dead steps (no explosion planned).
+    planned_explosion: frozenset[Position] | None = None
+    is_terminal: bool = False

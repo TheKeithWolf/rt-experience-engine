@@ -493,6 +493,62 @@ class ReasonerConfig:
 
 
 # ---------------------------------------------------------------------------
+# Gravity-Aware WFC
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class GravityWfcConfig:
+    """Tuning parameters for gravity-aware WFC mechanisms.
+
+    Controls how the WFC board filler suppresses symbols near clusters to
+    prevent unintended post-gravity merges. Each suppression multiplier
+    scales symbol weights in a spatial zone — lower values = stronger
+    suppression. Changing these values trades fill success rate against
+    post-gravity cluster prevention strength.
+    """
+
+    # Zone 1: multiplier for same-tier symbols at cluster boundary cells —
+    # lower values more aggressively prevent same-tier survivors at explosion edges
+    cluster_boundary_tier_suppression: float
+    # Zone 2: BFS radius (in cells) for the extended neighborhood around clusters
+    extended_neighborhood_radius: int
+    # Zone 2: multiplier for same-tier symbols in the extended neighborhood —
+    # softer than boundary suppression, prevents gradual tier concentration
+    extended_neighborhood_suppression: float
+    # Zone 3: multiplier for same-tier symbols in columns below the cluster —
+    # prevents gravity from stacking same-tier symbols into post-settle merges
+    compression_column_suppression: float
+    # Zone 4: multiplier for the seed symbol near strategic cell positions —
+    # prevents WFC from duplicating the seed symbol at adjacent cells
+    strategic_cell_neighbor_suppression: float
+    # Absolute floor for spatial weights — prevents any symbol from reaching
+    # zero probability, which would make WFC unable to fill the cell
+    min_symbol_weight: float
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "cluster_boundary_tier_suppression",
+            "extended_neighborhood_suppression",
+            "compression_column_suppression",
+            "strategic_cell_neighbor_suppression",
+        ):
+            value = getattr(self, field_name)
+            if not (0.0 < value <= 1.0):
+                raise ConfigValidationError(
+                    f"gravity_wfc.{field_name}",
+                    f"must be in (0.0, 1.0], got {value}",
+                )
+        if self.extended_neighborhood_radius < 1:
+            raise ConfigValidationError(
+                "gravity_wfc.extended_neighborhood_radius", "must be >= 1"
+            )
+        if self.min_symbol_weight <= 0.0:
+            raise ConfigValidationError(
+                "gravity_wfc.min_symbol_weight", "must be > 0.0"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Master Config
 # ---------------------------------------------------------------------------
 
@@ -522,3 +578,5 @@ class MasterConfig:
     reasoner: ReasonerConfig
     # Phase 14 — optional to preserve backward compatibility with existing tests
     output: OutputConfig | None = None
+    # Gravity-aware WFC tuning — optional to preserve backward compatibility
+    gravity_wfc: GravityWfcConfig | None = None

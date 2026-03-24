@@ -122,6 +122,8 @@ class BoosterArmStrategy:
             predicted_post_gravity=None,
             terminal_near_misses=None,
             terminal_dormant_boosters=None,
+            # Arming cluster positions will explode — gates gravity-aware WFC
+            planned_explosion=frozenset(cluster_positions),
             is_terminal=False,
         )
 

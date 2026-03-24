@@ -8,6 +8,7 @@ Propagators are pluggable — new constraints can be added without modifying the
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -372,7 +373,7 @@ class NearMissGroup:
     positions: frozenset[Position]
 
 
-def _compute_border(
+def compute_border(
     positions: frozenset[Position],
     board_config: BoardConfig,
 ) -> frozenset[Position]:
@@ -396,7 +397,7 @@ class ClusterBoundaryPropagator:
     adjacent to it — otherwise explosion + gravity leaves same-symbol survivors
     at the refill zone boundary, causing impossible merges on the next cascade step.
 
-    Uses the shared _compute_border() helper (DRY with NearMissAwareDeadPropagator).
+    Uses the shared compute_border() helper (DRY with NearMissAwareDeadPropagator).
     """
 
     __slots__ = ("_forbidden_symbol", "_border")
@@ -409,7 +410,7 @@ class ClusterBoundaryPropagator:
     ) -> None:
         self._forbidden_symbol = cluster_symbol
         # Border = cells adjacent to cluster but not in the cluster
-        self._border = _compute_border(cluster_positions, board_config)
+        self._border = compute_border(cluster_positions, board_config)
 
     def propagate(
         self,
@@ -464,7 +465,7 @@ class NearMissAwareDeadPropagator:
         # track which symbols are forbidden (the group's symbol)
         self._forbidden: dict[Position, set[Symbol]] = {}
         for group in protected_groups:
-            border = _compute_border(group.positions, board_config)
+            border = compute_border(group.positions, board_config)
             for pos in border:
                 if pos not in self._forbidden:
                     self._forbidden[pos] = set()
@@ -514,3 +515,119 @@ class NearMissAwareDeadPropagator:
             if sym in forbidden:
                 return False
         return True
+
+
+# ---------------------------------------------------------------------------
+# Post-Gravity Propagator
+# ---------------------------------------------------------------------------
+
+
+def _virtual_component_size(
+    board: Board,
+    start: Position,
+    symbol: Symbol,
+    virtual_neighbors_fn,
+) -> int:
+    """BFS component size using virtual (post-gravity) adjacency.
+
+    Counts how many collapsed cells hold `symbol` and are reachable from
+    `start` via virtual_neighbors. Includes `start` itself in the count
+    (assumes it would hold `symbol`).
+
+    Separate from max_component_size in cluster_detection.py because that
+    function operates on physical adjacency — this one uses the post-gravity
+    virtual graph via a neighbor function parameter.
+    """
+    visited: set[Position] = {start}
+    queue = deque([start])
+    count = 1  # start position counted
+
+    while queue:
+        pos = queue.popleft()
+        for neighbor in virtual_neighbors_fn(pos):
+            if neighbor in visited:
+                continue
+            visited.add(neighbor)
+            if board.get(neighbor) is symbol:
+                count += 1
+                queue.append(neighbor)
+
+    return count
+
+
+class PostGravityPropagator:
+    """Prevents unintended clusters in post-gravity space.
+
+    Standard propagators check physical (pre-gravity) adjacency. This
+    propagator checks virtual adjacency — which cells will be neighbors
+    AFTER gravity settles. If placing a symbol at a cell would create a
+    virtual component >= threshold, that symbol is pruned.
+
+    Implements the Propagator protocol (LSP) — the WFC solver treats it
+    identically to NoClusterPropagator.
+    """
+
+    __slots__ = ("_virtual_neighbors_fn", "_threshold")
+
+    def __init__(self, virtual_neighbors_fn, threshold: int) -> None:
+        # Callable: Position → list[Position] — from PostGravityAdjacency
+        self._virtual_neighbors_fn = virtual_neighbors_fn
+        # Cluster prevention threshold — from config.board.min_cluster_size
+        self._threshold = threshold
+
+    def propagate(
+        self,
+        board: Board,
+        cells: dict[Position, CellState],
+        position: Position,
+        board_config: BoardConfig,
+    ) -> set[Position]:
+        """Prune symbols from virtual neighbors that would form post-gravity clusters.
+
+        For each uncollapsed virtual neighbor of the just-collapsed position,
+        checks whether placing any remaining possibility would create a
+        virtual component >= threshold. If so, removes that symbol.
+        """
+        changed: set[Position] = set()
+        for neighbor in self._virtual_neighbors_fn(position):
+            if neighbor not in cells or cells[neighbor].collapsed:
+                continue
+
+            to_remove: list[Symbol] = []
+            for sym in cells[neighbor].possibilities:
+                # Fast pre-check: if no same-symbol virtual neighbors exist,
+                # placing this symbol creates an isolated component of size 1
+                has_same = any(
+                    board.get(vn) is sym
+                    for vn in self._virtual_neighbors_fn(neighbor)
+                )
+                if self._threshold > 1 and not has_same:
+                    continue
+
+                # Full BFS: would placing sym at neighbor exceed threshold
+                # in post-gravity space?
+                component = _virtual_component_size(
+                    board, neighbor, sym, self._virtual_neighbors_fn,
+                )
+                if component >= self._threshold:
+                    to_remove.append(sym)
+
+            for sym in to_remove:
+                if cells[neighbor].remove(sym):
+                    changed.add(neighbor)
+
+        return changed
+
+    def validate_placement(
+        self,
+        board: Board,
+        position: Position,
+        board_config: BoardConfig,
+    ) -> bool:
+        """Check if the symbol at position forms a virtual component below threshold."""
+        sym = board.get(position)
+        if sym is None:
+            return True
+        return _virtual_component_size(
+            board, position, sym, self._virtual_neighbors_fn,
+        ) < self._threshold
