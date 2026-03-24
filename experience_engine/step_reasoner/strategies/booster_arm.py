@@ -19,7 +19,7 @@ from ..intent import StepIntent, StepType
 from ..progress import ProgressTracker
 from ..services.cluster_builder import ClusterBuilder
 from ..services.forward_simulator import ForwardSimulator
-from ..services.seed_planner import SeedPlanner
+from ..services.seed_planner import SeedPlanner, build_cluster_exclusions
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
 from ...variance.hints import VarianceHints
@@ -98,8 +98,14 @@ class BoosterArmStrategy:
                 ),
                 cluster_positions,
             )
+            # Prevent arm seeds from merging into the arming cluster
+            exclusions = build_cluster_exclusions(
+                [(frozenset(cluster_positions), cluster_symbol)],
+                self._config.board,
+            )
             strategic_cells = self._seed_planner.plan_arm_seeds(
                 booster_pos, settle_result, variance, self._rng,
+                exclusions=exclusions,
             )
 
         constrained = {pos: cluster_symbol for pos in cluster_positions}

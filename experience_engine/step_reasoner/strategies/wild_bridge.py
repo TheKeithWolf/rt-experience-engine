@@ -23,7 +23,7 @@ from ..intent import StepIntent, StepType
 from ..progress import ProgressTracker
 from ..services.cluster_builder import ClusterBuilder
 from ..services.forward_simulator import ForwardSimulator
-from ..services.seed_planner import SeedPlanner
+from ..services.seed_planner import SeedPlanner, build_cluster_exclusions
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
 from ...variance.hints import VarianceHints
@@ -131,8 +131,14 @@ class WildBridgeStrategy:
             settle_result = self._forward_sim.simulate_explosion(
                 hypothetical, bridge_positions,
             )
+            # Prevent strategic seeds from merging into the bridge cluster
+            exclusions = build_cluster_exclusions(
+                [(frozenset(bridge_positions), bridge_symbol)],
+                self._config.board,
+            )
             strategic_cells = self._seed_planner.plan_generic_seeds(
                 settle_result, progress, signature, variance, self._rng,
+                exclusions=exclusions,
             )
 
         constrained = {pos: bridge_symbol for pos in bridge_positions}

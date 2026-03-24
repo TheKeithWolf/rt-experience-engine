@@ -22,7 +22,7 @@ from ..progress import ProgressTracker
 from ..services.cluster_builder import ClusterBuilder
 from ..services.forward_simulator import ForwardSimulator
 from ..services.near_miss_planner import NearMissPlanner
-from ..services.seed_planner import SeedPlanner
+from ..services.seed_planner import SeedPlanner, build_cluster_exclusions
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
 from ...variance.hints import VarianceHints
@@ -100,8 +100,13 @@ class InitialClusterStrategy:
         # Backward reasoning: plant strategic seeds for the next step
         # Use first cluster's booster type for seed planning (if any)
         first_booster = expected_spawns[0] if expected_spawns else None
+        # Build once — reused for both seed exclusion and propagator construction
+        cluster_groups = [
+            (r.planned_positions, sym)
+            for r, sym in zip(multi_result.clusters, multi_result.cluster_symbols)
+        ]
         strategic_cells = self._plan_strategic_seeds(
-            context, multi_result.all_occupied, first_sym, first_booster,
+            context, cluster_groups, first_booster,
             settle_result, progress, signature, variance,
         )
 
@@ -125,10 +130,6 @@ class InitialClusterStrategy:
 
         # Propagators for WFC noise fill — one ClusterBoundaryPropagator per cluster
         # group prevents same-symbol survivors at each cluster's edge
-        cluster_groups = [
-            (r.planned_positions, sym)
-            for r, sym in zip(multi_result.clusters, multi_result.cluster_symbols)
-        ]
         propagators = self._select_propagators(
             has_near_misses=bool(nm_result.groups),
             cluster_groups=cluster_groups,
@@ -159,8 +160,7 @@ class InitialClusterStrategy:
     def _plan_strategic_seeds(
         self,
         context: BoardContext,
-        cluster_positions: frozenset[Position],
-        cluster_symbol: Symbol,
+        cluster_groups: list[tuple[frozenset[Position], Symbol]],
         booster_type: str | None,
         settle_result,
         progress: ProgressTracker,
@@ -171,27 +171,38 @@ class InitialClusterStrategy:
         if progress.must_terminate_soon():
             return {}
 
+        # Exclusion zones prevent strategic seeds from merging into clusters —
+        # strategic cells are pinned before WFC, so ClusterBoundaryPropagator
+        # cannot guard them
+        exclusions = build_cluster_exclusions(cluster_groups, self._config.board)
+
         # Predict where the booster will land after this explosion + gravity
         if booster_type:
+            cluster_positions = frozenset().union(*(g[0] for g in cluster_groups))
             centroid = self._booster_rules.compute_centroid(cluster_positions)
             booster_landing = self._forward_sim.predict_booster_landing(
                 centroid, context.board, cluster_positions,
             )
 
             if self._next_step_needs_wild_bridge(signature, progress):
+                # Bridge uses first cluster's symbol as the bridge symbol
+                bridge_symbol = cluster_groups[0][1]
                 return self._seed_planner.plan_bridge_seeds(
-                    booster_landing, settle_result, cluster_symbol,
+                    booster_landing, settle_result, bridge_symbol,
                     self._config.board.min_cluster_size - 1,
                     variance, self._rng,
+                    exclusions=exclusions,
                 )
 
             if self._next_step_needs_arming_cluster(signature, progress):
                 return self._seed_planner.plan_arm_seeds(
                     booster_landing, settle_result, variance, self._rng,
+                    exclusions=exclusions,
                 )
 
         return self._seed_planner.plan_generic_seeds(
             settle_result, progress, signature, variance, self._rng,
+            exclusions=exclusions,
         )
 
     def _next_step_needs_wild_bridge(

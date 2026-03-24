@@ -30,7 +30,7 @@ from ..services.boundary_analyzer import BoundaryAnalysis
 from ..services.cluster_builder import ClusterBuilder
 from ..services.forward_simulator import ForwardSimulator
 from ..services.merge_policy import ClusterPositionResult, MergePolicy
-from ..services.seed_planner import SeedPlanner
+from ..services.seed_planner import SeedPlanner, build_cluster_exclusions
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
 from ...variance.hints import VarianceHints
@@ -145,8 +145,14 @@ class CascadeClusterStrategy:
             settle_result = self._forward_sim.simulate_explosion(
                 hypothetical, result.planned_positions,
             )
+            # Prevent strategic seeds from merging into the cascade cluster
+            exclusions = build_cluster_exclusions(
+                [(frozenset(result.planned_positions), cluster_symbol)],
+                self._config.board,
+            )
             strategic_cells = self._seed_planner.plan_generic_seeds(
                 settle_result, progress, signature, variance, self._rng,
+                exclusions=exclusions,
             )
 
         constrained = {pos: cluster_symbol for pos in result.planned_positions}

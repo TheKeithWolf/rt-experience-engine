@@ -21,7 +21,11 @@ from ..step_reasoner.evaluators import PayoutEstimator, SpawnEvaluator
 from ..step_reasoner.progress import ClusterRecord, ProgressTracker
 from ..step_reasoner.services.forward_simulator import ForwardSimulator
 from ..step_reasoner.services.cluster_builder import ClusterBuilder
-from ..step_reasoner.services.seed_planner import SeedPlanner
+from ..step_reasoner.services.seed_planner import (
+    ClusterExclusion,
+    SeedPlanner,
+    build_cluster_exclusions,
+)
 from ..variance.hints import VarianceHints
 
 
@@ -659,6 +663,138 @@ class TestDependencyInjection:
         assert "forward_simulator" in sp_params
         assert "board_config" in sp_params
         assert "symbol_config" in sp_params
+
+
+# ---------------------------------------------------------------------------
+# TestSeedPlannerExclusions
+# ---------------------------------------------------------------------------
+
+class TestSeedPlannerExclusions:
+    """Cluster boundary exclusion — strategic seeds must not merge into clusters."""
+
+    def test_generic_seeds_exclude_cluster_boundary(
+        self,
+        seed_planner: SeedPlanner,
+        forward_simulator: ForwardSimulator,
+        default_config: MasterConfig,
+    ) -> None:
+        """Seeds matching a cluster symbol are removed from its exclusion zone."""
+        # Place an L2 cluster and explode it to get a settle result
+        cluster_positions = frozenset({
+            Position(3, 4), Position(3, 5), Position(3, 6),
+            Position(4, 5), Position(4, 6),
+        })
+        board = _make_board_with_cluster(
+            default_config, Symbol.L2, cluster_positions, fill_symbol=Symbol.H1,
+        )
+        settle_result = forward_simulator.simulate_explosion(board, cluster_positions)
+
+        sig = _make_signature()
+        progress = _make_progress(sig)
+        variance = _make_variance_hints(default_config)
+
+        # Build exclusion for L2 at cluster_positions
+        exclusions = build_cluster_exclusions(
+            [(cluster_positions, Symbol.L2)], default_config.board,
+        )
+        zone = exclusions[0].zone
+
+        # Run many times — no returned seed should place L2 inside the zone
+        for i in range(50):
+            rng = random.Random(42 + i)
+            seeds = seed_planner.plan_generic_seeds(
+                settle_result, progress, sig, variance, rng,
+                exclusions=exclusions,
+            )
+            for pos, sym in seeds.items():
+                if sym is Symbol.L2:
+                    assert pos not in zone, (
+                        f"Seed L2 at {pos} falls inside exclusion zone"
+                    )
+
+    def test_bridge_seeds_exclude_cluster_boundary(
+        self,
+        seed_planner: SeedPlanner,
+        forward_simulator: ForwardSimulator,
+        default_config: MasterConfig,
+    ) -> None:
+        """Bridge seeds with a symbol matching the exclusion are filtered out."""
+        cluster_positions = frozenset({
+            Position(3, 4), Position(3, 5), Position(3, 6),
+            Position(4, 5), Position(4, 6),
+        })
+        board = _make_board_with_cluster(
+            default_config, Symbol.L2, cluster_positions, fill_symbol=Symbol.H1,
+        )
+        settle_result = forward_simulator.simulate_explosion(board, cluster_positions)
+
+        exclusions = build_cluster_exclusions(
+            [(cluster_positions, Symbol.L2)], default_config.board,
+        )
+        zone = exclusions[0].zone
+        variance = _make_variance_hints(default_config)
+
+        # Bridge with L2 — same symbol as exclusion
+        rng = random.Random(42)
+        seeds = seed_planner.plan_bridge_seeds(
+            Position(3, 6), settle_result, Symbol.L2, count=3,
+            variance=variance, rng=rng, exclusions=exclusions,
+        )
+        for pos in seeds:
+            assert pos not in zone, (
+                f"Bridge seed at {pos} falls inside L2 exclusion zone"
+            )
+
+    def test_exclusions_empty_is_noop(
+        self,
+        seed_planner: SeedPlanner,
+        forward_simulator: ForwardSimulator,
+        default_config: MasterConfig,
+    ) -> None:
+        """Empty exclusions tuple produces identical output to no exclusions."""
+        cluster_positions = frozenset({
+            Position(0, 4), Position(0, 5), Position(0, 6),
+            Position(1, 5), Position(1, 6),
+        })
+        board = _make_board_with_cluster(
+            default_config, Symbol.L2, cluster_positions, fill_symbol=Symbol.H1,
+        )
+        settle_result = forward_simulator.simulate_explosion(board, cluster_positions)
+
+        sig = _make_signature()
+        progress = _make_progress(sig)
+        variance = _make_variance_hints(default_config)
+        rng1 = random.Random(42)
+        rng2 = random.Random(42)
+
+        seeds_without = seed_planner.plan_generic_seeds(
+            settle_result, progress, sig, variance, rng1,
+        )
+        seeds_with_empty = seed_planner.plan_generic_seeds(
+            settle_result, progress, sig, variance, rng2,
+            exclusions=(),
+        )
+        assert seeds_without == seeds_with_empty
+
+    def test_filter_excluded_preserves_non_matching_symbols(
+        self, default_config: MasterConfig,
+    ) -> None:
+        """Seeds with a different symbol than the exclusion survive even at excluded positions."""
+        cluster_positions = frozenset({
+            Position(3, 3), Position(3, 4), Position(3, 5),
+            Position(4, 4), Position(4, 5),
+        })
+        exclusions = build_cluster_exclusions(
+            [(cluster_positions, Symbol.L2)], default_config.board,
+        )
+        zone = exclusions[0].zone
+
+        # Place H1 seeds at positions inside the L2 exclusion zone — they should survive
+        seeds_in_zone = {pos: Symbol.H1 for pos in list(zone)[:3]}
+        result = SeedPlanner._filter_excluded(seeds_in_zone, exclusions)
+        assert result == seeds_in_zone, (
+            "Non-matching symbols were incorrectly filtered"
+        )
 
 
 # ---------------------------------------------------------------------------

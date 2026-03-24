@@ -11,8 +11,11 @@ Used by: InitialCluster, CascadeCluster, WildBridge.
 from __future__ import annotations
 
 import random
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 from ...archetypes.registry import ArchetypeSignature
+from ...board_filler.propagators import compute_border
 from ...config.schema import BoardConfig, SymbolConfig
 from ...primitives.board import Position, orthogonal_neighbors
 from ...primitives.gravity import SettleResult
@@ -20,6 +23,33 @@ from ...primitives.symbols import Symbol, SymbolTier, symbols_in_tier
 from ...variance.hints import VarianceHints
 from ..progress import ProgressTracker
 from .forward_simulator import ForwardSimulator
+
+
+@dataclass(frozen=True, slots=True)
+class ClusterExclusion:
+    """A cluster's symbol paired with its exclusion zone (positions + 1-cell border).
+
+    Strategic seeds matching the symbol inside this zone would merge into the
+    cluster on detection — bypassing ClusterBoundaryPropagator which only
+    guards WFC-filled cells, not pre-pinned strategic cells.
+    """
+
+    symbol: Symbol
+    zone: frozenset[Position]
+
+
+def build_cluster_exclusions(
+    cluster_groups: Iterable[tuple[frozenset[Position], Symbol]],
+    board_config: BoardConfig,
+) -> tuple[ClusterExclusion, ...]:
+    """Build exclusion zones from cluster groups — prevents strategic seeds from merging into clusters."""
+    return tuple(
+        ClusterExclusion(
+            symbol=sym,
+            zone=positions | compute_border(positions, board_config),
+        )
+        for positions, sym in cluster_groups
+    )
 
 
 class SeedPlanner:
@@ -44,6 +74,23 @@ class SeedPlanner:
         self._board_config = board_config
         self._symbol_config = symbol_config
 
+    @staticmethod
+    def _filter_excluded(
+        seeds: dict[Position, Symbol],
+        exclusions: tuple[ClusterExclusion, ...],
+    ) -> dict[Position, Symbol]:
+        """Remove seeds that would merge into an existing cluster's exclusion zone.
+
+        Same-symbol seeds adjacent to a cluster boundary cause oversized clusters
+        because strategic cells are pinned before WFC boundary propagation runs.
+        """
+        if not exclusions:
+            return seeds
+        return {
+            pos: sym for pos, sym in seeds.items()
+            if not any(ex.symbol is sym and pos in ex.zone for ex in exclusions)
+        }
+
     def plan_bridge_seeds(
         self,
         wild_post_gravity_pos: Position,
@@ -52,6 +99,7 @@ class SeedPlanner:
         count: int,
         variance: VarianceHints,
         rng: random.Random,
+        exclusions: tuple[ClusterExclusion, ...] = (),
     ) -> dict[Position, Symbol]:
         """Place symbols in refill zone that gravity will carry adjacent to the wild.
 
@@ -75,7 +123,9 @@ class SeedPlanner:
             return {}
 
         selected = _weighted_select(eligible, count, variance, rng)
-        return {pos: bridge_symbol for pos in selected}
+        return self._filter_excluded(
+            {pos: bridge_symbol for pos in selected}, exclusions,
+        )
 
     def plan_arm_seeds(
         self,
@@ -83,6 +133,7 @@ class SeedPlanner:
         settle_result: SettleResult,
         variance: VarianceHints,
         rng: random.Random,
+        exclusions: tuple[ClusterExclusion, ...] = (),
     ) -> dict[Position, Symbol]:
         """Place symbols near a dormant booster to enable a future arming cluster.
 
@@ -112,7 +163,9 @@ class SeedPlanner:
         # but not so many that we constrain future steps excessively
         seed_count = min(len(eligible), self._board_config.min_cluster_size - 1)
         selected = _weighted_select(eligible, seed_count, variance, rng)
-        return {pos: arm_symbol for pos in selected}
+        return self._filter_excluded(
+            {pos: arm_symbol for pos in selected}, exclusions,
+        )
 
     def plan_generic_seeds(
         self,
@@ -121,6 +174,7 @@ class SeedPlanner:
         signature: ArchetypeSignature,
         variance: VarianceHints,
         rng: random.Random,
+        exclusions: tuple[ClusterExclusion, ...] = (),
     ) -> dict[Position, Symbol]:
         """Place symbols in empty positions for general cascade opportunity.
 
@@ -148,10 +202,10 @@ class SeedPlanner:
 
         weights = [variance.symbol_weights.get(s, 1.0) for s in candidates]
 
-        return {
-            pos: rng.choices(candidates, weights=weights, k=1)[0]
-            for pos in selected
-        }
+        return self._filter_excluded(
+            {pos: rng.choices(candidates, weights=weights, k=1)[0] for pos in selected},
+            exclusions,
+        )
 
     # -- Private helpers ---------------------------------------------------
 
