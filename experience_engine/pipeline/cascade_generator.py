@@ -179,6 +179,7 @@ class CascadeInstanceGenerator:
                 transition_data = (
                     transition_result.gravity_record,
                     transition_result.board.empty_positions(),
+                    transition_result.spawns,
                 )
 
             raw_steps.append((step_result, board_before, filled, grid_mults, transition_data))
@@ -193,8 +194,9 @@ class CascadeInstanceGenerator:
         # symbols the WFC executor actually placed at empty positions.
         for i, (sr, bb, ba, gm, td) in enumerate(raw_steps):
             gravity_record = None
+            spawns = ()
             if td is not None:
-                gr_base, empty_positions = td
+                gr_base, empty_positions, spawns = td
                 next_filled = raw_steps[i + 1][2]
                 refill_entries = tuple(
                     (pos.reel, pos.row, next_filled.get(pos).name)
@@ -206,7 +208,9 @@ class CascadeInstanceGenerator:
                     refill_entries=refill_entries,
                 )
             cascade_step_records.append(self._build_step_record(
-                sr, bb, ba, gm, gravity_record=gravity_record,
+                sr, bb, ba, gm,
+                gravity_record=gravity_record,
+                transition_spawns=spawns,
             ))
 
         # FINAL VALIDATION: check full instance against archetype constraints
@@ -241,6 +245,7 @@ class CascadeInstanceGenerator:
         board_after: Board,
         grid_mults: GridMultiplierGrid,
         gravity_record: GravityRecord | None = None,
+        transition_spawns: tuple = (),
     ) -> CascadeStepRecord:
         """Convert a StepResult + board snapshots into a CascadeStepRecord.
 
@@ -273,6 +278,12 @@ class CascadeInstanceGenerator:
             grid_multipliers_snapshot=self._snapshot_grid_mults(grid_mults),
             booster_spawn_types=tuple(
                 s.booster_type for s in step_result.spawns
+            ),
+            # Actual positions from TransitionResult (post-collision-resolution),
+            # not StepResult centroids — events must reflect real board state.
+            booster_spawn_positions=tuple(
+                (s.booster_type, s.position.reel, s.position.row)
+                for s in transition_spawns
             ),
             gravity_record=gravity_record,
         )

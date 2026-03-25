@@ -337,20 +337,25 @@ class EventStreamGenerator:
 
         Groups spawn types and emits one event per booster type that spawned.
         Uses SPAWN_EVENT_TYPE dict dispatch to map symbol name → event type.
+        Positions come from TransitionResult.spawns (post-collision-resolution).
         """
+        from collections import defaultdict
+
         events: list[dict] = []
+
+        # Build type → list[position_dict] index from resolved spawn data.
+        # Multiple spawns of the same type (e.g. two wilds) group naturally.
+        positions_by_type: dict[str, list[dict]] = defaultdict(list)
+        for btype, reel, row in step.booster_spawn_positions:
+            positions_by_type[btype].append({"reel": reel, "row": row})
+
         for spawn_type in step.booster_spawn_types:
             event_type = SPAWN_EVENT_TYPE.get(spawn_type)
             if event_type is None:
                 continue
 
-            # Find the cluster that spawned this booster by matching spawn thresholds
             spawn_clusters: list[dict] = []
             for cluster in step.clusters:
-                candidate = self._paytable._lookup.get(  # noqa: SLF001
-                    (cluster.size, cluster.symbol.name),
-                )
-                # Build minimal cluster info for the spawn event
                 centroid = self._compute_centroid(cluster.positions)
                 spawn_clusters.append({
                     "symbol": cluster.symbol.name,
@@ -361,7 +366,7 @@ class EventStreamGenerator:
             event: dict = {
                 "index": self._next_index(),
                 "type": event_type,
-                "positions": [],
+                "positions": positions_by_type.get(spawn_type, []),
                 "clusters": spawn_clusters,
             }
             events.append(event)

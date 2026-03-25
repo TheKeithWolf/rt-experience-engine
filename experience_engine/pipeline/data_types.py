@@ -83,6 +83,10 @@ class CascadeStepRecord:
     grid_multipliers_snapshot: tuple[int, ...]
     # Booster types spawned at this step (e.g., ("R",) or ("R", "B"))
     booster_spawn_types: tuple[str, ...] = ()
+    # Resolved spawn positions — (booster_type, reel, row) per spawn.
+    # Populated from TransitionResult.spawns (post-collision-resolution).
+    # Parallel to booster_spawn_types; carries the position data event_stream needs.
+    booster_spawn_positions: tuple[tuple[str, int, int], ...] = ()
     # Booster fires that occurred during this step's booster phase
     booster_fire_records: tuple[BoosterFireRecord, ...] = ()
     # Gravity settle that preceded this step — None for step 0 (initial board)

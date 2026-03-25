@@ -22,9 +22,11 @@ from ..output.event_types import (
     REVEAL,
     SET_TOTAL_WIN,
     SET_WIN,
+    SPAWN_EVENT_TYPE,
     UPDATE_GRID,
     UPDATE_TUMBLE_WIN,
     WINCAP,
+    WILD_SPAWN,
     WIN_INFO,
     compute_anticipation,
 )
@@ -1000,3 +1002,99 @@ class TestTracer:
         assert "GRAVITY SETTLE" in output
         # Must contain final win
         assert "FINAL WIN" in output
+
+
+# ---------------------------------------------------------------------------
+# Spawn position threading — positions populated from CascadeStepRecord
+# ---------------------------------------------------------------------------
+
+
+class TestSpawnPositions:
+    """Verify _make_spawn_events reads booster_spawn_positions from the step record."""
+
+    def test_single_spawn_position(self, default_config: MasterConfig) -> None:
+        """Single wild spawn should emit positions with resolved reel/row."""
+        board = _make_board(default_config, Symbol.L2)
+        cluster_positions = frozenset({
+            Position(0, 0), Position(0, 1), Position(0, 2),
+            Position(0, 3), Position(0, 4), Position(0, 5),
+            Position(0, 6), Position(1, 0), Position(1, 1),
+        })
+        for pos in cluster_positions:
+            board.set(pos, Symbol.H1)
+
+        cluster = ClusterAssignment(
+            symbol=Symbol.H1, positions=cluster_positions,
+            size=9, wild_positions=frozenset(),
+        )
+
+        paytable = _make_paytable(default_config)
+        payout = paytable.get_payout(9, Symbol.H1)
+        total_cells = default_config.board.num_reels * default_config.board.num_rows
+        grid_snap = tuple(
+            default_config.grid_multiplier.initial_value
+            for _ in range(total_cells)
+        )
+
+        step = CascadeStepRecord(
+            step_index=0,
+            board_before=board.copy(),
+            board_after=board.copy(),
+            clusters=(cluster,),
+            step_payout=payout,
+            grid_multipliers_snapshot=grid_snap,
+            booster_spawn_types=("W",),
+            booster_spawn_positions=(("W", 5, 2),),
+        )
+
+        gen = EventStreamGenerator(default_config, paytable)
+        events = gen._make_spawn_events(step)  # noqa: SLF001
+
+        assert len(events) == 1
+        assert events[0]["type"] == WILD_SPAWN
+        assert events[0]["positions"] == [{"reel": 5, "row": 2}]
+
+    def test_multi_spawn_positions(self, default_config: MasterConfig) -> None:
+        """Two wilds should group both positions under each wildSpawn event."""
+        board = _make_board(default_config, Symbol.L2)
+        cluster_positions = frozenset({
+            Position(0, 0), Position(0, 1), Position(0, 2),
+            Position(0, 3), Position(0, 4), Position(0, 5),
+            Position(0, 6), Position(1, 0), Position(1, 1),
+        })
+        for pos in cluster_positions:
+            board.set(pos, Symbol.H1)
+
+        cluster = ClusterAssignment(
+            symbol=Symbol.H1, positions=cluster_positions,
+            size=9, wild_positions=frozenset(),
+        )
+
+        paytable = _make_paytable(default_config)
+        payout = paytable.get_payout(9, Symbol.H1)
+        total_cells = default_config.board.num_reels * default_config.board.num_rows
+        grid_snap = tuple(
+            default_config.grid_multiplier.initial_value
+            for _ in range(total_cells)
+        )
+
+        step = CascadeStepRecord(
+            step_index=0,
+            board_before=board.copy(),
+            board_after=board.copy(),
+            clusters=(cluster,),
+            step_payout=payout,
+            grid_multipliers_snapshot=grid_snap,
+            booster_spawn_types=("W", "W"),
+            booster_spawn_positions=(("W", 3, 1), ("W", 5, 2)),
+        )
+
+        gen = EventStreamGenerator(default_config, paytable)
+        events = gen._make_spawn_events(step)  # noqa: SLF001
+
+        # Two spawn type entries → two events; positions_by_type groups all W
+        # positions together, so each event carries both positions.
+        assert len(events) == 2
+        for e in events:
+            assert e["type"] == WILD_SPAWN
+            assert len(e["positions"]) == 2
