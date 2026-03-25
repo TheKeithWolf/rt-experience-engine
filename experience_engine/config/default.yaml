@@ -124,13 +124,16 @@ solvers:
   csp_max_solve_time_ms: 5000
   asp_max_models: 10
   asp_rand_freq: 0.5
-  max_retries_per_instance: 100
+  max_retries_per_instance: 150
   max_construction_retries: 100 
   # Retry generation when validation fails (e.g., terminal board max_component, payout overflow)
   max_validation_retries: 250
   # BoardSymbolNonAdjacency applied for cascade steps 0 through this index —
   # deep steps (3+) have boards too dense for strict non-adjacency enforcement
   board_adjacency_max_step: 2
+  # BFS seed retry limit — when frontier exhaustion occurs on fragmented
+  # available-sets, retry with a different seed before failing the attempt
+  max_seed_retries: 50
 
 diagnostics:
   targets:

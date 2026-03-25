@@ -88,6 +88,7 @@ def build_default_registry(
     cluster_builder = ClusterBuilder(
         spawn_evaluator, payout_evaluator, config.board, config.symbols,
         boundary_analyzer, centipayout_multiplier=config.centipayout.multiplier,
+        max_seed_retries=config.solvers.max_seed_retries,
     )
     seed_planner = SeedPlanner(forward_sim, config.board, config.symbols)
     near_miss_planner = NearMissPlanner(config, cluster_builder, rng)

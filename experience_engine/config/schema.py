@@ -288,6 +288,9 @@ class SolverConfig:
     max_validation_retries: int = 1
     # BoardSymbolNonAdjacency enforced for cascade steps 0 through this index
     board_adjacency_max_step: int = 2
+    # BFS seed retry limit — when frontier exhaustion occurs on fragmented
+    # available-sets, retry with a different seed before failing the attempt
+    max_seed_retries: int = 5
 
     def __post_init__(self) -> None:
         if self.wfc_max_backtracks < 0:
@@ -300,6 +303,8 @@ class SolverConfig:
             raise ConfigValidationError("solvers.csp_max_solve_time_ms", "must be >= 1")
         if not (0.0 <= self.asp_rand_freq <= 1.0):
             raise ConfigValidationError("solvers.asp_rand_freq", "must be in [0.0, 1.0]")
+        if self.max_seed_retries < 1:
+            raise ConfigValidationError("solvers.max_seed_retries", "must be >= 1")
 
 
 # ---------------------------------------------------------------------------

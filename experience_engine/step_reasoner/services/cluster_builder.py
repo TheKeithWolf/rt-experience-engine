@@ -68,7 +68,7 @@ class ClusterBuilder:
 
     __slots__ = (
         "_spawn_eval", "_payout_eval", "_board_config", "_symbol_config",
-        "_boundary_analyzer", "_centipayout_multiplier",
+        "_boundary_analyzer", "_centipayout_multiplier", "_max_seed_retries",
     )
 
     def __init__(
@@ -79,6 +79,7 @@ class ClusterBuilder:
         symbol_config: SymbolConfig,
         boundary_analyzer: BoundaryAnalyzer | None = None,
         centipayout_multiplier: int = 100,
+        max_seed_retries: int = 5,
     ) -> None:
         self._spawn_eval = spawn_evaluator
         self._payout_eval = payout_estimator
@@ -87,6 +88,9 @@ class ClusterBuilder:
         self._boundary_analyzer = boundary_analyzer
         # Converts centipayout → bet multiplier for payout-aware symbol scoring
         self._centipayout_multiplier = centipayout_multiplier
+        # BFS seed retry limit — retries with different seeds when frontier
+        # exhaustion occurs on fragmented available-sets (AVOID merge policy)
+        self._max_seed_retries = max_seed_retries
 
     # -- Public convenience -------------------------------------------------
 
@@ -342,9 +346,12 @@ class ClusterBuilder:
         risky_available = available & risky_cells
 
         if len(safe_cells) >= size:
-            # Enough safe cells — grow from safe only
+            # Enough safe cells — grow from safe only. Pre-filter to a connected
+            # component so BFS doesn't start in a too-small fragment (the AVOID
+            # partition can create disconnected safe-cell islands)
+            filtered = self._filter_to_viable_component(safe_cells, size, rng)
             positions = self._bfs_grow(
-                safe_cells, size, variance, rng, centroid_target, must_be_adjacent_to,
+                filtered, size, variance, rng, centroid_target, must_be_adjacent_to,
             )
             return ClusterPositionResult(
                 planned_positions=positions,
@@ -353,11 +360,17 @@ class ClusterBuilder:
                 merge_occurred=False,
             )
 
-        # Not enough safe cells — include risky, seed from safest position
+        # Not enough safe cells — include risky, seed from safest position.
+        # Pre-filter combined set to a viable connected component
         all_available = safe_cells | risky_available
-        seed = self._safest_seed(safe_cells, boundary, symbol, rng) if safe_cells else None
+        filtered = self._filter_to_viable_component(all_available, size, rng)
+        safe_in_component = safe_cells & filtered
+        seed = (
+            self._safest_seed(safe_in_component, boundary, symbol, rng)
+            if safe_in_component else None
+        )
         positions = self._bfs_grow(
-            all_available, size, variance, rng, centroid_target, must_be_adjacent_to,
+            filtered, size, variance, rng, centroid_target, must_be_adjacent_to,
             forced_seed=seed,
         )
 
@@ -556,10 +569,41 @@ class ClusterBuilder:
         must_be_adjacent_to: frozenset[Position] | None = None,
         forced_seed: Position | None = None,
     ) -> frozenset[Position]:
-        """BFS growth from a seed, weighted by spatial_bias.
+        """BFS growth with seed retry — retries with different seeds on frontier exhaustion.
+
+        When the available-set is fragmented (e.g., AVOID merge policy splits
+        safe cells into disconnected islands), the first seed may land in a
+        too-small fragment. Retrying with a different seed finds the viable one.
+        """
+        for attempt in range(self._max_seed_retries):
+            result = self._bfs_grow_once(
+                available, size, variance, rng,
+                centroid_target, must_be_adjacent_to,
+                # Only honour forced_seed on the first attempt — subsequent
+                # retries must pick a fresh seed to escape the bad fragment
+                forced_seed if attempt == 0 else None,
+            )
+            if result is not None:
+                return result
+        raise ValueError(
+            f"Frontier exhausted after {self._max_seed_retries} seed retries. "
+            f"Board lacks enough connected space ({len(available)} available, need {size})."
+        )
+
+    def _bfs_grow_once(
+        self,
+        available: set[Position],
+        size: int,
+        variance: VarianceHints,
+        rng: random.Random,
+        centroid_target: Position | None = None,
+        must_be_adjacent_to: frozenset[Position] | None = None,
+        forced_seed: Position | None = None,
+    ) -> frozenset[Position] | None:
+        """Single BFS growth attempt. Returns None on frontier exhaustion.
 
         Core algorithm shared by all merge-policy handlers and the
-        backward-compatible no-boundary path.
+        backward-compatible no-boundary path. Weighted by spatial_bias.
         """
         if forced_seed is not None and forced_seed in available:
             seed = forced_seed
@@ -574,10 +618,7 @@ class ClusterBuilder:
 
         while len(result) < size:
             if not frontier:
-                raise ValueError(
-                    f"Frontier exhausted at {len(result)}/{size} positions. "
-                    f"Board lacks enough connected space for this cluster."
-                )
+                return None
             frontier_list = list(frontier)
             weights = [variance.spatial_bias.get(p, 1.0) for p in frontier_list]
             chosen = rng.choices(frontier_list, weights=weights, k=1)[0]
@@ -586,6 +627,61 @@ class ClusterBuilder:
             self._expand_frontier(chosen, result, available, frontier)
 
         return frozenset(result)
+
+    # -- Connected-component filtering --------------------------------------
+
+    def _find_position_components(self, positions: set[Position]) -> list[set[Position]]:
+        """Connected components in a position set via orthogonal adjacency.
+
+        Position-only BFS — no Board required. Uses the same orthogonal_neighbors
+        definition as cluster detection so connectivity semantics stay consistent.
+        """
+        visited: set[Position] = set()
+        components: list[set[Position]] = []
+        for pos in positions:
+            if pos in visited:
+                continue
+            component: set[Position] = set()
+            queue = deque([pos])
+            visited.add(pos)
+            while queue:
+                current = queue.popleft()
+                component.add(current)
+                for neighbor in orthogonal_neighbors(current, self._board_config):
+                    if neighbor in positions and neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+            components.append(component)
+        return components
+
+    def _filter_to_viable_component(
+        self,
+        available: set[Position],
+        min_size: int,
+        rng: random.Random,
+    ) -> set[Position]:
+        """Select a connected component >= min_size from a potentially fragmented set.
+
+        When the AVOID merge policy splits safe cells into disconnected islands,
+        BFS can start in a too-small fragment and exhaust its frontier. This
+        pre-filter picks a viable fragment so BFS always has room to grow.
+
+        Weighted-random selection by size when multiple viable components exist —
+        larger fragments are preferred (more maneuvering room) but smaller viable
+        ones aren't excluded.
+        """
+        components = self._find_position_components(available)
+        if len(components) <= 1:
+            return available
+        viable = [c for c in components if len(c) >= min_size]
+        if not viable:
+            # No fragment large enough — return largest, let seed retry handle it
+            return max(components, key=len)
+        if len(viable) == 1:
+            return viable[0]
+        # Prefer larger fragments but allow smaller viable ones
+        weights = [len(c) for c in viable]
+        return rng.choices(viable, weights=weights, k=1)[0]
 
     # -- Private helpers ---------------------------------------------------
 

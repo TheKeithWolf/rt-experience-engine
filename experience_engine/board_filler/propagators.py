@@ -445,12 +445,19 @@ class ClusterBoundaryPropagator:
 class NearMissAwareDeadPropagator:
     """Dead-board propagator that protects near-miss group isolation.
 
-    Combines MaxComponentPropagator behavior (caps component size) with an
-    isolation zone around near-miss groups — WFC cannot place a symbol
-    adjacent to a near-miss group if it matches that group's symbol.
+    Combines MaxComponentPropagator behavior (caps component size) with a
+    two-layer isolation zone around near-miss groups:
+
+    1-hop border: WFC cannot place the NM symbol directly adjacent to the group.
+    2-hop border: WFC cannot place the NM symbol at a 2-hop position if doing so
+    would bridge through an intermediate 1-hop cell already holding the NM symbol.
+
+    The 2-hop layer prevents the absorption scenario where WFC fills a cell two
+    hops out, then later fills the intermediate cell with the same symbol,
+    merging the near-miss group into a cluster-sized component.
 
     The component cap uses the shared _propagate_cluster_constraint helper (DRY).
-    The isolation map is precomputed at init for O(1) lookup during propagation.
+    All isolation maps are precomputed at init for O(1) lookup during propagation.
     """
 
     def __init__(
@@ -461,15 +468,35 @@ class NearMissAwareDeadPropagator:
     ) -> None:
         # Component cap threshold — components of max_component+1 or more are blocked
         self._threshold = max_component + 1
-        # Precompute isolation map: for each position bordering a NM group,
-        # track which symbols are forbidden (the group's symbol)
+        # 1-hop border: positions directly adjacent to any NM group → forbidden symbols
         self._forbidden: dict[Position, set[Symbol]] = {}
+        # 2-hop border: positions two hops from any NM group → symbols that could bridge
+        self._extended_border: dict[Position, set[Symbol]] = {}
+        # 1-hop border positions per symbol — for bridge detection in validate_placement
+        self._border_positions: dict[Symbol, frozenset[Position]] = {}
+
         for group in protected_groups:
             border = compute_border(group.positions, board_config)
+
+            # 1-hop isolation map
             for pos in border:
                 if pos not in self._forbidden:
                     self._forbidden[pos] = set()
                 self._forbidden[pos].add(group.symbol)
+
+            # Track border positions per symbol for bridge detection
+            existing = self._border_positions.get(group.symbol, frozenset())
+            self._border_positions[group.symbol] = existing | border
+
+            # 2-hop border: cells adjacent to the 1-hop border but not in the
+            # group or the 1-hop border itself — these are where bridge formation
+            # can start if the intermediate 1-hop cell holds the NM symbol
+            group_and_border = group.positions | border
+            outer_border = compute_border(group_and_border, board_config) - group_and_border
+            for pos in outer_border:
+                if pos not in self._extended_border:
+                    self._extended_border[pos] = set()
+                self._extended_border[pos].add(group.symbol)
 
     def propagate(
         self,
@@ -478,13 +505,13 @@ class NearMissAwareDeadPropagator:
         position: Position,
         board_config: BoardConfig,
     ) -> set[Position]:
-        """Enforce component cap and near-miss isolation around resolved position."""
+        """Enforce component cap, 1-hop isolation, and 2-hop bridge prevention."""
         # Component cap — reuse shared logic (DRY with MaxComponentPropagator)
         changed = _propagate_cluster_constraint(
             self._threshold, board, cells, position, board_config,
         )
 
-        # Isolation — strip forbidden symbols from cells in the NM border zone
+        # 1-hop isolation — strip forbidden symbols from cells in the NM border zone
         for neighbor in orthogonal_neighbors(position, board_config):
             if neighbor not in cells or cells[neighbor].collapsed:
                 continue
@@ -495,6 +522,20 @@ class NearMissAwareDeadPropagator:
                 if cells[neighbor].remove(sym):
                     changed.add(neighbor)
 
+        # 2-hop bridge prevention: if the just-collapsed cell is at the 1-hop
+        # border and holds an NM symbol, prune that symbol from its uncollapsed
+        # neighbors in the 2-hop ring to prevent bridge formation through this cell
+        placed_sym = board.get(position)
+        if placed_sym is not None and position in self._forbidden:
+            if placed_sym in self._forbidden[position]:
+                for neighbor in orthogonal_neighbors(position, board_config):
+                    if neighbor not in cells or cells[neighbor].collapsed:
+                        continue
+                    extended = self._extended_border.get(neighbor)
+                    if extended and placed_sym in extended:
+                        if cells[neighbor].remove(placed_sym):
+                            changed.add(neighbor)
+
         return changed
 
     def validate_placement(
@@ -503,17 +544,28 @@ class NearMissAwareDeadPropagator:
         position: Position,
         board_config: BoardConfig,
     ) -> bool:
-        """Check component cap and isolation constraint for the placed symbol."""
+        """Check component cap, 1-hop isolation, and 2-hop bridge constraint."""
         if not _validate_cluster_placement(
             self._threshold, board, position, board_config,
         ):
             return False
-        # Check isolation — placed symbol must not be forbidden at this position
+        # 1-hop isolation — placed symbol must not be forbidden at this position
         forbidden = self._forbidden.get(position)
         if forbidden:
             sym = board.get(position)
             if sym in forbidden:
                 return False
+        # 2-hop bridge detection — reject if placing the NM symbol here would
+        # connect through an intermediate 1-hop border cell that already holds
+        # the same symbol, creating a path into the protected NM group
+        extended = self._extended_border.get(position)
+        if extended:
+            sym = board.get(position)
+            if sym is not None and sym in extended:
+                border_for_sym = self._border_positions.get(sym, frozenset())
+                for neighbor in orthogonal_neighbors(position, board_config):
+                    if neighbor in border_for_sym and board.get(neighbor) is sym:
+                        return False
         return True
 
 
