@@ -139,7 +139,10 @@ class StepAssessor:
         return StepAssessment(
             steps_remaining=steps_remaining,
             is_first_step=is_first_step,
-            must_terminate_now=steps_remaining.max_val <= 0,
+            must_terminate_now=(
+                steps_remaining.max_val <= 0
+                or (steps_remaining.min_val <= 0 and progress.is_satisfied())
+            ),
             should_terminate_soon=steps_remaining.max_val <= 1,
             needs_booster_spawn=needs_spawn,
             needs_booster_fire=needs_fire,

@@ -87,11 +87,16 @@ class StepTransitionSimulator:
             result_board,
         )
 
+        # Exclude positions where boosters were just placed — settle() re-marks
+        # all "exploded" positions as None, which would destroy spawned symbols
+        booster_spawn_positions = {sr.position for sr in spawn_records}
+        gravity_exploded = frozenset(all_cluster_positions - booster_spawn_positions)
+
         # 4. Run gravity settle
         settle_result = settle(
             self._gravity_dag,
             result_board,
-            frozenset(all_cluster_positions),
+            gravity_exploded,
             self._config.gravity,
         )
         result_board = settle_result.board
