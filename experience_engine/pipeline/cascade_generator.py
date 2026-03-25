@@ -29,6 +29,7 @@ from ..step_reasoner.reasoner import StepReasoner
 from ..step_reasoner.results import StepResult
 from ..variance.hints import VarianceHints
 from .data_types import (
+    BoosterFireRecord,
     CascadeStepRecord,
     GravityRecord,
     GeneratedInstance,
@@ -39,6 +40,7 @@ from .step_validator import StepValidator, StepValidationFailed
 from .simulator import StepTransitionSimulator
 
 if TYPE_CHECKING:
+    from ..boosters.phase_executor import BoosterPhaseExecutor
     from ..primitives.cluster_detection import Cluster
 
 from ..spatial_solver.data_types import BoosterPlacement, SpatialStep
@@ -139,6 +141,12 @@ class CascadeInstanceGenerator:
         booster_tracker = BoosterTracker(self._config.board)
         progress = ProgressTracker(sig, self._config.centipayout.multiplier)
 
+        # Build a BoosterPhaseExecutor if the archetype requires booster fires
+        phase_executor = (
+            self._make_phase_executor(booster_tracker)
+            if sig.required_booster_fires else None
+        )
+
         step_results: list[StepResult] = []
         cascade_step_records: list[CascadeStepRecord] = []
         # +1 because the terminal step itself counts as a step
@@ -148,7 +156,8 @@ class CascadeInstanceGenerator:
         # Gravity refill symbols come from the NEXT step's WFC fill, so
         # record building is deferred to phase 2 where all data is available.
         # Each entry: (step_result, board_before, filled, grid_mults, transition_data)
-        # transition_data: (gravity_record, empty_positions) or None for terminal
+        # transition_data: (gravity_record, empty_positions, spawns, fire_recs, booster_grav)
+        # or None for terminal steps
         raw_steps: list[tuple] = []
 
         for _ in range(max_steps):
@@ -173,14 +182,31 @@ class CascadeInstanceGenerator:
 
             transition_data = None
             if not intent.is_terminal:
-                transition_result = self._simulator.transition(
-                    filled, step_result, booster_tracker, grid_mults,
-                )
+                # Route to booster-aware transition when the archetype fires boosters
+                if phase_executor is not None:
+                    transition_result = self._simulator.transition_with_boosters(
+                        filled, step_result, booster_tracker, grid_mults,
+                        phase_executor,
+                    )
+                else:
+                    transition_result = self._simulator.transition(
+                        filled, step_result, booster_tracker, grid_mults,
+                    )
+
                 transition_data = (
                     transition_result.gravity_record,
                     transition_result.board.empty_positions(),
                     transition_result.spawns,
+                    transition_result.booster_fire_records,
+                    transition_result.booster_gravity_record,
                 )
+
+                # Track booster fires in progress so the reasoner knows what's happened
+                for fire_rec in transition_result.booster_fire_records:
+                    progress.boosters_fired[fire_rec.booster_type] = (
+                        progress.boosters_fired.get(fire_rec.booster_type, 0) + 1
+                    )
+
                 # Board is truth — sync wild positions after gravity + consumption
                 progress.sync_active_wilds(
                     transition_result.board, self._config.board,
@@ -199,8 +225,10 @@ class CascadeInstanceGenerator:
         for i, (sr, bb, ba, gm, td) in enumerate(raw_steps):
             gravity_record = None
             spawns = ()
+            fire_recs: tuple[BoosterFireRecord, ...] = ()
+            booster_grav: GravityRecord | None = None
             if td is not None:
-                gr_base, empty_positions, spawns = td
+                gr_base, empty_positions, spawns, fire_recs, booster_grav = td
                 next_filled = raw_steps[i + 1][2]
                 refill_entries = tuple(
                     (pos.reel, pos.row, next_filled.get(pos).name)
@@ -215,6 +243,8 @@ class CascadeInstanceGenerator:
                 sr, bb, ba, gm,
                 gravity_record=gravity_record,
                 transition_spawns=spawns,
+                booster_fire_records=fire_recs,
+                booster_gravity_record=booster_grav,
             ))
 
         # FINAL VALIDATION: check full instance against archetype constraints
@@ -250,13 +280,15 @@ class CascadeInstanceGenerator:
         grid_mults: GridMultiplierGrid,
         gravity_record: GravityRecord | None = None,
         transition_spawns: tuple = (),
+        booster_fire_records: tuple[BoosterFireRecord, ...] = (),
+        booster_gravity_record: GravityRecord | None = None,
     ) -> CascadeStepRecord:
         """Convert a StepResult + board snapshots into a CascadeStepRecord.
 
         gravity_record is the settle from exploding this step's clusters —
         None for terminal steps (dead board, no clusters to explode).
-        InstanceValidator uses board_after from step 0 for cluster detection,
-        and len(cascade_steps) for cascade depth calculation.
+        booster_fire_records/booster_gravity_record carry the booster phase
+        results when boosters fired at this step.
         """
         from ..spatial_solver.data_types import ClusterAssignment
 
@@ -289,8 +321,35 @@ class CascadeInstanceGenerator:
                 (s.booster_type, s.position.reel, s.position.row)
                 for s in transition_spawns
             ),
+            booster_fire_records=booster_fire_records,
             gravity_record=gravity_record,
+            booster_gravity_record=booster_gravity_record,
         )
+
+    # ------------------------------------------------------------------
+    # Booster phase executor factory
+    # ------------------------------------------------------------------
+
+    def _make_phase_executor(
+        self, tracker: BoosterTracker,
+    ) -> BoosterPhaseExecutor:
+        """Construct a BoosterPhaseExecutor with real fire handlers for one attempt.
+
+        Built per-attempt because the executor holds a reference to the tracker,
+        which is per-attempt state. BoosterRules and handler functions are shared.
+        """
+        from ..boosters.phase_executor import BoosterPhaseExecutor
+        from ..boosters.fire_handlers import (
+            fire_rocket, fire_bomb, fire_lightball, fire_superlightball,
+        )
+
+        rules = self._simulator._booster_rules
+        executor = BoosterPhaseExecutor(tracker, rules, rules.chain_initiators)
+        executor.register_fire_handler(Symbol.R, fire_rocket)
+        executor.register_fire_handler(Symbol.B, fire_bomb)
+        executor.register_fire_handler(Symbol.LB, fire_lightball)
+        executor.register_fire_handler(Symbol.SLB, fire_superlightball)
+        return executor
 
     # ------------------------------------------------------------------
     # Utility methods (kept for backward compatibility and tests)

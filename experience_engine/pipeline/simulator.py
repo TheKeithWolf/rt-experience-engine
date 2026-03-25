@@ -16,6 +16,8 @@ computation, collision resolution, and orientation rules.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ..boosters.tracker import BoosterTracker
 from ..config.schema import MasterConfig
 from ..primitives.board import Board, Position
@@ -25,7 +27,16 @@ from ..primitives.grid_multipliers import GridMultiplierGrid
 from ..primitives.symbols import Symbol, is_wild, symbol_from_name
 from ..step_reasoner.progress import ClusterRecord
 from ..step_reasoner.results import SpawnRecord, StepResult
-from .data_types import GravityRecord, TransitionResult, build_gravity_record
+from .data_types import (
+    BoosterFireRecord,
+    GravityRecord,
+    TransitionResult,
+    build_gravity_record,
+    fire_result_to_record,
+)
+
+if TYPE_CHECKING:
+    from ..boosters.phase_executor import BoosterPhaseExecutor
 
 
 class StepTransitionSimulator:
@@ -114,6 +125,113 @@ class StepTransitionSimulator:
             board=result_board,
             spawns=tuple(spawn_records),
             gravity_record=gravity_record,
+        )
+
+    def transition_with_boosters(
+        self,
+        board: Board,
+        step_result: StepResult,
+        booster_tracker: BoosterTracker,
+        grid_mults: GridMultiplierGrid,
+        phase_executor: BoosterPhaseExecutor,
+    ) -> TransitionResult:
+        """Execute transition with full booster lifecycle: arm → fire → clear → gravity.
+
+        Produces two gravity settles for the frontend animation pipeline:
+        1. Cluster explosion gravity (same as transition())
+        2. Post-booster-fire gravity (cells cleared by rockets/bombs/lightballs)
+
+        The arm step uses pre-gravity cluster positions — a dormant booster adjacent
+        to the exploding cluster gets armed, then fires after the first gravity settle.
+        """
+        result_board = board.copy()
+
+        # Collect all cluster positions for explosion
+        all_cluster_positions: set[Position] = set()
+        for cluster in step_result.clusters:
+            all_cluster_positions.update(cluster.positions)
+
+        # 1. Increment grid multipliers at cluster positions
+        for pos in all_cluster_positions:
+            grid_mults.increment(pos)
+
+        # 2. Explode cluster positions
+        for pos in all_cluster_positions:
+            result_board.set(pos, None)
+
+        # 3. Spawn boosters into emptied cells
+        spawn_records = self._spawn_boosters(
+            step_result.clusters, booster_tracker, step_result.step_index,
+            result_board,
+        )
+
+        # Exclude booster spawn positions from gravity — they'd be destroyed
+        booster_spawn_positions = {sr.position for sr in spawn_records}
+        gravity_exploded = frozenset(all_cluster_positions - booster_spawn_positions)
+
+        # 4. First gravity settle (cluster explosion)
+        settle_result = settle(
+            self._gravity_dag, result_board, gravity_exploded, self._config.gravity,
+        )
+        result_board = settle_result.board
+
+        # 5. Update booster positions after cluster-gravity
+        position_map = _build_position_map(settle_result.move_steps)
+        booster_tracker.update_positions_after_gravity(position_map)
+
+        # Build cluster gravity record
+        gravity_record = build_gravity_record(all_cluster_positions, settle_result)
+
+        # 6. Arm dormant boosters adjacent to the exploding cluster positions
+        booster_tracker.arm_adjacent(frozenset(all_cluster_positions))
+
+        # 7. Execute booster fire phase (fires all armed boosters with chain propagation)
+        fire_results = phase_executor.execute_booster_phase(result_board)
+
+        booster_fire_records: tuple[BoosterFireRecord, ...] = ()
+        booster_gravity_record: GravityRecord | None = None
+
+        if fire_results:
+            # 8. Clear fire-affected positions and fired booster positions on the board
+            all_fire_affected: set[Position] = set()
+            for fr in fire_results:
+                all_fire_affected.update(fr.affected_positions)
+                # Remove the fired booster itself from the board
+                result_board.set(fr.booster.position, None)
+
+            for pos in all_fire_affected:
+                result_board.set(pos, None)
+
+            # Increment grid multipliers at fire-cleared positions
+            for pos in all_fire_affected:
+                grid_mults.increment(pos)
+
+            # 9. Second gravity settle (booster fire clearings)
+            booster_gravity_exploded = frozenset(all_fire_affected)
+            booster_settle = settle(
+                self._gravity_dag, result_board, booster_gravity_exploded,
+                self._config.gravity,
+            )
+            result_board = booster_settle.board
+
+            # 10. Update booster positions after booster-gravity
+            booster_pos_map = _build_position_map(booster_settle.move_steps)
+            booster_tracker.update_positions_after_gravity(booster_pos_map)
+
+            # Build booster gravity record and convert fire results
+            booster_gravity_record = build_gravity_record(
+                all_fire_affected, booster_settle,
+            )
+            booster_fire_records = tuple(
+                fire_result_to_record(fr) for fr in fire_results
+            )
+
+        return TransitionResult(
+            board=result_board,
+            spawns=tuple(spawn_records),
+            gravity_record=gravity_record,
+            booster_fire_records=booster_fire_records,
+            booster_gravity_record=booster_gravity_record,
         )
 
     def _spawn_boosters(

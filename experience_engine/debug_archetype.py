@@ -179,6 +179,18 @@ def render_empty_cells(board: Board) -> str:
     return f"  Empty cells ({len(empty)}): " + " ".join(parts)
 
 
+def render_booster_tracker_state(tracker: BoosterTracker) -> str:
+    """Render all tracked boosters with type, position, orientation, and state."""
+    all_boosters = tracker.all_boosters()
+    if not all_boosters:
+        return "  Booster tracker: empty"
+    lines = [f"  Booster tracker ({len(all_boosters)} tracked):"]
+    for b in all_boosters:
+        orient = f" orientation={b.orientation}" if b.orientation else ""
+        lines.append(f"    {b.booster_type.name} at ({b.position.reel},{b.position.row}){orient} state={b.state.name}")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Diagnostic generator -- replicates _attempt_generation with verbose logging
 # ---------------------------------------------------------------------------
@@ -202,6 +214,12 @@ def diagnostic_attempt(
     booster_tracker = BoosterTracker(config.board)
     progress = ProgressTracker(sig, config.centipayout.multiplier)
 
+    # Build booster phase executor if the archetype fires boosters
+    phase_executor = (
+        gen._make_phase_executor(booster_tracker)
+        if sig.required_booster_fires else None
+    )
+
     step_results: list[StepResult] = []
     # Track board snapshots per step for building CascadeStepRecords
     step_boards: list[tuple[Board, Board]] = []
@@ -214,6 +232,9 @@ def diagnostic_attempt(
     print(f"  Required cascade depth: {sig.required_cascade_depth.min_val}-{sig.required_cascade_depth.max_val}")
     print(f"  Required cluster sizes: {[(r.min_val, r.max_val) for r in sig.required_cluster_sizes]}")
     print(f"  Required cluster symbols: {sig.required_cluster_symbols}")
+    print(f"  Required booster fires: {sig.required_booster_fires}")
+    if sig.cascade_steps:
+        print(f"  Cascade steps: {len(sig.cascade_steps)} step constraints defined")
     print(f"  Payout range: {sig.payout_range.min_val}-{sig.payout_range.max_val}x")
     print(f"  Max steps: {max_steps}")
 
@@ -408,15 +429,49 @@ def diagnostic_attempt(
         # Transition to next step (unless terminal)
         if not intent.is_terminal:
             try:
-                transition_result = gen._simulator.transition(
-                    filled, step_result, booster_tracker, grid_mults,
-                )
+                # Route to booster-aware transition when the archetype fires boosters
+                if phase_executor is not None:
+                    transition_result = gen._simulator.transition_with_boosters(
+                        filled, step_result, booster_tracker, grid_mults,
+                        phase_executor,
+                    )
+                else:
+                    transition_result = gen._simulator.transition(
+                        filled, step_result, booster_tracker, grid_mults,
+                    )
             except Exception as exc:
                 print(f"\n  >> FAIL at transition: {exc}")
                 return False, f"Step {step_idx} transition: {exc}", step_idx
 
             board = transition_result.board
             print(f"\n  Transition: exploded clusters, gravity settled")
+
+            # Show booster spawns from this transition
+            if transition_result.spawns:
+                print(f"\n  Spawns from transition:")
+                for s in transition_result.spawns:
+                    print(f"    {s.booster_type} at ({s.position.reel},{s.position.row})")
+
+            # Show booster tracker state after spawn + gravity
+            print(render_booster_tracker_state(booster_tracker))
+
+            # Show booster fire results if any boosters fired
+            if transition_result.booster_fire_records:
+                print(f"\n  Booster fire phase:")
+                for fr in transition_result.booster_fire_records:
+                    orient = f" orientation={fr.orientation}" if fr.orientation else ""
+                    print(f"    FIRE: {fr.booster_type} at ({fr.position_reel},{fr.position_row}){orient}")
+                    print(f"      Cleared: {fr.affected_count} cells, chains: {fr.chain_target_count}")
+                    if fr.target_symbols:
+                        print(f"      Targets: {fr.target_symbols}")
+                print(render_board(board, label="Board after booster fire + gravity:"))
+
+                # Track booster fires in progress
+                for fire_rec in transition_result.booster_fire_records:
+                    progress.boosters_fired[fire_rec.booster_type] = (
+                        progress.boosters_fired.get(fire_rec.booster_type, 0) + 1
+                    )
+
             print(render_empty_cells(board))
         else:
             print(f"\n  Terminal step -- cascade ends here")

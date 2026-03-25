@@ -135,7 +135,8 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
         **base(),
     ))
 
-    # Wild bridges cluster to 9-10 size, triggering a rocket spawn
+    # Wild bridges cluster to 9-10 size, triggering a rocket spawn that fires
+    # Narrative arc: W spawn → W bridge → R spawn → R arm → R fire → terminal
     registry.register(ArchetypeSignature(
         id="wild_enable_rocket",
         required_cluster_count=Range(1, 2),
@@ -144,14 +145,46 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
         required_scatter_count=Range(0, 1),
         required_near_miss_count=Range(0, 0),
         required_near_miss_symbol_tier=None,
-        required_cascade_depth=Range(2, 4),
-        cascade_steps=None,
+        # Min 3 steps to complete the full arc (spawn W → bridge R → arm+fire R)
+        required_cascade_depth=Range(3, 4),
+        cascade_steps=(
+            # Step 0: initial cluster spawns W at centroid
+            CascadeStepConstraint(
+                cluster_count=Range(1, 1),
+                cluster_sizes=(Range(7, 8),),
+                cluster_symbol_tier=None,
+                must_spawn_booster="W",
+                must_arm_booster=None,
+                must_fire_booster=None,
+                wild_behavior="spawn",
+            ),
+            # Step 1: W bridges two groups into 9-10 cluster → R spawns
+            CascadeStepConstraint(
+                cluster_count=Range(1, 1),
+                cluster_sizes=(Range(9, 10),),
+                cluster_symbol_tier=None,
+                must_spawn_booster="R",
+                must_arm_booster=None,
+                must_fire_booster=None,
+                wild_behavior="bridge",
+            ),
+            # Step 2: new cluster arms R → R fires → clears row/col
+            CascadeStepConstraint(
+                cluster_count=Range(1, 2),
+                cluster_sizes=(Range(5, 6),),
+                cluster_symbol_tier=None,
+                must_spawn_booster=None,
+                must_arm_booster="R",
+                must_fire_booster="R",
+            ),
+        ),
         required_booster_spawns={"W": Range(1, 1), "R": Range(1, 1)},
         symbol_tier_per_step=None,
         terminal_near_misses=None,
         dormant_boosters_on_terminal=None,
         payout_range=RangeFloat(1.0, 30.0),
-        **base(),
+        # Override _wild_base required_booster_fires — rocket must fire in this archetype
+        **{**base(), "required_booster_fires": {"R": Range(1, 1)}},
     ))
 
     # Wild bridges cluster to 11-12 size, triggering a bomb spawn

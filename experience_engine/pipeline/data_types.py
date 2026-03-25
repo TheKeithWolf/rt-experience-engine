@@ -144,14 +144,19 @@ class TransitionResult:
 
     Produced by StepTransitionSimulator.transition() after exploding clusters,
     running gravity, and spawning boosters. The settled board becomes the input
-    for the next cascade step.
+    for the next cascade step. When boosters fire, also carries fire records
+    and a second gravity settle from the booster clearings.
     """
 
     board: Board
     # Boosters spawned from this step's qualifying clusters
     spawns: tuple[SpawnRecord, ...]
-    # Gravity settle record for event stream replay
+    # Gravity settle record for event stream replay (cluster explosion)
     gravity_record: GravityRecord
+    # Booster phase results — empty when no boosters fired this step
+    booster_fire_records: tuple[BoosterFireRecord, ...] = ()
+    # Post-booster gravity settle — None if no boosters fired
+    booster_gravity_record: GravityRecord | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -204,4 +209,30 @@ def compute_refill_entries(
     return tuple(
         (pos.reel, pos.row, rng.choice(standard_symbols))
         for pos in empty_positions
+    )
+
+
+# ---------------------------------------------------------------------------
+# Booster fire result conversion
+# ---------------------------------------------------------------------------
+
+def fire_result_to_record(result: object) -> BoosterFireRecord:
+    """Convert a BoosterFireResult (boosters layer) to a BoosterFireRecord (pipeline layer).
+
+    Takes ``object`` to avoid importing BoosterFireResult at module level
+    (would create a circular dependency: pipeline → boosters → pipeline).
+    The caller is responsible for passing a valid BoosterFireResult instance.
+    """
+    return BoosterFireRecord(
+        booster_type=result.booster.booster_type.name,  # type: ignore[attr-defined]
+        position_reel=result.booster.position.reel,  # type: ignore[attr-defined]
+        position_row=result.booster.position.row,  # type: ignore[attr-defined]
+        orientation=result.booster.orientation,  # type: ignore[attr-defined]
+        affected_count=len(result.affected_positions),  # type: ignore[attr-defined]
+        chain_target_count=len(result.chain_targets),  # type: ignore[attr-defined]
+        target_symbols=result.target_symbols,  # type: ignore[attr-defined]
+        affected_positions_list=tuple(
+            (p.reel, p.row)
+            for p in sorted(result.affected_positions, key=lambda p: (p.reel, p.row))  # type: ignore[attr-defined]
+        ),
     )

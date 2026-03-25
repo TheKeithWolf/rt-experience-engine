@@ -462,3 +462,44 @@ def test_validator_bridge_wild_consumed(
     # The fixed validator should accept: spawned(1) - consumed(1) = expected(0) = actual(0).
     wild_errors = [e for e in metrics.validation_errors if "wild_count" in e]
     assert not wild_errors, f"Unexpected wild_count errors: {wild_errors}"
+
+
+# ---------------------------------------------------------------------------
+# TEST-P7-014: wild_enable_rocket cascade_steps and booster_fires
+# ---------------------------------------------------------------------------
+
+def test_wild_enable_rocket_cascade_steps(full_registry: ArchetypeRegistry) -> None:
+    """wild_enable_rocket has 3 cascade steps and fires 1 rocket."""
+    sig = full_registry.get("wild_enable_rocket")
+
+    # Cascade depth requires min 3 for the full W→R→fire arc
+    assert sig.required_cascade_depth == Range(3, 4)
+
+    # Rocket must fire — overrides _wild_base empty dict
+    assert sig.required_booster_fires == {"R": Range(1, 1)}
+
+    # 3 step constraints defined
+    assert sig.cascade_steps is not None
+    assert len(sig.cascade_steps) == 3
+
+    step0, step1, step2 = sig.cascade_steps
+
+    # Step 0: initial cluster spawns W
+    assert step0.must_spawn_booster == "W"
+    assert step0.wild_behavior == "spawn"
+    assert step0.cluster_sizes == (Range(7, 8),)
+    assert step0.must_arm_booster is None
+    assert step0.must_fire_booster is None
+
+    # Step 1: W bridges → R spawns
+    assert step1.must_spawn_booster == "R"
+    assert step1.wild_behavior == "bridge"
+    assert step1.cluster_sizes == (Range(9, 10),)
+    assert step1.must_arm_booster is None
+    assert step1.must_fire_booster is None
+
+    # Step 2: new cluster arms R → R fires
+    assert step2.must_arm_booster == "R"
+    assert step2.must_fire_booster == "R"
+    assert step2.cluster_sizes == (Range(5, 6),)
+    assert step2.must_spawn_booster is None
