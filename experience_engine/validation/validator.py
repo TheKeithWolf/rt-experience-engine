@@ -227,20 +227,14 @@ class InstanceValidator:
                                 f"{sig.family} boards must not contain wilds or boosters"
                             )
 
-        # 11b. Wild-family validation — wilds
+        # 11b. Wild-family — count wilds on terminal board (validated after 11d
+        # once booster_spawn_counts is available for the spawned−consumed formula)
         wild_count = 0
         if sig.family == "wild":
-            # Wild is spawned during step 0→1 transition — only visible on terminal board
             wild_count = sum(
                 1 for pos in terminal_board.all_positions()
                 if terminal_board.get(pos) is Symbol.W
             )
-            wild_range = sig.required_booster_spawns.get("W")
-            if wild_range and not wild_range.contains(wild_count):
-                errors.append(
-                    f"wild_count={wild_count} outside "
-                    f"[{wild_range.min_val}, {wild_range.max_val}]"
-                )
 
         # 11c. Terminal constraints — shared across wild, rocket, bomb families
         # DRY: terminal NMs and dormant boosters validated identically for all families
@@ -341,6 +335,25 @@ class InstanceValidator:
                         f"rocket_orientation={rocket_orientation_val}, "
                         f"expected {sig.rocket_orientation}"
                     )
+
+        # 11d-post. Wild-family terminal validation — spawned minus consumed
+        # must equal terminal count. Universal formula: idle wilds have
+        # consumed=0, bridge wilds have consumed=1. No archetype branching.
+        if sig.family == "wild":
+            wild_consumed = 0
+            if sig.cascade_steps is not None:
+                wild_consumed = sum(
+                    1 for step_spec in sig.cascade_steps
+                    if step_spec.wild_behavior == "bridge"
+                )
+            wild_spawned = booster_spawn_counts.get("W", 0)
+            expected_terminal = wild_spawned - wild_consumed
+            if wild_count != expected_terminal:
+                errors.append(
+                    f"wild_count={wild_count} on terminal board, "
+                    f"expected {expected_terminal} "
+                    f"(spawned={wild_spawned}, consumed={wild_consumed})"
+                )
 
         # 11e. LB/SLB-specific validation
         lb_target_symbol: str | None = None

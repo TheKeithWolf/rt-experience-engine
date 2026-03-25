@@ -402,3 +402,69 @@ def test_wfc_fill_performance(default_config: MasterConfig) -> None:
 
     avg_ms = (elapsed / num_runs) * 1000
     assert avg_ms < 100, f"Average fill time {avg_ms:.2f}ms exceeds 100ms target"
+
+
+# ---------------------------------------------------------------------------
+# MaxComponentPropagator — wild-aware extension prevention
+# ---------------------------------------------------------------------------
+
+
+def test_max_component_propagator_wild_extension_prevented(
+    default_config: MasterConfig,
+) -> None:
+    """MaxComponentPropagator(4, wilds) prunes symbol that would extend to 4+wild=5."""
+    board = Board.empty(default_config.board)
+    # Fill with alternating to avoid accidental clusters
+    for reel in range(default_config.board.num_reels):
+        for row in range(default_config.board.num_rows):
+            board.set(
+                Position(reel, row),
+                [Symbol.L2, Symbol.L3, Symbol.L4, Symbol.H1][(reel * 3 + row) % 4],
+            )
+
+    # 3 L1 in a line + wild at the end
+    board.set(Position(0, 0), Symbol.L1)
+    board.set(Position(1, 0), Symbol.L1)
+    board.set(Position(2, 0), Symbol.L1)
+    board.set(Position(3, 0), Symbol.W)
+
+    wild_positions = frozenset({Position(3, 0)})
+
+    # Without wild_positions: component = 3, adding one more = 4 <= max_size(4) → allowed
+    prop_no_wild = MaxComponentPropagator(4)
+    assert prop_no_wild.validate_placement(board, Position(2, 0), default_config.board)
+
+    # With wild_positions: component = 3+wild = 4, so max_component = 4 → still valid,
+    # but placing a 4th L1 adjacent would make 4+wild = 5 > 4 → should fail validation.
+    # Set up: place L1 at (4,0) to form 3 L1 + wild + 1 L1 = effective 5
+    board.set(Position(4, 0), Symbol.L1)
+    prop_wild = MaxComponentPropagator(4, wild_positions=wild_positions)
+    # Position (4,0) now creates L1 component of {(0,0),(1,0),(2,0)} + wild{(3,0)} + {(4,0)} = 5
+    assert not prop_wild.validate_placement(
+        board, Position(4, 0), default_config.board
+    ), "Should reject: 4 L1 + 1 wild = effective 5 exceeds max_size=4"
+
+
+def test_max_component_propagator_without_wilds_unchanged(
+    default_config: MasterConfig,
+) -> None:
+    """MaxComponentPropagator(4) without wilds allows component of 4."""
+    board = Board.empty(default_config.board)
+    for reel in range(default_config.board.num_reels):
+        for row in range(default_config.board.num_rows):
+            board.set(
+                Position(reel, row),
+                [Symbol.L2, Symbol.L3, Symbol.L4, Symbol.H1][(reel * 3 + row) % 4],
+            )
+
+    # 4 L1 in a line
+    board.set(Position(0, 0), Symbol.L1)
+    board.set(Position(1, 0), Symbol.L1)
+    board.set(Position(2, 0), Symbol.L1)
+    board.set(Position(3, 0), Symbol.L1)
+
+    prop = MaxComponentPropagator(4)
+    # Component of 4 = max_size → valid (threshold is max_size + 1 = 5)
+    assert prop.validate_placement(
+        board, Position(3, 0), default_config.board
+    ), "Component of 4 should be allowed when max_size=4"

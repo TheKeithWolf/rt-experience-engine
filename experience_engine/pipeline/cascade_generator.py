@@ -181,6 +181,10 @@ class CascadeInstanceGenerator:
                     transition_result.board.empty_positions(),
                     transition_result.spawns,
                 )
+                # Board is truth — sync wild positions after gravity + consumption
+                progress.sync_active_wilds(
+                    transition_result.board, self._config.board,
+                )
 
             raw_steps.append((step_result, board_before, filled, grid_mults, transition_data))
 

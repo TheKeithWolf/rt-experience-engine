@@ -201,14 +201,19 @@ def max_component_size(
     symbol: Symbol,
     board_config: BoardConfig,
     extra: frozenset[Position] | None = None,
+    wild_positions: frozenset[Position] | None = None,
 ) -> int:
     """Largest connected component size for a symbol, optionally treating
     extra positions as if they also held that symbol.
 
     Used by WFC propagator to check whether placing a symbol would create
     a component exceeding the threshold.
+
+    wild_positions — when provided, wilds are treated as same-symbol during
+    BFS traversal, matching detect_clusters() union-find semantics.
     """
     extra_set = extra or frozenset()
+    wild_set = wild_positions or frozenset()
     visited: set[Position] = set()
     max_size = 0
 
@@ -228,7 +233,11 @@ def max_component_size(
                 size += 1
                 for neighbor in orthogonal_neighbors(current, board_config):
                     if neighbor not in visited:
-                        if board.get(neighbor) is symbol or neighbor in extra_set:
+                        # Wild positions count as same-symbol — prevents
+                        # wild-mediated extensions past the cluster threshold
+                        if (board.get(neighbor) is symbol
+                                or neighbor in extra_set
+                                or neighbor in wild_set):
                             visited.add(neighbor)
                             queue.append(neighbor)
 

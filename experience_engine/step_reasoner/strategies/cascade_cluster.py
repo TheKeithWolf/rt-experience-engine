@@ -82,8 +82,11 @@ class CascadeClusterStrategy:
         boundary = self._cluster_builder.analyze_boundary(context)
 
         # Clamp size to available empty cells
+        # Use step-level size constraints when cascade_steps defines them
+        step_sizes = progress.current_step_size_ranges()
         target_size = self._cluster_builder.select_size(
             progress, signature, variance, self._rng,
+            size_range=step_sizes[0] if step_sizes else None,
             max_available=available_count,
         )
 

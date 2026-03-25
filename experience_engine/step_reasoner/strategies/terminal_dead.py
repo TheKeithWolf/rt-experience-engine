@@ -12,7 +12,6 @@ import random
 from ...board_filler.propagators import (
     MaxComponentPropagator,
     NoSpecialSymbolPropagator,
-    WildBridgePropagator,
 )
 from ...config.schema import MasterConfig
 from ...primitives.symbols import Symbol
@@ -51,16 +50,18 @@ class TerminalDeadStrategy:
             or self._config.reasoner.terminal_dead_default_max_component
         )
 
+        # Wild-aware MaxComponentPropagator handles both extension and bridging
+        # via the single shared BFS — no separate WildBridgePropagator needed
         propagators = [
             NoSpecialSymbolPropagator(self._config.symbols),
-            MaxComponentPropagator(max_component),
+            MaxComponentPropagator(
+                max_component,
+                wild_positions=(
+                    frozenset(context.active_wilds)
+                    if context.active_wilds else None
+                ),
+            ),
         ]
-
-        # Prevent WFC from bridging clusters through surviving wilds
-        if context.active_wilds:
-            propagators.append(
-                WildBridgePropagator(frozenset(context.active_wilds))
-            )
 
         # Pin dormant boosters that the signature requires visible on terminal
         constrained: dict = {}

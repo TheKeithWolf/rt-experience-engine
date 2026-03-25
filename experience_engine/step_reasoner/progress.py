@@ -15,11 +15,12 @@ from typing import TYPE_CHECKING
 
 from ..archetypes.registry import ArchetypeSignature
 from ..pipeline.protocols import Range, RangeFloat
-from ..primitives.board import Position
-from ..primitives.symbols import Symbol, SymbolTier
+from ..primitives.board import Board, Position
+from ..primitives.symbols import Symbol, SymbolTier, is_wild
 from .context import DormantBooster
 
 if TYPE_CHECKING:
+    from ..config.schema import BoardConfig
     from .results import StepResult
 
 
@@ -125,6 +126,11 @@ class ProgressTracker:
 
         Checks cascade depth, booster spawns/fires, and payout budget.
         """
+        # All mandatory cascade steps must have been executed
+        if (self.signature.cascade_steps is not None
+                and self.steps_completed < len(self.signature.cascade_steps)):
+            return False
+
         # Cascade depth minimum met
         if self.remaining_cascade_steps().min_val > 0:
             return False
@@ -144,6 +150,20 @@ class ProgressTracker:
             return False
 
         return True
+
+    def current_step_size_ranges(self) -> tuple[Range, ...]:
+        """Effective cluster size ranges for the current step.
+
+        Returns step-level constraints when cascade_steps defines sizes
+        for the current step index; falls back to signature-level sizes.
+        """
+        if self.signature.cascade_steps is not None:
+            step_idx = self.steps_completed
+            if step_idx < len(self.signature.cascade_steps):
+                step_sizes = self.signature.cascade_steps[step_idx].cluster_sizes
+                if step_sizes is not None:
+                    return step_sizes
+        return self.signature.required_cluster_sizes
 
     # -- Mutation method (called once per step) -----------------------------
 
@@ -196,3 +216,17 @@ class ProgressTracker:
         # Narrative arc — record symbol tier for this step
         if step_result.symbol_tier is not None:
             self.symbol_tiers_by_step[step_result.step_index] = step_result.symbol_tier
+
+    def sync_active_wilds(self, board: Board, board_config: BoardConfig) -> None:
+        """Rebuild active_wilds from actual board state.
+
+        Called after transition — handles both consumption (wilds exploded by
+        clusters) and gravity position drift in one pass. Board is the single
+        source of truth; no duplicate tracking needed.
+        """
+        self.active_wilds = [
+            Position(reel, row)
+            for reel in range(board_config.num_reels)
+            for row in range(board_config.num_rows)
+            if (sym := board.get(Position(reel, row))) is not None and is_wild(sym)
+        ]

@@ -15,7 +15,7 @@ from ...board_filler.propagators import (
     NoClusterPropagator, NoSpecialSymbolPropagator,
 )
 from ...config.schema import MasterConfig
-from ...primitives.board import Position
+from ...primitives.board import Position, orthogonal_neighbors
 from ...primitives.booster_rules import BoosterRules
 from ...primitives.symbols import Symbol, SymbolTier
 from ..context import BoardContext
@@ -76,13 +76,18 @@ class InitialClusterStrategy:
             signature.required_cluster_count, self._rng,
         )
 
+        # Use step-level sizes for both cap check and cluster building —
+        # signature-level sizes may include non-wild-spawning ranges (e.g., 5-6)
+        # while step-level sizes (e.g., 7-8) correctly reflect this step's constraints
+        step_sizes = progress.current_step_size_ranges()
+
         # Cap cluster count to Wild spawn budget when every cluster would spawn a Wild
-        if self._all_clusters_spawn_wilds(signature):
+        if self._all_sizes_spawn_wilds(step_sizes):
             wild_budget = progress.remaining_booster_spawns().get("W")
             if wild_budget is not None:
                 cluster_count = min(cluster_count, wild_budget.max_val)
         multi_result = self._cluster_builder.build_multi_cluster(
-            context, cluster_count, list(signature.required_cluster_sizes),
+            context, cluster_count, list(step_sizes),
             progress, signature, variance, self._rng,
         )
 
@@ -194,6 +199,18 @@ class InitialClusterStrategy:
             )
 
             if self._next_step_needs_wild_bridge(signature, progress):
+                # Verify wild lands adjacent to refill zone — otherwise bridge
+                # is impossible and the generator should retry cluster placement
+                wild_neighbors = set(
+                    orthogonal_neighbors(booster_landing, self._config.board)
+                )
+                adjacent_empty = wild_neighbors & set(settle_result.empty_positions)
+                if not adjacent_empty:
+                    raise ValueError(
+                        f"Wild at {booster_landing} has no adjacent empty cells "
+                        f"in refill zone — bridge impossible, retry cluster placement"
+                    )
+
                 # Bridge uses first cluster's symbol as the bridge symbol
                 bridge_symbol = cluster_groups[0][1]
                 return self._seed_planner.plan_bridge_seeds(
@@ -237,12 +254,12 @@ class InitialClusterStrategy:
             return step_spec.must_arm_booster is not None
         return False
 
-    def _all_clusters_spawn_wilds(self, signature: ArchetypeSignature) -> bool:
-        """True when every cluster size range in the signature maps to Wild spawns."""
+    def _all_sizes_spawn_wilds(self, size_ranges: tuple[Range, ...]) -> bool:
+        """True when every size in every range maps to a Wild spawn."""
         return all(
             self._spawn_eval.booster_for_size(r.min_val) == "W"
             and self._spawn_eval.booster_for_size(r.max_val) == "W"
-            for r in signature.required_cluster_sizes
+            for r in size_ranges
         )
 
     def _resolve_scatter_count(self, signature: ArchetypeSignature) -> int:

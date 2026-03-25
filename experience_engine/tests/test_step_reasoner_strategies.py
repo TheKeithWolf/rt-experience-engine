@@ -582,6 +582,131 @@ class TestInitialClusterStrategy:
             for p in intent.wfc_propagators
         )
 
+    def test_initial_cluster_rejects_wild_not_adjacent_to_refill(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, spawn_evaluator, near_miss_planner, rng,
+    ) -> None:
+        """ValueError when wild lands outside refill zone — bridge impossible.
+
+        Calls _plan_strategic_seeds directly with a controlled SettleResult
+        where the wild position has no adjacent empty cells.
+        """
+        from ..archetypes.registry import CascadeStepConstraint
+        from ..primitives.gravity import SettleResult
+
+        strategy = InitialClusterStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, spawn_evaluator, near_miss_planner, rng,
+        )
+        # Step 0 spawns wild (size 7), step 1 is bridge
+        sig = _make_signature(
+            required_cluster_sizes=(Range(7, 7),),
+            required_cascade_depth=Range(2, 4),
+            required_booster_spawns={"W": Range(1, 1)},
+            cascade_steps=(
+                CascadeStepConstraint(
+                    cluster_count=Range(1, 1),
+                    cluster_sizes=(Range(7, 7),),
+                    cluster_symbol_tier=None,
+                    must_spawn_booster="W",
+                    must_arm_booster=None,
+                    must_fire_booster=None,
+                    wild_behavior="spawn",
+                ),
+                CascadeStepConstraint(
+                    cluster_count=Range(1, 1),
+                    cluster_sizes=(Range(5, 6),),
+                    cluster_symbol_tier=None,
+                    must_spawn_booster=None,
+                    must_arm_booster=None,
+                    must_fire_booster=None,
+                    wild_behavior="bridge",
+                ),
+            ),
+        )
+        progress = _make_progress(sig)
+        variance = _make_variance_hints(default_config)
+
+        # Cluster at reels 0-6, row 6 (bottom row) — centroid settles deep
+        cluster_positions = frozenset(Position(r, 6) for r in range(7))
+        cluster_groups = [(cluster_positions, Symbol.L1)]
+
+        # Empty cells only at top of columns 0-2 — far from (6,6)
+        empty_positions = tuple(Position(r, 0) for r in range(3))
+        # Verify precondition: wild at (6,6) has no adjacent empties
+        wild_nbrs = set(orthogonal_neighbors(Position(6, 6), default_config.board))
+        assert not (wild_nbrs & set(empty_positions)), "Test setup: wild must not neighbor empties"
+
+        settle_result = SettleResult(
+            board=Board.empty(default_config.board),
+            move_steps=(),
+            empty_positions=empty_positions,
+        )
+
+        # _plan_strategic_seeds calls predict_booster_landing internally.
+        # We need to control the booster landing position — patch at class level
+        # since ForwardSimulator uses __slots__.
+        from unittest.mock import patch
+        with patch.object(
+            ForwardSimulator, "predict_booster_landing",
+            return_value=Position(6, 6),
+        ):
+            context = _make_empty_context(default_config)
+            with pytest.raises(ValueError, match="bridge impossible"):
+                strategy._plan_strategic_seeds(
+                    context, cluster_groups, "W",
+                    settle_result, progress, sig, variance,
+                )
+
+    def test_initial_cluster_caps_wild_spawns_from_step_sizes(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, spawn_evaluator, near_miss_planner, rng,
+    ) -> None:
+        """When step-level sizes all spawn wilds, cluster count capped to wild budget."""
+        from ..archetypes.registry import CascadeStepConstraint
+        strategy = InitialClusterStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, spawn_evaluator, near_miss_planner, rng,
+        )
+        # Signature-level: 5-8 (5-6 do NOT spawn wild)
+        # Step-level: 7-8 (both DO spawn wild)
+        # Wild budget: max 1 → should cap cluster_count to 1
+        sig = _make_signature(
+            required_cluster_count=Range(1, 2),
+            required_cluster_sizes=(Range(5, 8),),
+            required_cascade_depth=Range(2, 4),
+            required_booster_spawns={"W": Range(1, 1)},
+            cascade_steps=(
+                CascadeStepConstraint(
+                    cluster_count=Range(1, 2),
+                    cluster_sizes=(Range(7, 8),),
+                    cluster_symbol_tier=None,
+                    must_spawn_booster="W",
+                    must_arm_booster=None,
+                    must_fire_booster=None,
+                    wild_behavior="spawn",
+                ),
+                CascadeStepConstraint(
+                    cluster_count=Range(1, 1),
+                    cluster_sizes=(Range(5, 6),),
+                    cluster_symbol_tier=None,
+                    must_spawn_booster=None,
+                    must_arm_booster=None,
+                    must_fire_booster=None,
+                    wild_behavior="bridge",
+                ),
+            ),
+        )
+        context = _make_empty_context(default_config)
+        progress = _make_progress(sig)
+        variance = _make_variance_hints(default_config)
+
+        intent = strategy.plan_step(context, progress, sig, variance)
+
+        # Should have exactly 1 wild spawn (capped from potential 2)
+        wild_spawns = [s for s in intent.expected_spawns if s == "W"]
+        assert len(wild_spawns) == 1
+
 
 # ---------------------------------------------------------------------------
 # Cascade Cluster — R6-013 through R6-016

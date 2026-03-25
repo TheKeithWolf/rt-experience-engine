@@ -55,7 +55,7 @@ class EventTracer:
     come from config — no hardcoded grid sizes.
     """
 
-    __slots__ = ("_config", "_lines", "_renderers", "_board_state", "_grid_state")
+    __slots__ = ("_config", "_lines", "_renderers", "_board_state", "_grid_state", "_spawn_positions")
 
     def __init__(self, config: MasterConfig) -> None:
         self._config = config
@@ -90,6 +90,7 @@ class EventTracer:
         self._lines = []
         self._board_state = []
         self._grid_state = []
+        self._spawn_positions: set[tuple[int, int]] = set()
 
         # Header
         payout_mult = book.payoutMultiplier / 100.0 if book.payoutMultiplier else 0.0
@@ -255,6 +256,8 @@ class EventTracer:
                 row = pos.get("row", 0)
                 if reel < len(self._board_state) and row < len(self._board_state[reel]):
                     self._board_state[reel][row] = {"name": sym_name}
+                    # Track freshly spawned positions — only these survive explosion
+                    self._spawn_positions.add((reel, row))
 
         self._lines.append("")
 
@@ -280,15 +283,18 @@ class EventTracer:
                 for e in exploding:
                     reel, row = e.get("reel", 0), e.get("row", 0)
                     if reel < len(board) and row < len(board[reel]):
-                        # Preserve spawned symbols — placed after win evaluation,
-                        # before gravity. Clearing them would make them invisible.
-                        if board[reel][row].get("name", "") not in SPAWN_EVENT_TYPE:
+                        # Only protect positions where a booster was freshly spawned
+                        # this step — existing wilds/boosters that participated in a
+                        # cluster are consumed and must be cleared
+                        if (reel, row) not in self._spawn_positions:
                             board[reel][row] = {"name": ""}
                 self._lines.append(
                     f"  Step 1: EXPLODE ({len(exploding)} symbols removed)"
                 )
                 self._lines.extend(self._format_board(board))
                 self._lines.append("")
+                # Fresh spawns have been accounted for — clear before gravity passes
+                self._spawn_positions.clear()
             else:
                 expl_str = ", ".join(
                     f"({e.get('reel', '?')},{e.get('row', '?')})" for e in exploding

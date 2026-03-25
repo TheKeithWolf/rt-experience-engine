@@ -76,6 +76,7 @@ def _propagate_cluster_constraint(
     cells: dict[Position, CellState],
     position: Position,
     board_config: BoardConfig,
+    wild_positions: frozenset[Position] | None = None,
 ) -> set[Position]:
     """Shared logic for cluster-size propagators (DRY).
 
@@ -86,6 +87,9 @@ def _propagate_cluster_constraint(
     Uses a fast adjacency pre-check before the expensive BFS — if a symbol has
     zero same-symbol neighbors at a position, it cannot form a component >= threshold
     (since isolated placements start at size 1).
+
+    wild_positions — forwarded to max_component_size so wilds count as same-symbol
+    during BFS, matching detect_clusters() semantics.
 
     Reuses cluster_detection.max_component_size — no reimplementation (CONSTRAINT-WFC-2).
     """
@@ -103,7 +107,8 @@ def _propagate_cluster_constraint(
                 continue
             # Full BFS check: would placing sym at neighbor exceed threshold?
             component_size = max_component_size(
-                board, sym, board_config, extra=frozenset({neighbor})
+                board, sym, board_config, extra=frozenset({neighbor}),
+                wild_positions=wild_positions,
             )
             if component_size >= threshold:
                 to_remove.append(sym)
@@ -118,6 +123,7 @@ def _validate_cluster_placement(
     board: Board,
     position: Position,
     board_config: BoardConfig,
+    wild_positions: frozenset[Position] | None = None,
 ) -> bool:
     """Check if the symbol at position forms a component below threshold.
 
@@ -128,7 +134,9 @@ def _validate_cluster_placement(
     sym = board.get(position)
     if sym is None:
         return True
-    return max_component_size(board, sym, board_config) < threshold
+    return max_component_size(
+        board, sym, board_config, wild_positions=wild_positions,
+    ) < threshold
 
 
 class NoSpecialSymbolPropagator:
@@ -214,11 +222,21 @@ class MaxComponentPropagator:
     Used for dead-spin boards where no cluster of any appreciable size should form.
     max_size is the hard upper bound (e.g., 3 means no component of 4+ allowed).
     The threshold passed to the caller is archetype-specific, not hardcoded.
+
+    wild_positions — when provided, wilds count as same-symbol during BFS,
+    preventing wild-mediated extensions past the threshold. This subsumes
+    WildBridgePropagator for terminal fills (bridging is just extension past
+    threshold via a wild neighbor).
     """
 
-    def __init__(self, max_size: int) -> None:
+    def __init__(
+        self,
+        max_size: int,
+        wild_positions: frozenset[Position] | None = None,
+    ) -> None:
         # Prevent component >= max_size + 1 (reuse same threshold logic)
         self._threshold = max_size + 1
+        self._wild_positions = wild_positions
 
     def propagate(
         self,
@@ -229,7 +247,8 @@ class MaxComponentPropagator:
     ) -> set[Position]:
         """Prune neighbor possibilities that would form components > max_size."""
         return _propagate_cluster_constraint(
-            self._threshold, board, cells, position, board_config
+            self._threshold, board, cells, position, board_config,
+            wild_positions=self._wild_positions,
         )
 
     def validate_placement(
@@ -237,7 +256,8 @@ class MaxComponentPropagator:
     ) -> bool:
         """Check collapsed cell doesn't form a component > max_size."""
         return _validate_cluster_placement(
-            self._threshold, board, position, board_config
+            self._threshold, board, position, board_config,
+            wild_positions=self._wild_positions,
         )
 
 

@@ -197,3 +197,39 @@ def test_p1_027_max_component_size_with_extra(default_config: MasterConfig) -> N
     # With extra position adjacent: max component = 4
     extra = frozenset({Position(3, 0)})
     assert max_component_size(board, Symbol.L1, default_config.board, extra=extra) == 4
+
+
+def test_max_component_size_with_wild_extension(default_config: MasterConfig) -> None:
+    """Component of 3 L1 + adjacent wild = effective size 4."""
+    board = Board.empty(default_config.board)
+    for reel in range(7):
+        for row in range(7):
+            board.set(Position(reel, row), Symbol.L2)
+
+    # 3 L1 in a line, wild adjacent at the end
+    board.set(Position(0, 0), Symbol.L1)
+    board.set(Position(1, 0), Symbol.L1)
+    board.set(Position(2, 0), Symbol.L1)
+    board.set(Position(3, 0), Symbol.W)
+
+    size = max_component_size(
+        board, Symbol.L1, default_config.board,
+        wild_positions=frozenset({Position(3, 0)}),
+    )
+    assert size == 4
+
+
+def test_max_component_size_without_wilds_unchanged(default_config: MasterConfig) -> None:
+    """Same layout without wild_positions — wild cell not counted (backward compatible)."""
+    board = Board.empty(default_config.board)
+    for reel in range(7):
+        for row in range(7):
+            board.set(Position(reel, row), Symbol.L2)
+
+    board.set(Position(0, 0), Symbol.L1)
+    board.set(Position(1, 0), Symbol.L1)
+    board.set(Position(2, 0), Symbol.L1)
+    board.set(Position(3, 0), Symbol.W)
+
+    size = max_component_size(board, Symbol.L1, default_config.board)
+    assert size == 3

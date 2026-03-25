@@ -342,6 +342,84 @@ class TestProgressTracker:
 
 
 # ---------------------------------------------------------------------------
+# ProgressTracker — cascade_steps enforcement
+# ---------------------------------------------------------------------------
+
+class TestProgressTrackerCascadeSteps:
+    """Tests for cascade_steps-aware behaviour in ProgressTracker."""
+
+    def _make_two_step_constraints(self):
+        from ..archetypes.registry import CascadeStepConstraint
+        step0 = CascadeStepConstraint(
+            cluster_count=Range(1, 2), cluster_sizes=(Range(7, 8),),
+            cluster_symbol_tier=None, must_spawn_booster="W",
+            must_arm_booster=None, must_fire_booster=None,
+            wild_behavior="spawn",
+        )
+        step1 = CascadeStepConstraint(
+            cluster_count=Range(1, 1), cluster_sizes=(Range(5, 6),),
+            cluster_symbol_tier=None, must_spawn_booster=None,
+            must_arm_booster=None, must_fire_booster=None,
+            wild_behavior="bridge",
+        )
+        return step0, step1
+
+    def test_is_satisfied_false_when_cascade_steps_incomplete(self) -> None:
+        """is_satisfied() returns False when mandatory cascade_steps remain."""
+        step0, step1 = self._make_two_step_constraints()
+        tracker = ProgressTracker(
+            signature=_make_signature(
+                required_cascade_depth=Range(1, 3),
+                required_booster_spawns={"W": Range(1, 1)},
+                payout_range=RangeFloat(0.4, 15.0),
+                cascade_steps=(step0, step1),
+            ),
+            centipayout_multiplier=100,
+        )
+        # Simulate step 0 complete — depth/spawns/payout all met, but step 1 not done
+        tracker.steps_completed = 1
+        tracker.boosters_spawned = {"W": 1}
+        tracker.cumulative_payout = 180
+        assert tracker.is_satisfied() is False
+
+    def test_current_step_size_ranges_uses_step_constraint(self) -> None:
+        """Returns cascade_steps[n].cluster_sizes when defined."""
+        step0, step1 = self._make_two_step_constraints()
+        tracker = ProgressTracker(
+            signature=_make_signature(
+                required_cluster_sizes=(Range(5, 8),),
+                cascade_steps=(step0, step1),
+            ),
+            centipayout_multiplier=100,
+        )
+        # Step 0 — should use step0's tighter sizes
+        assert tracker.current_step_size_ranges() == (Range(7, 8),)
+        # Step 1 — should use step1's sizes
+        tracker.steps_completed = 1
+        assert tracker.current_step_size_ranges() == (Range(5, 6),)
+
+    def test_current_step_size_ranges_falls_back_past_steps(self) -> None:
+        """Returns signature.required_cluster_sizes when step index exceeds cascade_steps."""
+        from ..archetypes.registry import CascadeStepConstraint
+        step0 = CascadeStepConstraint(
+            cluster_count=Range(1, 2), cluster_sizes=(Range(7, 8),),
+            cluster_symbol_tier=None, must_spawn_booster="W",
+            must_arm_booster=None, must_fire_booster=None,
+            wild_behavior="spawn",
+        )
+        tracker = ProgressTracker(
+            signature=_make_signature(
+                required_cluster_sizes=(Range(5, 8),),
+                cascade_steps=(step0,),
+            ),
+            centipayout_multiplier=100,
+        )
+        # Past the single cascade_step — should fall back to signature sizes
+        tracker.steps_completed = 1
+        assert tracker.current_step_size_ranges() == (Range(5, 8),)
+
+
+# ---------------------------------------------------------------------------
 # Utility
 # ---------------------------------------------------------------------------
 
