@@ -280,7 +280,10 @@ class EventTracer:
                 for e in exploding:
                     reel, row = e.get("reel", 0), e.get("row", 0)
                     if reel < len(board) and row < len(board[reel]):
-                        board[reel][row] = {"name": ""}
+                        # Preserve spawned symbols — placed after win evaluation,
+                        # before gravity. Clearing them would make them invisible.
+                        if board[reel][row].get("name", "") not in SPAWN_EVENT_TYPE:
+                            board[reel][row] = {"name": ""}
                 self._lines.append(
                     f"  Step 1: EXPLODE ({len(exploding)} symbols removed)"
                 )
