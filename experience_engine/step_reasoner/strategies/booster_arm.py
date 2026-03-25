@@ -69,9 +69,10 @@ class BoosterArmStrategy:
         # Boundary analysis for merge-aware placement
         boundary = self._cluster_builder.analyze_boundary(context)
 
-        # Select cluster parameters with merge awareness
+        # Select cluster parameters with merge awareness — clamp to available space
         cluster_size = self._cluster_builder.select_size(
             progress, signature, variance, self._rng,
+            max_available=len(context.empty_cells),
         )
         cluster_symbol = self._cluster_builder.select_symbol(
             progress, signature, variance, self._rng,

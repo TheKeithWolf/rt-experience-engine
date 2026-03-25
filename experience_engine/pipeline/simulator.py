@@ -2,8 +2,8 @@
 
 After a step is validated, the simulator:
 1. Increments grid multipliers at cluster positions
-2. Spawns boosters from qualifying clusters (via BoosterRules)
-3. Explodes cluster positions (sets to None)
+2. Explodes cluster positions (sets to None)
+3. Spawns boosters into emptied cells (wilds survive explosion)
 4. Runs gravity settle
 5. Updates booster positions after gravity
 6. Returns the post-transition board state with spawn and gravity records
@@ -59,8 +59,8 @@ class StepTransitionSimulator:
         """Execute the transition after a validated step.
 
         1. Increment grid multipliers at all cluster positions
-        2. Spawn boosters from qualifying clusters
-        3. Explode cluster positions on a board copy
+        2. Explode cluster positions on a board copy
+        3. Spawn boosters into emptied cells (wilds survive explosion)
         4. Run gravity settle
         5. Update booster tracker positions after gravity
         6. Return post-transition board + records
@@ -76,14 +76,15 @@ class StepTransitionSimulator:
         for pos in all_cluster_positions:
             grid_mults.increment(pos)
 
-        # 2. Spawn boosters from qualifying clusters
+        # 2. Explode cluster positions (set to None) — must precede spawning
+        # so wilds placed at cluster centroids survive the explosion
+        for pos in all_cluster_positions:
+            result_board.set(pos, None)
+
+        # 3. Spawn boosters into the freshly-emptied cells
         spawn_records = self._spawn_boosters(
             step_result.clusters, booster_tracker, step_result.step_index,
         )
-
-        # 3. Explode cluster positions (set to None)
-        for pos in all_cluster_positions:
-            result_board.set(pos, None)
 
         # 4. Run gravity settle
         settle_result = settle(

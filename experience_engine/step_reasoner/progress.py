@@ -64,34 +64,36 @@ class ProgressTracker:
 
     # -- Query methods (read-only) -----------------------------------------
 
+    @staticmethod
+    def _remaining_range(required: Range, done: int) -> Range:
+        """Compute how much of a Range budget remains after *done* units spent.
+
+        Clamps both min and max to zero so overproduction yields Range(0, 0)
+        instead of crashing Range.__post_init__ with a negative max_val.
+        """
+        remaining_min = max(0, required.min_val - done)
+        remaining_max = max(remaining_min, required.max_val - done)
+        return Range(min_val=remaining_min, max_val=remaining_max)
+
     def remaining_cascade_steps(self) -> Range:
         """How many more cascade steps are needed (min) / allowed (max)."""
-        sig = self.signature.required_cascade_depth
-        remaining_min = max(0, sig.min_val - self.steps_completed)
-        remaining_max = max(remaining_min, sig.max_val - self.steps_completed)
-        return Range(min_val=remaining_min, max_val=remaining_max)
+        return self._remaining_range(
+            self.signature.required_cascade_depth, self.steps_completed,
+        )
 
     def remaining_booster_spawns(self) -> dict[str, Range]:
         """Per booster type: how many more spawns are needed/allowed."""
-        result: dict[str, Range] = {}
-        for btype, sig_range in self.signature.required_booster_spawns.items():
-            done = self.boosters_spawned.get(btype, 0)
-            result[btype] = Range(
-                min_val=max(0, sig_range.min_val - done),
-                max_val=sig_range.max_val - done,
-            )
-        return result
+        return {
+            btype: self._remaining_range(sig_range, self.boosters_spawned.get(btype, 0))
+            for btype, sig_range in self.signature.required_booster_spawns.items()
+        }
 
     def remaining_booster_fires(self) -> dict[str, Range]:
         """Per booster type: how many more fires are needed/allowed."""
-        result: dict[str, Range] = {}
-        for btype, sig_range in self.signature.required_booster_fires.items():
-            done = self.boosters_fired.get(btype, 0)
-            result[btype] = Range(
-                min_val=max(0, sig_range.min_val - done),
-                max_val=sig_range.max_val - done,
-            )
-        return result
+        return {
+            btype: self._remaining_range(sig_range, self.boosters_fired.get(btype, 0))
+            for btype, sig_range in self.signature.required_booster_fires.items()
+        }
 
     def remaining_payout_budget(self) -> RangeFloat:
         """Payout range still available, in bet-multiplier units."""
