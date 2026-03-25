@@ -230,9 +230,10 @@ class InstanceValidator:
         # 11b. Wild-family validation — wilds
         wild_count = 0
         if sig.family == "wild":
+            # Wild is spawned during step 0→1 transition — only visible on terminal board
             wild_count = sum(
-                1 for pos in initial_board.all_positions()
-                if initial_board.get(pos) is Symbol.W
+                1 for pos in terminal_board.all_positions()
+                if terminal_board.get(pos) is Symbol.W
             )
             wild_range = sig.required_booster_spawns.get("W")
             if wild_range and not wild_range.contains(wild_count):
