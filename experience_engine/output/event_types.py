@@ -47,6 +47,10 @@ SPAWN_EVENT_TYPE: dict[str, str] = {
     "SLB": SUPERLIGHTBALL_SPAWN,
 }
 
+# Reverse lookup: spawn event type string → booster symbol name
+# Derived from SPAWN_EVENT_TYPE — single source of truth (DRY)
+EVENT_TYPE_TO_SPAWN_SYMBOL: dict[str, str] = {v: k for k, v in SPAWN_EVENT_TYPE.items()}
+
 
 def compute_anticipation(
     scatter_reels: list[int],

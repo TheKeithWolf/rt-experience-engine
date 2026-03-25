@@ -14,6 +14,7 @@ from ..output.book_record import BookRecord
 from ..output.event_types import (
     GRAVITY_SETTLE,
     REVEAL,
+    SPAWN_EVENT_TYPE,
     UPDATE_GRID,
     WIN_INFO,
 )
@@ -412,3 +413,71 @@ class TestFormatGridMults:
         assert "[ 1]" in content
         # (1, 0) has value 2 but NOT touched → plain
         assert " 2 " in content
+
+
+# ---------------------------------------------------------------------------
+# Spawn board-state sync (tracer-booster-fix)
+# ---------------------------------------------------------------------------
+
+def _make_spawn_event(
+    event_type: str,
+    positions: list[dict],
+    clusters: list[dict] | None = None,
+) -> dict:
+    return {
+        "type": event_type,
+        "index": 99,
+        "positions": positions,
+        "clusters": clusters or [],
+    }
+
+
+class TestSpawnBoardStateSync:
+
+    def test_wild_spawn_updates_board_state(self, tracer: EventTracer) -> None:
+        """WILDSPAWN at (1,2) should write W into _board_state[1][2]."""
+        board_grid = _make_board_grid(SMALL_SYMBOLS)
+        events = [
+            _make_reveal_event(board_grid),
+            _make_spawn_event("wildSpawn", [{"reel": 1, "row": 2}]),
+        ]
+        _trace_events(tracer, events)
+
+        assert tracer._board_state[1][2]["name"] == "W"
+
+    def test_spawn_symbol_visible_in_settled_board(self, tracer: EventTracer) -> None:
+        """Spawned W should survive through GRAVITY_SETTLE into the Step 4 SETTLE board."""
+        board_grid = _make_board_grid(SMALL_SYMBOLS)
+        # Explode a different cell so (1,2) is untouched by gravity
+        exploding = [{"reel": 0, "row": 0}]
+        new_symbols = [[{"name": "L4", "reel": 0, "row": 0}]]
+        events = [
+            _make_reveal_event(board_grid),
+            _make_spawn_event("wildSpawn", [{"reel": 1, "row": 2}]),
+            _make_gravity_settle_event(exploding, [], new_symbols),
+        ]
+        output = _trace_events(tracer, events)
+
+        # W should appear in the Step 4 SETTLE board section
+        lines = output.split("\n")
+        settle_idx = next(i for i, l in enumerate(lines) if "Step 4: SETTLE" in l)
+        settle_section = "\n".join(lines[settle_idx:])
+        assert "W" in settle_section
+
+    @pytest.mark.parametrize(
+        "sym_name,event_type",
+        list(SPAWN_EVENT_TYPE.items()),
+        ids=lambda val: val if isinstance(val, str) and not val[0].isupper() else "",
+    )
+    def test_all_spawn_types_update_board(
+        self, tracer: EventTracer, sym_name: str, event_type: str,
+    ) -> None:
+        """Every spawn type in SPAWN_EVENT_TYPE should update _board_state."""
+        board_grid = _make_board_grid(SMALL_SYMBOLS)
+        events = [
+            _make_reveal_event(board_grid),
+            _make_spawn_event(event_type, [{"reel": 2, "row": 0}]),
+        ]
+        _trace_events(tracer, events)
+
+        assert tracer._board_state[2][0]["name"] == sym_name

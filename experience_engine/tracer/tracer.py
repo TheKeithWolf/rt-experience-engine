@@ -21,6 +21,7 @@ from ..config.schema import MasterConfig
 from ..output.book_record import BookRecord
 from ..output.event_types import (
     BOOSTER_PHASE,
+    EVENT_TYPE_TO_SPAWN_SYMBOL,
     FINAL_WIN,
     FREE_SPIN_END,
     FREE_SPIN_TRIGGER,
@@ -244,6 +245,17 @@ class EventTracer:
                 f"centroid ({cl.get('centroid', {}).get('reel', '?')}, "
                 f"{cl.get('centroid', {}).get('row', '?')})"
             )
+
+        # Place spawned symbol on cached board so downstream gravity sees it.
+        # Spawn events fire BEFORE gravitySettle — board must be current.
+        sym_name = EVENT_TYPE_TO_SPAWN_SYMBOL.get(event_type, "")
+        if sym_name and self._board_state:
+            for pos in positions:
+                reel = pos.get("reel", 0)
+                row = pos.get("row", 0)
+                if reel < len(self._board_state) and row < len(self._board_state[reel]):
+                    self._board_state[reel][row] = {"name": sym_name}
+
         self._lines.append("")
 
     def _render_gravity_settle(self, event: dict) -> None:
