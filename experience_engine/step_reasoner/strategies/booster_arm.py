@@ -19,6 +19,7 @@ from ..intent import StepIntent, StepType
 from ..progress import ProgressTracker
 from ..services.cluster_builder import ClusterBuilder
 from ..services.forward_simulator import ForwardSimulator
+from ..services.landing_evaluator import BoosterLandingEvaluator
 from ..services.seed_planner import SeedPlanner, build_cluster_exclusions
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
@@ -34,7 +35,7 @@ class BoosterArmStrategy:
 
     __slots__ = (
         "_config", "_forward_sim", "_cluster_builder",
-        "_seed_planner", "_chain_eval", "_rng",
+        "_seed_planner", "_chain_eval", "_landing_eval", "_rng",
     )
 
     def __init__(
@@ -44,6 +45,7 @@ class BoosterArmStrategy:
         cluster_builder: ClusterBuilder,
         seed_planner: SeedPlanner,
         chain_eval: ChainEvaluator,
+        landing_eval: BoosterLandingEvaluator,
         rng: random.Random,
     ) -> None:
         self._config = config
@@ -51,6 +53,7 @@ class BoosterArmStrategy:
         self._cluster_builder = cluster_builder
         self._seed_planner = seed_planner
         self._chain_eval = chain_eval
+        self._landing_eval = landing_eval
         self._rng = rng
 
     def plan_step(
@@ -92,13 +95,22 @@ class BoosterArmStrategy:
         # Plan chain arrangement if this booster can initiate a chain
         strategic_cells: dict[Position, Symbol] = {}
         if self._needs_chain(target_booster, progress, signature):
-            settle_result = self._forward_sim.simulate_explosion(
-                self._forward_sim.build_hypothetical(
-                    context.board,
-                    {pos: cluster_symbol for pos in cluster_positions},
-                ),
-                cluster_positions,
+            hypothetical = self._forward_sim.build_hypothetical(
+                context.board,
+                {pos: cluster_symbol for pos in cluster_positions},
             )
+            settle_result = self._forward_sim.simulate_explosion(
+                hypothetical, cluster_positions,
+            )
+
+            # Score the arming cluster's own secondary spawn viability — if it's
+            # large enough to spawn a booster, verify the landing won't obstruct
+            # the chain sequence
+            _ctx, landing_score = self._landing_eval.evaluate_and_score(
+                frozenset(cluster_positions), hypothetical,
+                target_booster.booster_type,
+            )
+
             # Prevent arm seeds from merging into the arming cluster
             exclusions = build_cluster_exclusions(
                 [(frozenset(cluster_positions), cluster_symbol)],

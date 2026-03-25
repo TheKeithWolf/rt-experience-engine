@@ -207,6 +207,33 @@ class SeedPlanner:
             exclusions,
         )
 
+    def plan_chain_aware_seeds(
+        self,
+        booster_post_gravity_pos: Position,
+        settle_result: SettleResult,
+        effect_zone: frozenset[Position],
+        variance: VarianceHints,
+        rng: random.Random,
+        exclusions: tuple[ClusterExclusion, ...] = (),
+    ) -> dict[Position, Symbol]:
+        """Place seeds that gravity will carry into both the booster's adjacency
+        AND the chain source's effect zone.
+
+        Composes plan_arm_seeds (adjacent to booster) with a column filter
+        (must settle into the effect zone). Gravity preserves columns, so
+        filtering by reel is sufficient — a seed in a column that intersects
+        the effect zone will land in that zone after gravity.
+        """
+        arm_seeds = self.plan_arm_seeds(
+            booster_post_gravity_pos, settle_result, variance, rng, exclusions,
+        )
+        # Column-level filter: keep seeds whose reel intersects the effect zone
+        effect_columns = {p.reel for p in effect_zone}
+        return {
+            pos: sym for pos, sym in arm_seeds.items()
+            if pos.reel in effect_columns
+        }
+
     # -- Private helpers ---------------------------------------------------
 
     def _select_weighted_symbol(

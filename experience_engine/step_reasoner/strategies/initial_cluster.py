@@ -15,8 +15,7 @@ from ...board_filler.propagators import (
     NoClusterPropagator, NoSpecialSymbolPropagator,
 )
 from ...config.schema import MasterConfig
-from ...primitives.board import Position, orthogonal_neighbors
-from ...primitives.booster_rules import BoosterRules
+from ...primitives.board import Position
 from ...primitives.symbols import Symbol, SymbolTier
 from ..context import BoardContext
 from ..evaluators import SpawnEvaluator
@@ -24,6 +23,7 @@ from ..intent import StepIntent, StepType
 from ..progress import ProgressTracker
 from ..services.cluster_builder import ClusterBuilder
 from ..services.forward_simulator import ForwardSimulator
+from ..services.landing_evaluator import BoosterLandingEvaluator
 from ..services.near_miss_planner import NearMissPlanner
 from ..services.seed_planner import SeedPlanner, build_cluster_exclusions
 from ...archetypes.registry import ArchetypeSignature
@@ -42,7 +42,7 @@ class InitialClusterStrategy:
 
     __slots__ = (
         "_config", "_forward_sim", "_cluster_builder", "_seed_planner",
-        "_spawn_eval", "_near_miss_planner", "_booster_rules", "_rng",
+        "_spawn_eval", "_near_miss_planner", "_landing_eval", "_rng",
     )
 
     def __init__(
@@ -53,6 +53,7 @@ class InitialClusterStrategy:
         seed_planner: SeedPlanner,
         spawn_eval: SpawnEvaluator,
         near_miss_planner: NearMissPlanner,
+        landing_eval: BoosterLandingEvaluator,
         rng: random.Random,
     ) -> None:
         self._config = config
@@ -61,7 +62,7 @@ class InitialClusterStrategy:
         self._seed_planner = seed_planner
         self._spawn_eval = spawn_eval
         self._near_miss_planner = near_miss_planner
-        self._booster_rules = BoosterRules(config.boosters, config.board, config.symbols)
+        self._landing_eval = landing_eval
         self._rng = rng
 
     def plan_step(
@@ -190,25 +191,22 @@ class InitialClusterStrategy:
         # cannot guard them
         exclusions = build_cluster_exclusions(cluster_groups, self._config.board)
 
-        # Predict where the booster will land after this explosion + gravity
+        # Predict where the booster will land and score the landing's viability
+        # for the next cascade step (bridge, arm, or chain)
         if booster_type:
             cluster_positions = frozenset().union(*(g[0] for g in cluster_groups))
-            centroid = self._booster_rules.compute_centroid(cluster_positions)
-            booster_landing = self._forward_sim.predict_booster_landing(
-                centroid, context.board, cluster_positions,
+            ctx, score = self._landing_eval.evaluate_and_score(
+                cluster_positions, context.board, booster_type,
             )
+            booster_landing = ctx.landing_position
 
             if self._next_step_needs_wild_bridge(signature, progress):
-                # Verify wild lands adjacent to refill zone — otherwise bridge
-                # is impossible and the generator should retry cluster placement
-                wild_neighbors = set(
-                    orthogonal_neighbors(booster_landing, self._config.board)
-                )
-                adjacent_empty = wild_neighbors & set(settle_result.empty_positions)
-                if not adjacent_empty:
+                # Landing evaluator scores adjacency viability — score near 0
+                # means no refill cells adjacent to the wild's landing position
+                if score < 0.1:
                     raise ValueError(
-                        f"Wild at {booster_landing} has no adjacent empty cells "
-                        f"in refill zone — bridge impossible, retry cluster placement"
+                        f"{booster_type} at {booster_landing} scored {score:.2f} — "
+                        f"no viable refill adjacency, retry cluster placement"
                     )
 
                 # Bridge uses first cluster's symbol as the bridge symbol

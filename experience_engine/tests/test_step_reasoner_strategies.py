@@ -219,6 +219,31 @@ def near_miss_planner(
     return NearMissPlanner(default_config, cluster_builder, rng)
 
 
+@pytest.fixture
+def landing_evaluator(
+    forward_simulator: ForwardSimulator,
+    default_config: MasterConfig,
+):
+    from ..primitives.booster_rules import BoosterRules
+    from ..step_reasoner.services.landing_criteria import (
+        WildBridgeCriterion, RocketArmCriterion, BombArmCriterion,
+        LightballArmCriterion,
+    )
+    from ..step_reasoner.services.landing_evaluator import BoosterLandingEvaluator
+
+    booster_rules = BoosterRules(default_config.boosters, default_config.board, default_config.symbols)
+    criteria = {
+        "W": WildBridgeCriterion(default_config.board),
+        "R": RocketArmCriterion(booster_rules, default_config.board),
+        "B": BombArmCriterion(booster_rules, default_config.board),
+        "LB": LightballArmCriterion(default_config.board),
+        "SLB": LightballArmCriterion(default_config.board),
+    }
+    return BoosterLandingEvaluator(
+        forward_simulator, booster_rules, default_config.board, criteria,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Terminal Dead — R6-001 through R6-003
 # ---------------------------------------------------------------------------
@@ -434,12 +459,13 @@ class TestInitialClusterStrategy:
 
     def test_r6_009_constrained_cells_form_connected_cluster(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, spawn_evaluator, near_miss_planner, rng,
+        seed_planner, spawn_evaluator, near_miss_planner, landing_evaluator, rng,
     ) -> None:
         """R6-009: InitialClusterStrategy constrained_cells form connected cluster of correct size."""
         strategy = InitialClusterStrategy(
             default_config, forward_simulator, cluster_builder,
-            seed_planner, spawn_evaluator, near_miss_planner, rng,
+            seed_planner, spawn_evaluator, near_miss_planner,
+            landing_evaluator, rng,
         )
         sig = _make_signature(required_cluster_sizes=(Range(5, 5),))
         context = _make_empty_context(default_config)
@@ -470,13 +496,14 @@ class TestInitialClusterStrategy:
 
     def test_r6_010_strategic_cells_nonempty_when_bridge_needed(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, spawn_evaluator, near_miss_planner, rng,
+        seed_planner, spawn_evaluator, near_miss_planner, landing_evaluator, rng,
     ) -> None:
         """R6-010: InitialClusterStrategy strategic_cells non-empty when next step needs bridge seeds."""
         from ..archetypes.registry import CascadeStepConstraint
         strategy = InitialClusterStrategy(
             default_config, forward_simulator, cluster_builder,
-            seed_planner, spawn_evaluator, near_miss_planner, rng,
+            seed_planner, spawn_evaluator, near_miss_planner,
+            landing_evaluator, rng,
         )
         # Cluster large enough to spawn a wild (7-8), next step is bridge
         sig = _make_signature(
@@ -515,12 +542,13 @@ class TestInitialClusterStrategy:
 
     def test_r6_011_scatter_positions_in_constrained_cells(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, spawn_evaluator, near_miss_planner, rng,
+        seed_planner, spawn_evaluator, near_miss_planner, landing_evaluator, rng,
     ) -> None:
         """R6-012: InitialClusterStrategy scatter positions in constrained_cells."""
         strategy = InitialClusterStrategy(
             default_config, forward_simulator, cluster_builder,
-            seed_planner, spawn_evaluator, near_miss_planner, rng,
+            seed_planner, spawn_evaluator, near_miss_planner,
+            landing_evaluator, rng,
         )
         sig = _make_signature(
             required_scatter_count=Range(2, 2),
@@ -540,12 +568,13 @@ class TestInitialClusterStrategy:
 
     def test_r6_012_step_type_is_initial(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, spawn_evaluator, near_miss_planner, rng,
+        seed_planner, spawn_evaluator, near_miss_planner, landing_evaluator, rng,
     ) -> None:
         """R6-009 supplement: step_type is INITIAL."""
         strategy = InitialClusterStrategy(
             default_config, forward_simulator, cluster_builder,
-            seed_planner, spawn_evaluator, near_miss_planner, rng,
+            seed_planner, spawn_evaluator, near_miss_planner,
+            landing_evaluator, rng,
         )
         sig = _make_signature()
         context = _make_empty_context(default_config)
@@ -559,12 +588,13 @@ class TestInitialClusterStrategy:
 
     def test_near_miss_propagator_present_when_nm_required(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, spawn_evaluator, near_miss_planner, rng,
+        seed_planner, spawn_evaluator, near_miss_planner, landing_evaluator, rng,
     ) -> None:
         """NearMissAwareDeadPropagator selected when archetype requires near-misses."""
         strategy = InitialClusterStrategy(
             default_config, forward_simulator, cluster_builder,
-            seed_planner, spawn_evaluator, near_miss_planner, rng,
+            seed_planner, spawn_evaluator, near_miss_planner,
+            landing_evaluator, rng,
         )
         sig = _make_signature(
             required_cluster_sizes=(Range(5, 5),),
@@ -584,7 +614,7 @@ class TestInitialClusterStrategy:
 
     def test_initial_cluster_rejects_wild_not_adjacent_to_refill(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, spawn_evaluator, near_miss_planner, rng,
+        seed_planner, spawn_evaluator, near_miss_planner, landing_evaluator, rng,
     ) -> None:
         """ValueError when wild lands outside refill zone — bridge impossible.
 
@@ -596,7 +626,8 @@ class TestInitialClusterStrategy:
 
         strategy = InitialClusterStrategy(
             default_config, forward_simulator, cluster_builder,
-            seed_planner, spawn_evaluator, near_miss_planner, rng,
+            seed_planner, spawn_evaluator, near_miss_planner,
+            landing_evaluator, rng,
         )
         # Step 0 spawns wild (size 7), step 1 is bridge
         sig = _make_signature(
@@ -643,16 +674,19 @@ class TestInitialClusterStrategy:
             empty_positions=empty_positions,
         )
 
-        # _plan_strategic_seeds calls predict_booster_landing internally.
-        # We need to control the booster landing position — patch at class level
-        # since ForwardSimulator uses __slots__.
+        # _plan_strategic_seeds calls the landing evaluator internally, which
+        # uses predict_booster_landing and simulate_explosion. Patch both to
+        # control the booster landing position and the refill zone.
         from unittest.mock import patch
         with patch.object(
             ForwardSimulator, "predict_booster_landing",
             return_value=Position(6, 6),
+        ), patch.object(
+            ForwardSimulator, "simulate_explosion",
+            return_value=settle_result,
         ):
             context = _make_empty_context(default_config)
-            with pytest.raises(ValueError, match="bridge impossible"):
+            with pytest.raises(ValueError, match="no viable refill adjacency"):
                 strategy._plan_strategic_seeds(
                     context, cluster_groups, "W",
                     settle_result, progress, sig, variance,
@@ -660,13 +694,14 @@ class TestInitialClusterStrategy:
 
     def test_initial_cluster_caps_wild_spawns_from_step_sizes(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, spawn_evaluator, near_miss_planner, rng,
+        seed_planner, spawn_evaluator, near_miss_planner, landing_evaluator, rng,
     ) -> None:
         """When step-level sizes all spawn wilds, cluster count capped to wild budget."""
         from ..archetypes.registry import CascadeStepConstraint
         strategy = InitialClusterStrategy(
             default_config, forward_simulator, cluster_builder,
-            seed_planner, spawn_evaluator, near_miss_planner, rng,
+            seed_planner, spawn_evaluator, near_miss_planner,
+            landing_evaluator, rng,
         )
         # Signature-level: 5-8 (5-6 do NOT spawn wild)
         # Step-level: 7-8 (both DO spawn wild)
@@ -727,7 +762,7 @@ class TestCascadeClusterStrategy:
 
     def test_r6_013_cluster_positions_within_empty_cells(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, spawn_evaluator, near_miss_planner, rng,
+        seed_planner, spawn_evaluator, near_miss_planner, landing_evaluator, rng,
     ) -> None:
         """R6-013: CascadeClusterStrategy cluster positions are within empty_cells only."""
         strategy = CascadeClusterStrategy(
@@ -747,7 +782,7 @@ class TestCascadeClusterStrategy:
 
     def test_r6_014_cluster_doesnt_conflict_with_survivors(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, spawn_evaluator, near_miss_planner, rng,
+        seed_planner, spawn_evaluator, near_miss_planner, landing_evaluator, rng,
     ) -> None:
         """R6-014: CascadeClusterStrategy cluster doesn't conflict with surviving symbols."""
         strategy = CascadeClusterStrategy(
@@ -767,7 +802,7 @@ class TestCascadeClusterStrategy:
 
     def test_r6_015_forward_sim_catches_unintended_clusters(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, spawn_evaluator, near_miss_planner, rng,
+        seed_planner, spawn_evaluator, near_miss_planner, landing_evaluator, rng,
     ) -> None:
         """R6-015: CascadeClusterStrategy forward sim verifies no unintended clusters."""
         strategy = CascadeClusterStrategy(
@@ -786,7 +821,7 @@ class TestCascadeClusterStrategy:
 
     def test_r6_016_strategic_cells_planned_when_not_terminal(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, spawn_evaluator, near_miss_planner, rng,
+        seed_planner, spawn_evaluator, near_miss_planner, landing_evaluator, rng,
     ) -> None:
         """R6-016: CascadeClusterStrategy strategic_cells planned when not terminal."""
         strategy = CascadeClusterStrategy(
@@ -818,13 +853,13 @@ class TestBoosterArmStrategy:
 
     def test_r6_017_cluster_adjacent_to_target_booster(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, chain_evaluator, rng,
+        seed_planner, chain_evaluator, landing_evaluator, rng,
     ) -> None:
         """R6-017: BoosterArmStrategy cluster is adjacent to target booster."""
         booster_pos = Position(3, 4)
         strategy = BoosterArmStrategy(
             default_config, forward_simulator, cluster_builder,
-            seed_planner, chain_evaluator, rng,
+            seed_planner, chain_evaluator, landing_evaluator, rng,
         )
         sig = _make_signature(
             family="rocket",
@@ -850,12 +885,12 @@ class TestBoosterArmStrategy:
 
     def test_r6_018_expected_arms_contains_booster_type(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, chain_evaluator, rng,
+        seed_planner, chain_evaluator, landing_evaluator, rng,
     ) -> None:
         """R6-018: BoosterArmStrategy expected_arms contains target booster type."""
         strategy = BoosterArmStrategy(
             default_config, forward_simulator, cluster_builder,
-            seed_planner, chain_evaluator, rng,
+            seed_planner, chain_evaluator, landing_evaluator, rng,
         )
         sig = _make_signature(
             family="rocket",
@@ -878,12 +913,12 @@ class TestBoosterArmStrategy:
 
     def test_r6_019_chain_arrangement_in_strategic_cells(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, chain_evaluator, rng,
+        seed_planner, chain_evaluator, landing_evaluator, rng,
     ) -> None:
         """R6-019: BoosterArmStrategy chain arrangement in strategic_cells when chain needed."""
         strategy = BoosterArmStrategy(
             default_config, forward_simulator, cluster_builder,
-            seed_planner, chain_evaluator, rng,
+            seed_planner, chain_evaluator, landing_evaluator, rng,
         )
         sig = _make_signature(
             family="chain",
@@ -914,12 +949,13 @@ class TestBoosterSetupStrategy:
 
     def test_r6_020_constrained_cells_for_missing_boosters(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, chain_evaluator, spawn_evaluator, rng,
+        seed_planner, chain_evaluator, spawn_evaluator, landing_evaluator, rng,
     ) -> None:
         """R6-020: BoosterSetupStrategy constrained_cells contain cluster for missing booster."""
         strategy = BoosterSetupStrategy(
             default_config, forward_simulator, cluster_builder,
-            seed_planner, chain_evaluator, spawn_evaluator, rng,
+            seed_planner, chain_evaluator, spawn_evaluator,
+            landing_evaluator, rng,
         )
         sig = _make_signature(
             family="chain",
@@ -937,12 +973,13 @@ class TestBoosterSetupStrategy:
 
     def test_r6_021_expected_spawns_contain_missing_types(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, chain_evaluator, spawn_evaluator, rng,
+        seed_planner, chain_evaluator, spawn_evaluator, landing_evaluator, rng,
     ) -> None:
         """R6-021: BoosterSetupStrategy expected_spawns contain missing booster types."""
         strategy = BoosterSetupStrategy(
             default_config, forward_simulator, cluster_builder,
-            seed_planner, chain_evaluator, spawn_evaluator, rng,
+            seed_planner, chain_evaluator, spawn_evaluator,
+            landing_evaluator, rng,
         )
         sig = _make_signature(
             family="chain",
@@ -1062,7 +1099,8 @@ class TestCrossCutting:
 
     def test_r6_025_all_strategies_return_frozen_step_intent(
         self, default_config, forward_simulator, cluster_builder,
-        seed_planner, spawn_evaluator, chain_evaluator, near_miss_planner, rng,
+        seed_planner, spawn_evaluator, chain_evaluator, near_miss_planner,
+        landing_evaluator, rng,
     ) -> None:
         """R6-025: All strategies return frozen StepIntent."""
         strategies_and_contexts = [
@@ -1079,7 +1117,8 @@ class TestCrossCutting:
             (
                 InitialClusterStrategy(
                     default_config, forward_simulator, cluster_builder,
-                    seed_planner, spawn_evaluator, near_miss_planner, rng,
+                    seed_planner, spawn_evaluator, near_miss_planner,
+                    landing_evaluator, rng,
                 ),
                 _make_empty_context(default_config),
                 _make_signature(),

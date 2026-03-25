@@ -68,8 +68,14 @@ def build_default_registry(
     from .services.boundary_analyzer import BoundaryAnalyzer
     from .services.forward_simulator import ForwardSimulator
     from .services.cluster_builder import ClusterBuilder
+    from .services.landing_criteria import (
+        WildBridgeCriterion, RocketArmCriterion, BombArmCriterion,
+        LightballArmCriterion,
+    )
+    from .services.landing_evaluator import BoosterLandingEvaluator
     from .services.near_miss_planner import NearMissPlanner
     from .services.seed_planner import SeedPlanner
+    from ..primitives.booster_rules import BoosterRules
     from .strategies.booster_arm import BoosterArmStrategy
     from .strategies.booster_setup import BoosterSetupStrategy
     from .strategies.cascade_cluster import CascadeClusterStrategy
@@ -93,6 +99,20 @@ def build_default_registry(
     seed_planner = SeedPlanner(forward_sim, config.board, config.symbols)
     near_miss_planner = NearMissPlanner(config, cluster_builder, rng)
 
+    # Booster landing evaluator — shared service for post-gravity viability scoring.
+    # Criteria dict dispatch replaces per-strategy if/else on booster type.
+    booster_rules = BoosterRules(config.boosters, config.board, config.symbols)
+    landing_criteria = {
+        "W": WildBridgeCriterion(config.board),
+        "R": RocketArmCriterion(booster_rules, config.board),
+        "B": BombArmCriterion(booster_rules, config.board),
+        "LB": LightballArmCriterion(config.board),
+        "SLB": LightballArmCriterion(config.board),
+    }
+    landing_eval = BoosterLandingEvaluator(
+        forward_sim, booster_rules, config.board, landing_criteria,
+    )
+
     registry = StrategyRegistry()
 
     # Terminal strategies — simplest, minimal dependencies
@@ -107,7 +127,7 @@ def build_default_registry(
     ))
     registry.register("initial_cluster", InitialClusterStrategy(
         config, forward_sim, cluster_builder, seed_planner,
-        spawn_evaluator, near_miss_planner, rng,
+        spawn_evaluator, near_miss_planner, landing_eval, rng,
     ))
 
     # Cascade strategy — general mid-cascade
@@ -122,11 +142,12 @@ def build_default_registry(
 
     # Booster strategies — arming and chain arrangement
     registry.register("booster_arm", BoosterArmStrategy(
-        config, forward_sim, cluster_builder, seed_planner, chain_evaluator, rng,
+        config, forward_sim, cluster_builder, seed_planner,
+        chain_evaluator, landing_eval, rng,
     ))
     registry.register("booster_setup", BoosterSetupStrategy(
         config, forward_sim, cluster_builder, seed_planner,
-        chain_evaluator, spawn_evaluator, rng,
+        chain_evaluator, spawn_evaluator, landing_eval, rng,
     ))
 
     return registry

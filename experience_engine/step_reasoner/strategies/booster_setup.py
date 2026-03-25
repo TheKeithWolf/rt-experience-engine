@@ -20,6 +20,7 @@ from ..intent import StepIntent, StepType
 from ..progress import ProgressTracker
 from ..services.cluster_builder import ClusterBuilder
 from ..services.forward_simulator import ForwardSimulator
+from ..services.landing_evaluator import BoosterLandingEvaluator
 from ..services.seed_planner import SeedPlanner
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
@@ -37,7 +38,7 @@ class BoosterSetupStrategy:
 
     __slots__ = (
         "_config", "_forward_sim", "_cluster_builder", "_seed_planner",
-        "_chain_eval", "_spawn_eval", "_booster_rules", "_rng",
+        "_chain_eval", "_spawn_eval", "_landing_eval", "_booster_rules", "_rng",
     )
 
     def __init__(
@@ -48,6 +49,7 @@ class BoosterSetupStrategy:
         seed_planner: SeedPlanner,
         chain_eval: ChainEvaluator,
         spawn_eval: SpawnEvaluator,
+        landing_eval: BoosterLandingEvaluator,
         rng: random.Random,
     ) -> None:
         self._config = config
@@ -56,6 +58,7 @@ class BoosterSetupStrategy:
         self._seed_planner = seed_planner
         self._chain_eval = chain_eval
         self._spawn_eval = spawn_eval
+        self._landing_eval = landing_eval
         self._booster_rules = BoosterRules(config.boosters, config.board, config.symbols)
         self._rng = rng
 
@@ -112,6 +115,27 @@ class BoosterSetupStrategy:
                 symbol=cluster_symbol, boundary=boundary, merge_policy=policy,
                 avoid_positions=frozenset(constrained),
             )
+
+            # Score the booster's post-gravity landing for chain geometry viability.
+            # Low score → retry with centroid biased toward the board interior
+            # where rocket paths and bomb blasts have maximum coverage.
+            hypothetical = self._forward_sim.build_hypothetical(
+                context.board,
+                {pos: cluster_symbol for pos in result.planned_positions},
+            )
+            _ctx, landing_score = self._landing_eval.evaluate_and_score(
+                frozenset(result.planned_positions), hypothetical, booster_type,
+            )
+            if landing_score < 0.5:
+                result = self._cluster_builder.find_positions(
+                    context, cluster_size, self._rng, variance,
+                    symbol=cluster_symbol, boundary=boundary, merge_policy=policy,
+                    avoid_positions=frozenset(constrained),
+                    centroid_target=Position(
+                        self._config.board.num_reels // 2,
+                        self._config.board.num_rows // 2,
+                    ),
+                )
 
             for pos in result.planned_positions:
                 constrained[pos] = cluster_symbol
