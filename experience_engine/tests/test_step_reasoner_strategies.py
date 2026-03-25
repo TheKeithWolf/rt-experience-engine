@@ -557,6 +557,31 @@ class TestInitialClusterStrategy:
         assert intent.step_type is StepType.INITIAL
         assert intent.is_terminal is False
 
+    def test_near_miss_propagator_present_when_nm_required(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, spawn_evaluator, near_miss_planner, rng,
+    ) -> None:
+        """NearMissAwareDeadPropagator selected when archetype requires near-misses."""
+        strategy = InitialClusterStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, spawn_evaluator, near_miss_planner, rng,
+        )
+        sig = _make_signature(
+            required_cluster_sizes=(Range(5, 5),),
+            required_near_miss_count=Range(1, 1),
+            required_near_miss_symbol_tier=SymbolTier.ANY,
+        )
+        context = _make_empty_context(default_config)
+        progress = _make_progress(sig)
+        variance = _make_variance_hints(default_config)
+
+        intent = strategy.plan_step(context, progress, sig, variance)
+
+        assert any(
+            isinstance(p, NearMissAwareDeadPropagator)
+            for p in intent.wfc_propagators
+        )
+
 
 # ---------------------------------------------------------------------------
 # Cascade Cluster — R6-013 through R6-016

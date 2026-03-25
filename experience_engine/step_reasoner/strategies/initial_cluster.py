@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import random
 
-from ...board_filler.propagators import ClusterBoundaryPropagator, NoClusterPropagator, NoSpecialSymbolPropagator
+from ...board_filler.propagators import (
+    ClusterBoundaryPropagator, NearMissAwareDeadPropagator, NearMissGroup,
+    NoClusterPropagator, NoSpecialSymbolPropagator,
+)
 from ...config.schema import MasterConfig
 from ...primitives.board import Position
 from ...primitives.booster_rules import BoosterRules
@@ -131,8 +134,8 @@ class InitialClusterStrategy:
         # Propagators for WFC noise fill — one ClusterBoundaryPropagator per cluster
         # group prevents same-symbol survivors at each cluster's edge
         propagators = self._select_propagators(
-            has_near_misses=bool(nm_result.groups),
             cluster_groups=cluster_groups,
+            near_miss_groups=nm_result.groups or None,
         )
 
         return StepIntent(
@@ -257,8 +260,8 @@ class InitialClusterStrategy:
 
     def _select_propagators(
         self,
-        has_near_misses: bool = False,
         cluster_groups: list[tuple[frozenset[Position], Symbol]] | None = None,
+        near_miss_groups: list[NearMissGroup] | None = None,
     ) -> list:
         """Select WFC propagators for noise fill around the cluster(s).
 
@@ -267,8 +270,9 @@ class InitialClusterStrategy:
         per cluster group forbids each cluster's symbol at adjacent cells —
         prevents same-symbol survivors from bordering the refill zone
         after explosion + gravity.
-        When no near-misses are present, MaxComponentPropagator caps fill
-        components below near-miss size to prevent accidental groups.
+        MaxComponentPropagator caps fill components below near-miss size.
+        When near-miss groups are present, NearMissAwareDeadPropagator
+        replaces it — same component cap plus isolation at group borders.
         """
         from ...board_filler.propagators import MaxComponentPropagator
 
@@ -283,11 +287,17 @@ class InitialClusterStrategy:
                 propagators.append(ClusterBoundaryPropagator(
                     positions, symbol, self._config.board,
                 ))
-        # When near-misses are pinned on the board, skip the component cap —
-        # the cap (size 3) would overconstrain the fill around size-4 groups.
-        # When no near-misses exist, enforce the cap to prevent accidental
-        # near-miss-sized components that confuse the validator.
-        if not has_near_misses:
-            nm_fill_cap = self._config.board.min_cluster_size - 2
+        # Cap WFC-placed components below near-miss size. NM groups are pinned
+        # as constrained cells before WFC runs, so the cap only affects
+        # WFC-placed cells — NearMissAwareDeadPropagator adds isolation at
+        # group borders to prevent WFC from merging symbols into NM groups.
+        nm_fill_cap = self._config.board.min_cluster_size - 2
+        if near_miss_groups:
+            propagators.append(NearMissAwareDeadPropagator(
+                max_component=nm_fill_cap,
+                protected_groups=near_miss_groups,
+                board_config=self._config.board,
+            ))
+        else:
             propagators.append(MaxComponentPropagator(nm_fill_cap))
         return propagators
