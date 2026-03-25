@@ -75,6 +75,12 @@ class InitialClusterStrategy:
         cluster_count = self._cluster_builder.select_cluster_count(
             signature.required_cluster_count, self._rng,
         )
+
+        # Cap cluster count to Wild spawn budget when every cluster would spawn a Wild
+        if self._all_clusters_spawn_wilds(signature):
+            wild_budget = progress.remaining_booster_spawns().get("W")
+            if wild_budget is not None:
+                cluster_count = min(cluster_count, wild_budget.max_val)
         multi_result = self._cluster_builder.build_multi_cluster(
             context, cluster_count, list(signature.required_cluster_sizes),
             progress, signature, variance, self._rng,
@@ -230,6 +236,14 @@ class InitialClusterStrategy:
             step_spec = signature.cascade_steps[next_step]
             return step_spec.must_arm_booster is not None
         return False
+
+    def _all_clusters_spawn_wilds(self, signature: ArchetypeSignature) -> bool:
+        """True when every cluster size range in the signature maps to Wild spawns."""
+        return all(
+            self._spawn_eval.booster_for_size(r.min_val) == "W"
+            and self._spawn_eval.booster_for_size(r.max_val) == "W"
+            for r in signature.required_cluster_sizes
+        )
 
     def _resolve_scatter_count(self, signature: ArchetypeSignature) -> int:
         """Pick a scatter count within the signature's range."""

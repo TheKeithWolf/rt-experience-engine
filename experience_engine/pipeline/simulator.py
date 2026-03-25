@@ -84,6 +84,7 @@ class StepTransitionSimulator:
         # 3. Spawn boosters into the freshly-emptied cells
         spawn_records = self._spawn_boosters(
             step_result.clusters, booster_tracker, step_result.step_index,
+            result_board,
         )
 
         # 4. Run gravity settle
@@ -115,13 +116,12 @@ class StepTransitionSimulator:
         clusters: tuple[ClusterRecord, ...],
         tracker: BoosterTracker,
         step_index: int,
+        board: Board,
     ) -> list[SpawnRecord]:
         """Spawn boosters from qualifying clusters in config spawn order.
 
-        Processes clusters checking each against the spawn thresholds.
-        Wild spawns are handled by the wild lifecycle — only non-wild
-        boosters (R, B, LB, SLB) are added to the tracker.
-
+        Wilds are written directly to the board at the centroid position.
+        Non-wild boosters (R, B, LB, SLB) are added to the tracker.
         Occupied tracking prevents position conflicts between spawned boosters.
         """
         rules = self._booster_rules
@@ -134,10 +134,6 @@ class StepTransitionSimulator:
         for booster_name in self._config.boosters.spawn_order:
             booster_sym = symbol_from_name(booster_name)
 
-            # Wild spawns handled by wild lifecycle, not the booster tracker
-            if is_wild(booster_sym):
-                continue
-
             for cluster_idx, cluster in enumerate(clusters):
                 candidate_type = rules.booster_type_for_size(cluster.size)
                 if candidate_type is not booster_sym:
@@ -148,20 +144,23 @@ class StepTransitionSimulator:
                     centroid, cluster.positions, frozenset(occupied),
                 )
 
-                # Determine orientation for rockets
-                orientation: str | None = None
-                if booster_sym is Symbol.R:
-                    orientation = rules.compute_rocket_orientation(
-                        cluster.positions,
+                if is_wild(booster_sym):
+                    # Wild goes on the board — not into the tracker
+                    board.set(position, Symbol.W)
+                else:
+                    # Non-wild boosters go into the tracker
+                    orientation: str | None = None
+                    if booster_sym is Symbol.R:
+                        orientation = rules.compute_rocket_orientation(
+                            cluster.positions,
+                        )
+                    tracker.add(
+                        booster_sym, position,
+                        orientation=orientation,
+                        source_cluster_index=cluster_idx,
                     )
 
-                tracker.add(
-                    booster_sym, position,
-                    orientation=orientation,
-                    source_cluster_index=cluster_idx,
-                )
                 occupied.add(position)
-
                 spawn_records.append(SpawnRecord(
                     booster_type=booster_name,
                     position=position,

@@ -161,19 +161,23 @@ class ProgressTracker:
             self.clusters_produced.append(cluster)
             self.cumulative_payout += cluster.payout
 
-        # Booster spawn tracking — add to dormant list
+        # Booster spawn tracking — route Wilds to active_wilds, others to dormant
         for spawn in step_result.spawns:
             self.boosters_spawned[spawn.booster_type] = (
                 self.boosters_spawned.get(spawn.booster_type, 0) + 1
             )
-            self.dormant_boosters.append(
-                DormantBooster(
-                    booster_type=spawn.booster_type,
-                    position=spawn.position,
-                    orientation=None,
-                    spawned_step=spawn.step_index,
+            if spawn.booster_type == "W":
+                # Wilds are passive board symbols, not dormant boosters
+                self.active_wilds.append(spawn.position)
+            else:
+                self.dormant_boosters.append(
+                    DormantBooster(
+                        booster_type=spawn.booster_type,
+                        position=spawn.position,
+                        orientation=None,
+                        spawned_step=spawn.step_index,
+                    )
                 )
-            )
 
         # Booster fire tracking — remove from dormant list by position
         fired_positions: set[Position] = set()

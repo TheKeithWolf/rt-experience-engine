@@ -495,9 +495,10 @@ class TestSpawnOrder:
         gen._config = default_config
         gen._booster_rules = rules
 
-        # Call the method directly
+        # Call the method directly — board arg needed for Wild writes (not hit here)
+        board_mock = MagicMock()
         placements = CascadeInstanceGenerator._spawn_boosters(
-            gen, [cluster_r, cluster_b], tracker,
+            gen, [cluster_r, cluster_b], tracker, board_mock,
         )
 
         # Should spawn R first, then B (per config spawn order: W, R, B, LB, SLB)
