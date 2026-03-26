@@ -111,12 +111,12 @@ class TestStepIntent:
 # TEST-R3-002: StepType has all 6 variants
 # ---------------------------------------------------------------------------
 
-    def test_step_type_has_six_variants(self) -> None:
-        """R3-002: StepType enum has exactly 6 members."""
-        assert len(StepType) == 6
+    def test_step_type_has_five_variants(self) -> None:
+        """R3-002: StepType enum has exactly 5 members."""
+        assert len(StepType) == 5
         expected = {
             "INITIAL", "CASCADE_CLUSTER", "BOOSTER_ARM",
-            "BOOSTER_FIRE", "TERMINAL_DEAD", "TERMINAL_NEAR_MISS",
+            "TERMINAL_DEAD", "TERMINAL_NEAR_MISS",
         }
         assert {m.name for m in StepType} == expected
 
@@ -274,8 +274,8 @@ class TestProgressTracker:
         tracker.cumulative_payout = 100  # 1.0x — within (0.5, 5.0)
         assert tracker.is_satisfied() is True
 
-    def test_is_satisfied_missing_fire(self) -> None:
-        """R3-013: Returns False when a required booster fire is missing."""
+    def test_is_satisfied_ignores_pending_fires(self) -> None:
+        """Fires are deferred to the post-terminal phase — they don't gate cascade termination."""
         tracker = ProgressTracker(
             signature=_make_signature(
                 required_cascade_depth=Range(2, 5),
@@ -285,8 +285,8 @@ class TestProgressTracker:
             centipayout_multiplier=100,
         )
         tracker.steps_completed = 3
-        # No fires recorded
-        assert tracker.is_satisfied() is False
+        # No fires recorded — but is_satisfied() no longer checks fires
+        assert tracker.is_satisfied() is True
 
     def test_update_increments_counters(self) -> None:
         """R3-014: update() advances steps, clusters, and payout."""
@@ -353,13 +353,13 @@ class TestProgressTrackerCascadeSteps:
         step0 = CascadeStepConstraint(
             cluster_count=Range(1, 2), cluster_sizes=(Range(7, 8),),
             cluster_symbol_tier=None, must_spawn_booster="W",
-            must_arm_booster=None, must_fire_booster=None,
+            must_arm_booster=None,
             wild_behavior="spawn",
         )
         step1 = CascadeStepConstraint(
             cluster_count=Range(1, 1), cluster_sizes=(Range(5, 6),),
             cluster_symbol_tier=None, must_spawn_booster=None,
-            must_arm_booster=None, must_fire_booster=None,
+            must_arm_booster=None,
             wild_behavior="bridge",
         )
         return step0, step1
@@ -404,7 +404,7 @@ class TestProgressTrackerCascadeSteps:
         step0 = CascadeStepConstraint(
             cluster_count=Range(1, 2), cluster_sizes=(Range(7, 8),),
             cluster_symbol_tier=None, must_spawn_booster="W",
-            must_arm_booster=None, must_fire_booster=None,
+            must_arm_booster=None,
             wild_behavior="spawn",
         )
         tracker = ProgressTracker(

@@ -97,7 +97,6 @@ def register_trigger_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
         ),
         required_booster_spawns={},
@@ -159,7 +158,6 @@ def register_trigger_archetypes(registry: ArchetypeRegistry) -> None:
                 # Spawn R or B — dormant presence for visual excitement
                 must_spawn_booster=("R", "B"),
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
         ),
         # Boosters spawn but are not required to fire — dormant visual presence

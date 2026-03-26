@@ -71,7 +71,6 @@ def register_chain_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=("R", "B"),
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
         ),
         # Both rocket and bomb must spawn and fire — ASP chooses which initiates
@@ -109,7 +108,6 @@ def register_chain_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=("R", "B"),
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
         ),
         # Flexible spawn/fire counts — ASP fills to meet chain depth requirement
@@ -147,7 +145,6 @@ def register_chain_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=("R", "B"),
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
         ),
         required_booster_spawns={"R": Range(1, 2), "B": Range(1, 2)},
@@ -186,7 +183,6 @@ def register_chain_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             # Step 1: continued small cascade
             CascadeStepConstraint(
@@ -195,7 +191,6 @@ def register_chain_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             # Step 2: transition — clusters grow toward booster threshold
             CascadeStepConstraint(
@@ -204,7 +199,6 @@ def register_chain_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             # Step 3: growth hits booster threshold — organic spawn
             CascadeStepConstraint(
@@ -213,7 +207,6 @@ def register_chain_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=("R", "B"),
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
         ),
         # Single booster spawns from the organic growth step — R or B
@@ -251,7 +244,6 @@ def register_chain_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             # Act 1 climax: arm + fire rocket (booster phase 1)
             CascadeStepConstraint(
@@ -260,7 +252,6 @@ def register_chain_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
             # Act 2: spawn bomb from 11-12 cluster
             CascadeStepConstraint(
@@ -269,7 +260,6 @@ def register_chain_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="B",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             # Act 2 climax: arm + fire bomb (booster phase 2)
             CascadeStepConstraint(
@@ -278,7 +268,6 @@ def register_chain_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="B",
-                must_fire_booster="B",
             ),
         ),
         # Both boosters must spawn and fire — in separate phases, not chained

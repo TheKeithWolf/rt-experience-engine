@@ -41,7 +41,8 @@ from .simulator import StepTransitionSimulator
 
 if TYPE_CHECKING:
     from ..boosters.phase_executor import BoosterPhaseExecutor
-    from ..primitives.cluster_detection import Cluster
+
+from ..primitives.cluster_detection import Cluster, detect_clusters
 
 from ..spatial_solver.data_types import BoosterPlacement, SpatialStep
 
@@ -184,7 +185,7 @@ class CascadeInstanceGenerator:
             if not intent.is_terminal:
                 # Route to booster-aware transition when the archetype fires boosters
                 if phase_executor is not None:
-                    transition_result = self._simulator.transition_with_boosters(
+                    transition_result = self._simulator.transition_and_arm(
                         filled, step_result, booster_tracker, grid_mults,
                         phase_executor,
                     )
@@ -201,12 +202,6 @@ class CascadeInstanceGenerator:
                     transition_result.booster_gravity_record,
                 )
 
-                # Track booster fires in progress so the reasoner knows what's happened
-                for fire_rec in transition_result.booster_fire_records:
-                    progress.boosters_fired[fire_rec.booster_type] = (
-                        progress.boosters_fired.get(fire_rec.booster_type, 0) + 1
-                    )
-
                 # Board is truth — sync wild positions after gravity + consumption
                 progress.sync_active_wilds(
                     transition_result.board, self._config.board,
@@ -218,6 +213,14 @@ class CascadeInstanceGenerator:
                 break
 
             board = transition_result.board
+
+        # Post-terminal booster phase: fire armed boosters, refill, re-cascade
+        if phase_executor is not None and booster_tracker.get_armed():
+            board, raw_steps = self._run_post_terminal_booster_phase(
+                board, booster_tracker, grid_mults, phase_executor,
+                progress, sig, hints, rng,
+                raw_steps, step_results, max_steps,
+            )
 
         # Phase 2: Build CascadeStepRecords with actual refill symbols.
         # Step N's gravity refill reads from step N+1's filled board — the
@@ -267,6 +270,134 @@ class CascadeInstanceGenerator:
             cascade_steps=tuple(cascade_step_records),
         )
         return instance
+
+    # ------------------------------------------------------------------
+    # Post-terminal booster phase
+    # ------------------------------------------------------------------
+
+    def _run_post_terminal_booster_phase(
+        self,
+        board: Board,
+        booster_tracker: BoosterTracker,
+        grid_mults: GridMultiplierGrid,
+        phase_executor: BoosterPhaseExecutor,
+        progress: ProgressTracker,
+        sig: ArchetypeSignature,
+        hints: VarianceHints,
+        rng: random.Random,
+        raw_steps: list[tuple],
+        step_results: list[StepResult],
+        max_steps: int,
+    ) -> tuple[Board, list[tuple]]:
+        """Fire armed boosters post-terminal, refill, re-cascade if clusters emerge.
+
+        Loop:
+        1. Fire all armed boosters → clear → gravity settle
+        2. Refill empty cells with random standard symbols
+        3. Detect clusters on refilled board
+        4. If clusters → re-enter cascade loop (reason/execute/validate/transition)
+        5. If no clusters and no armed boosters → truly terminal
+
+        Shares the max_steps ceiling with the cascade loop to prevent runaway loops
+        where boosters keep creating clusters that arm more boosters.
+        """
+        standard_symbol_names = tuple(self._config.symbols.standard)
+        steps_used = len(raw_steps)
+
+        while booster_tracker.get_armed() and steps_used < max_steps:
+            # 1. Fire armed boosters → clear affected → gravity settle
+            fire_result = self._simulator.execute_terminal_booster_phase(
+                board, booster_tracker, grid_mults, phase_executor,
+            )
+            board = fire_result.board
+
+            # Track booster fires in progress for instance validation
+            for fire_rec in fire_result.booster_fire_records:
+                progress.boosters_fired[fire_rec.booster_type] = (
+                    progress.boosters_fired.get(fire_rec.booster_type, 0) + 1
+                )
+
+            # Attach fire records to the last raw_step's transition data
+            # so they appear in the CascadeStepRecord for event stream replay
+            if raw_steps:
+                last_sr, last_bb, last_ba, last_gm, last_td = raw_steps[-1]
+                if last_td is not None:
+                    gr_base, empty_positions, spawns, _, _ = last_td
+                    raw_steps[-1] = (
+                        last_sr, last_bb, last_ba, last_gm,
+                        (gr_base, empty_positions, spawns,
+                         fire_result.booster_fire_records,
+                         fire_result.booster_gravity_record),
+                    )
+
+            # 2. Refill empty cells with random standard symbols
+            for reel in range(self._config.board.num_reels):
+                for row in range(self._config.board.num_rows):
+                    pos = Position(reel, row)
+                    if board.get(pos) is None:
+                        sym = symbol_from_name(rng.choice(standard_symbol_names))
+                        board.set(pos, sym)
+
+            # 3. Detect clusters on refilled board
+            clusters = detect_clusters(board, self._config)
+
+            if not clusters:
+                # No clusters and while-loop will check for armed boosters
+                break
+
+            # 4. Clusters found — re-enter cascade loop
+            # The board has clusters that need to be resolved via the normal
+            # reason→execute→validate→transition pipeline
+            for _ in range(max_steps - steps_used):
+                board_before = board.copy()
+
+                context = BoardContext.from_board(
+                    board, grid_mults,
+                    progress.dormant_boosters,
+                    progress.active_wilds,
+                    self._config.board,
+                )
+
+                intent = self._reasoner.reason(context, progress, sig, hints)
+                filled = self._executor.execute(intent, board, rng)
+
+                step_result = self._validator.validate_step(
+                    filled, intent, progress, grid_mults,
+                )
+
+                step_results.append(step_result)
+                progress.update(step_result)
+
+                transition_data = None
+                if not intent.is_terminal:
+                    transition_result = self._simulator.transition_and_arm(
+                        filled, step_result, booster_tracker, grid_mults,
+                        phase_executor,
+                    )
+
+                    transition_data = (
+                        transition_result.gravity_record,
+                        transition_result.board.empty_positions(),
+                        transition_result.spawns,
+                        transition_result.booster_fire_records,
+                        transition_result.booster_gravity_record,
+                    )
+
+                    progress.sync_active_wilds(
+                        transition_result.board, self._config.board,
+                    )
+
+                raw_steps.append((step_result, board_before, filled, grid_mults, transition_data))
+                steps_used += 1
+
+                if intent.is_terminal:
+                    break
+
+                board = transition_result.board
+
+            # After re-cascade, check if new armed boosters appeared — while loop continues
+
+        return board, raw_steps
 
     # ------------------------------------------------------------------
     # Step record builder

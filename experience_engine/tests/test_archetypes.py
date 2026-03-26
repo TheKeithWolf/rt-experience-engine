@@ -133,7 +133,6 @@ def test_rejects_cascade_steps_when_depth_zero(
             cluster_symbol_tier=None,
             must_spawn_booster=None,
             must_arm_booster=None,
-            must_fire_booster=None,
         ),
     )
     with pytest.raises(SignatureValidationError, match="CONTRACT-SIG-5"):

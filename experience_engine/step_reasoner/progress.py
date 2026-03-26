@@ -122,9 +122,11 @@ class ProgressTracker:
         return remaining[booster_type].min_val > 0
 
     def is_satisfied(self) -> bool:
-        """True when all signature minimums are met — ready to terminate.
+        """True when all cascade-phase minimums are met — ready to terminate.
 
-        Checks cascade depth, booster spawns/fires, and payout budget.
+        Checks cascade depth, booster spawns, and payout budget.
+        Booster fires are validated at instance level after the post-terminal
+        booster phase — they do not gate cascade termination.
         """
         # All mandatory cascade steps must have been executed
         if (self.signature.cascade_steps is not None
@@ -137,11 +139,6 @@ class ProgressTracker:
 
         # All booster spawn minimums met
         for remaining in self.remaining_booster_spawns().values():
-            if remaining.min_val > 0:
-                return False
-
-        # All booster fire minimums met
-        for remaining in self.remaining_booster_fires().values():
             if remaining.min_val > 0:
                 return False
 

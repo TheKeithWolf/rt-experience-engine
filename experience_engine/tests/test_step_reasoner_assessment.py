@@ -123,7 +123,6 @@ def _make_assessment(**overrides) -> StepAssessment:
         must_terminate_now=False,
         should_terminate_soon=False,
         needs_booster_spawn={},
-        needs_booster_fire={},
         needs_chain=False,
         needs_wild_bridge=False,
         payout_remaining=RangeFloat(1.0, 3.0),
@@ -215,7 +214,6 @@ class TestStepAssessor:
             cluster_symbol_tier=SymbolTier.LOW,
             must_spawn_booster=None,
             must_arm_booster=None,
-            must_fire_booster=None,
             wild_behavior="bridge",
         )
         sig = _make_signature(

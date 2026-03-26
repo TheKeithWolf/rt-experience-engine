@@ -32,7 +32,7 @@ from .pipeline.simulator import StepTransitionSimulator
 from .primitives.board import Board, Position
 from .primitives.cluster_detection import detect_clusters
 from .primitives.grid_multipliers import GridMultiplierGrid
-from .primitives.symbols import Symbol, SymbolTier, tier_of
+from .primitives.symbols import Symbol, SymbolTier, symbol_from_name, tier_of
 from .step_reasoner.context import BoardContext
 from .step_reasoner.progress import ProgressTracker
 from .step_reasoner.results import StepResult
@@ -443,7 +443,7 @@ def diagnostic_attempt(
             try:
                 # Route to booster-aware transition when the archetype fires boosters
                 if phase_executor is not None:
-                    transition_result = gen._simulator.transition_with_boosters(
+                    transition_result = gen._simulator.transition_and_arm(
                         filled, step_result, booster_tracker, grid_mults,
                         phase_executor,
                     )
@@ -480,32 +480,57 @@ def diagnostic_attempt(
             # Show booster tracker state after spawn + gravity
             print(render_booster_tracker_state(booster_tracker, fresh_positions))
 
-            # Show booster fire results if any boosters fired
-            if transition_result.booster_fire_records:
-                print(f"\n  Booster fire phase:")
-                for fr in transition_result.booster_fire_records:
-                    orient = f" orientation={fr.orientation}" if fr.orientation else ""
-                    print(f"    FIRE: {fr.booster_type} at ({fr.position_reel},{fr.position_row}){orient}")
-                    # Show rocket path for directional boosters
-                    if fr.orientation == "H":
-                        print(f"      Path: row {fr.position_row}, reels 0-{board.num_reels - 1}")
-                    elif fr.orientation == "V":
-                        print(f"      Path: reel {fr.position_reel}, rows 0-{board.num_rows - 1}")
-                    print(f"      Cleared: {fr.affected_count} cells, chains: {fr.chain_target_count}")
-                    if fr.target_symbols:
-                        print(f"      Targets: {fr.target_symbols}")
-                print(render_board(board, label="Board after booster fire + gravity:"))
-
-                # Track booster fires in progress
-                for fire_rec in transition_result.booster_fire_records:
-                    progress.boosters_fired[fire_rec.booster_type] = (
-                        progress.boosters_fired.get(fire_rec.booster_type, 0) + 1
-                    )
-
             print(render_empty_cells(board))
         else:
             print(f"\n  Terminal step -- cascade ends here")
             break
+
+    # Post-terminal booster phase — fire armed boosters after cascade exhaustion
+    if phase_executor is not None and booster_tracker.get_armed():
+        print(f"\n  {'='*60}")
+        print(f"  POST-TERMINAL BOOSTER PHASE")
+        print(f"  {'='*60}")
+
+        booster_cycle = 0
+        while booster_tracker.get_armed():
+            booster_cycle += 1
+            armed = booster_tracker.get_armed()
+            print(f"\n  Booster fire cycle {booster_cycle} ({len(armed)} armed boosters):")
+
+            fire_result = gen._simulator.execute_terminal_booster_phase(
+                board, booster_tracker, grid_mults, phase_executor,
+            )
+            board = fire_result.board
+
+            for fr in fire_result.booster_fire_records:
+                orient = f" orientation={fr.orientation}" if fr.orientation else ""
+                print(f"    FIRE: {fr.booster_type} at ({fr.position_reel},{fr.position_row}){orient}")
+                print(f"      Cleared: {fr.affected_count} cells, chains: {fr.chain_target_count}")
+                if fr.target_symbols:
+                    print(f"      Targets: {fr.target_symbols}")
+
+                # Track fires in progress for validation
+                progress.boosters_fired[fr.booster_type] = (
+                    progress.boosters_fired.get(fr.booster_type, 0) + 1
+                )
+
+            print(render_board(board, label="Board after booster fire + gravity:"))
+
+            # Refill empty cells
+            standard_names = tuple(config.symbols.standard)
+            for reel in range(config.board.num_reels):
+                for row in range(config.board.num_rows):
+                    pos = Position(reel, row)
+                    if board.get(pos) is None:
+                        board.set(pos, symbol_from_name(rng.choice(standard_names)))
+
+            # Detect clusters on refilled board
+            clusters = detect_clusters(board, config)
+            if clusters:
+                print(f"\n  Refill produced {len(clusters)} cluster(s) — would re-cascade")
+            else:
+                print(f"\n  Refill produced no clusters — board is truly terminal")
+            break  # Debug runner shows one cycle; real pipeline loops
 
     # Instance-level validation — uses the same InstanceValidator as the real
     # pipeline (run.py → PopulationController) so SUCCESS here guarantees the

@@ -288,7 +288,6 @@ def _make_rocket_signature(config: MasterConfig) -> ArchetypeSignature:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
         ),
         required_booster_spawns={"R": Range(1, 1)},
@@ -328,7 +327,6 @@ def _make_chain_signature(config: MasterConfig) -> ArchetypeSignature:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             # Step 1: cluster of 11-12 → spawns bomb
             CascadeStepConstraint(
@@ -337,7 +335,6 @@ def _make_chain_signature(config: MasterConfig) -> ArchetypeSignature:
                 cluster_symbol_tier=None,
                 must_spawn_booster="B",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
         ),
         required_booster_spawns={"R": Range(1, 1), "B": Range(1, 1)},

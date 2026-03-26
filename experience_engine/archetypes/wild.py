@@ -49,7 +49,10 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
     # Core wild archetypes (6)
     # -----------------------------------------------------------------------
 
-    # Wild spawns from 7-8 cluster but sits idle — doesn't bridge
+    # Narrative Arc
+    # Step 0: 1 Cluster of 7-8 + W spawn
+    # Cascade to Settle (Grativy + Refill)
+    # Step 1: Terminal board with W unused
     registry.register(ArchetypeSignature(
         id="wild_idle",
         required_cluster_count=Range(1, 2),
@@ -66,7 +69,6 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="W",
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior="spawn",
             ),
         ),
@@ -78,7 +80,12 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
         **base(),
     ))
 
-    # Wild bridges two small groups into a larger effective cluster
+    # Narrative Arc
+    # Step 0: 1 Cluster of 7-8 + W spawn
+    # Cascade to Settle (Grativy + Refill)
+    # Step 1: W bridges two disconnected LOW symbol groups into one large cluster
+    # Cascade to Settle (Grativy + Refill)
+    # Step 2: Terminal board with W used in the bridge, so no wilds remain on terminal
     registry.register(ArchetypeSignature(
         id="wild_bridge_small",
         required_cluster_count=Range(1, 2),
@@ -95,7 +102,6 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="W",
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior="spawn",
             ),
             CascadeStepConstraint(
@@ -104,7 +110,6 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior="bridge",
             ),
         ),
@@ -116,7 +121,12 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
         **base(),
     ))
 
-    # Wild bridges groups into 9-10 size — escalation toward rocket territory
+    # Narrative Arc
+    # Step 0: 1 Cluster of 7-8 + W spawn
+    # Cascade to Settle (Grativy + Refill)
+    # Step 1: W bridges two disconnected HIGH symbol groups into one large cluster
+    # Cascade to Settle (Grativy + Refill)
+    # Step 2: Terminal board with W used in the bridge, so no wilds remain on terminal
     registry.register(ArchetypeSignature(
         id="wild_bridge_large",
         required_cluster_count=Range(1, 2),
@@ -135,8 +145,16 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
         **base(),
     ))
 
-    # Wild bridges cluster to 9-10 size, triggering a rocket spawn that fires
-    # Narrative arc: W spawn → W bridge → R spawn → R arm → R fire → terminal
+    # Narrative Arc
+    # Step 0: 2 Clusters of 7-8 + W spawn
+    # Cascade to Settle (Grativy + Refill)
+    # Step 1: W bridges a symbol group of size 9-10 spawning a Rocket booster
+    # Cascade to Settle (Grativy + Refill)
+    # Step 2: 1 Cluster of 5-6 ARMS the Rocket
+    # Cascade to Settle (Grativy + Refill)
+    # Step 3: Rocket fires, clearing a row/col 
+    # Cascade to Settle (Grativy + Refill)
+    # Step 4: Terminal board with minimum of 1 or no wilds remain on terminal. No Rockets remain on terminal since it FIRED.
     registry.register(ArchetypeSignature(
         id="wild_enable_rocket",
         required_cluster_count=Range(1, 2),
@@ -155,7 +173,6 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="W",
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior="spawn",
             ),
             # Step 1: W bridges two groups into 9-10 cluster → R spawns
@@ -165,7 +182,6 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior="bridge",
             ),
             # Step 2: new cluster arms R → R fires → clears row/col
@@ -175,7 +191,6 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"W": Range(1, 1), "R": Range(1, 1)},
@@ -187,7 +202,16 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
         **{**base(), "required_booster_fires": {"R": Range(1, 1)}},
     ))
 
-    # Wild bridges cluster to 11-12 size, triggering a bomb spawn
+    # Narrative Arc
+    # Step 0: 2 Clusters of 7-8 + W spawn
+    # Cascade to Settle (Grativy + Refill)
+    # Step 1: W bridges a symbol group of size 11-12 spawning a Bomb booster
+    # Cascade to Settle (Grativy + Refill)
+    # Step 2: 1 Cluster of 5-6 ARMS the Bomb
+    # Cascade to Settle (Grativy + Refill)
+    # Step 3: Bomb fires, clearing a 3x3 area around it 
+    # Cascade to Settle (Grativy + Refill)
+    # Step 4: Terminal board with minimum of 1 or no wilds remain on terminal. No Bombs remain on terminal since it FIRED.
     registry.register(ArchetypeSignature(
         id="wild_enable_bomb",
         required_cluster_count=Range(1, 2),
@@ -206,7 +230,12 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
         **base(),
     ))
 
-    # Multiple wilds on board — 2-3 wild spawns across cascade steps
+    # Narrative Arc
+    # Step 0: 2-4 Clusters of 7-8 spawning Wilds (1 per cluster)
+    # Cascade to Settle (Grativy + Refill)
+    # Step 1: W bridges symbol groups forming clusters
+    # Cascade to Settle (Grativy + Refill). Until wilds can no longer bridge
+    # Step 3: Terminal board. Wilds may be used in bridges, but any number of wilds can remain on terminal since they are not required to be used in a bridge.
     registry.register(ArchetypeSignature(
         id="wild_multi",
         required_cluster_count=Range(2, 3),
@@ -246,7 +275,6 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="W",
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior="spawn",
             ),
         ),

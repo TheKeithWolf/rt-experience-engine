@@ -62,7 +62,6 @@ class CascadeStepConstraint:
     # Single booster name or tuple of names for multi-booster steps (e.g., ("R", "B"))
     must_spawn_booster: str | tuple[str, ...] | None
     must_arm_booster: str | tuple[str, ...] | None
-    must_fire_booster: str | tuple[str, ...] | None
     # Wild behavior required at this step — "spawn", "bridge", "idle", or None
     # Encoded as ASP fact required_wild_behavior(step, action_code)
     wild_behavior: str | None = None

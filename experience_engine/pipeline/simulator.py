@@ -127,7 +127,7 @@ class StepTransitionSimulator:
             gravity_record=gravity_record,
         )
 
-    def transition_with_boosters(
+    def transition_and_arm(
         self,
         board: Board,
         step_result: StepResult,
@@ -135,14 +135,11 @@ class StepTransitionSimulator:
         grid_mults: GridMultiplierGrid,
         phase_executor: BoosterPhaseExecutor,
     ) -> TransitionResult:
-        """Execute transition with full booster lifecycle: arm → fire → clear → gravity.
+        """Execute transition with booster spawn and arming — fires are deferred.
 
-        Produces two gravity settles for the frontend animation pipeline:
-        1. Cluster explosion gravity (same as transition())
-        2. Post-booster-fire gravity (cells cleared by rockets/bombs/lightballs)
-
-        The arm step uses pre-gravity cluster positions — a dormant booster adjacent
-        to the exploding cluster gets armed, then fires after the first gravity settle.
+        Handles cluster explosion, booster spawning, gravity settle, and arming
+        of dormant boosters adjacent to the exploding cluster. Armed boosters
+        sit on the board until the post-terminal booster phase fires them.
         """
         result_board = board.copy()
 
@@ -196,54 +193,110 @@ class StepTransitionSimulator:
             exclude_positions=freshly_spawned_positions,
         )
 
-        # 7. Execute booster fire phase (fires all armed boosters with chain propagation)
-        fire_results = phase_executor.execute_booster_phase(result_board)
-
-        booster_fire_records: tuple[BoosterFireRecord, ...] = ()
-        booster_gravity_record: GravityRecord | None = None
-
-        if fire_results:
-            # 8. Clear fire-affected positions and fired booster positions on the board
-            all_fire_affected: set[Position] = set()
-            for fr in fire_results:
-                all_fire_affected.update(fr.affected_positions)
-                # Remove the fired booster itself from the board
-                result_board.set(fr.booster.position, None)
-
-            for pos in all_fire_affected:
-                result_board.set(pos, None)
-
-            # Increment grid multipliers at fire-cleared positions
-            for pos in all_fire_affected:
-                grid_mults.increment(pos)
-
-            # 9. Second gravity settle (booster fire clearings)
-            booster_gravity_exploded = frozenset(all_fire_affected)
-            booster_settle = settle(
-                self._gravity_dag, result_board, booster_gravity_exploded,
-                self._config.gravity,
-            )
-            result_board = booster_settle.board
-
-            # 10. Update booster positions after booster-gravity
-            booster_pos_map = _build_position_map(booster_settle.move_steps)
-            booster_tracker.update_positions_after_gravity(booster_pos_map)
-
-            # Build booster gravity record and convert fire results
-            booster_gravity_record = build_gravity_record(
-                all_fire_affected, booster_settle,
-            )
-            booster_fire_records = tuple(
-                fire_result_to_record(fr) for fr in fire_results
-            )
-
+        # Armed boosters sit until the post-terminal booster phase fires them
         return TransitionResult(
             board=result_board,
             spawns=tuple(spawn_records),
             gravity_record=gravity_record,
-            booster_fire_records=booster_fire_records,
-            booster_gravity_record=booster_gravity_record,
         )
+
+    # ------------------------------------------------------------------
+    # Booster fire phase — shared by mid-cascade and post-terminal paths
+    # ------------------------------------------------------------------
+
+    def _fire_and_settle(
+        self,
+        board: Board,
+        phase_executor: BoosterPhaseExecutor,
+        booster_tracker: BoosterTracker,
+        grid_mults: GridMultiplierGrid,
+    ) -> tuple[Board, tuple[BoosterFireRecord, ...], GravityRecord | None]:
+        """Fire all armed boosters, clear affected cells, gravity settle.
+
+        Delegates to BoosterPhaseExecutor.execute_booster_phase() which handles
+        row-major fire order and depth-first chain propagation (R/B initiate
+        chains; LB/SLB receive but do not propagate).
+
+        Returns (settled_board, fire_records, booster_gravity_record).
+        Returns (board, (), None) when no boosters are armed.
+        Shared by transition_and_arm() and execute_terminal_booster_phase().
+        """
+        fire_results = phase_executor.execute_booster_phase(board)
+
+        if not fire_results:
+            return board, (), None
+
+        # Clear fire-affected positions and fired booster positions on the board
+        all_fire_affected: set[Position] = set()
+        for fr in fire_results:
+            all_fire_affected.update(fr.affected_positions)
+            # Remove the fired booster itself from the board
+            board.set(fr.booster.position, None)
+
+        for pos in all_fire_affected:
+            board.set(pos, None)
+
+        # Increment grid multipliers at fire-cleared positions
+        for pos in all_fire_affected:
+            grid_mults.increment(pos)
+
+        # Gravity settle for booster fire clearings
+        booster_gravity_exploded = frozenset(all_fire_affected)
+        booster_settle = settle(
+            self._gravity_dag, board, booster_gravity_exploded,
+            self._config.gravity,
+        )
+        board = booster_settle.board
+
+        # Update booster positions after booster-gravity
+        booster_pos_map = _build_position_map(booster_settle.move_steps)
+        booster_tracker.update_positions_after_gravity(booster_pos_map)
+
+        # Convert fire results to lightweight records for event stream
+        booster_gravity_record = build_gravity_record(
+            all_fire_affected, booster_settle,
+        )
+        booster_fire_records = tuple(
+            fire_result_to_record(fr) for fr in fire_results
+        )
+
+        return board, booster_fire_records, booster_gravity_record
+
+    def execute_terminal_booster_phase(
+        self,
+        board: Board,
+        booster_tracker: BoosterTracker,
+        grid_mults: GridMultiplierGrid,
+        phase_executor: BoosterPhaseExecutor,
+    ) -> TransitionResult:
+        """Fire armed boosters on a terminal board, then gravity settle.
+
+        Called after the cascade loop when the board is dead but armed
+        boosters remain. Returns a TransitionResult with fire records
+        and booster gravity for event stream replay. No spawns occur
+        (no clusters to spawn from).
+        """
+        result_board = board.copy()
+        settled_board, fire_records, booster_gravity = self._fire_and_settle(
+            result_board, phase_executor, booster_tracker, grid_mults,
+        )
+
+        return TransitionResult(
+            board=settled_board,
+            spawns=(),
+            # No cluster gravity in the booster phase — only booster-fire gravity
+            gravity_record=GravityRecord(
+                exploded_positions=(),
+                move_steps=(),
+                refill_entries=(),
+            ),
+            booster_fire_records=fire_records,
+            booster_gravity_record=booster_gravity,
+        )
+
+    # ------------------------------------------------------------------
+    # Booster spawn logic
+    # ------------------------------------------------------------------
 
     def _spawn_boosters(
         self,

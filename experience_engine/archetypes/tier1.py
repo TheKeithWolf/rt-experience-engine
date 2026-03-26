@@ -1,8 +1,8 @@
-"""Tier 1 family archetype definitions — static and cascade variants.
+"""Tier 1 family archetype definitions — single-step and multi-step cascade variants.
 
 Small wins from clusters of 5-6. These are bread-and-butter basegame wins.
-Phase 4 registers 4 static archetypes (cascade_depth=0). Phase 5 adds 8
-cascade archetypes (cascade_depth >= 1) that require the ASP sequence planner.
+Phase 4 registers 4 single-step archetypes (cascade_depth=1). Phase 5 adds 8
+deeper cascade archetypes (cascade_depth >= 2) that require the ASP sequence planner.
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ def _t1_base() -> dict:
     return dict(
         family="t1",
         criteria="basegame",
-        # Phase 4 static archetypes have no cascade, booster, or narrative constraints
-        required_cascade_depth=Range(0, 0),
+        # Must be ≥1 so the selector picks InitialClusterStrategy over TerminalDeadStrategy at step 0
+        required_cascade_depth=Range(1, 1),
         cascade_steps=None,
         required_booster_spawns={},
         required_booster_fires={},
@@ -36,11 +36,11 @@ def _t1_base() -> dict:
 
 
 def register_static_t1_archetypes(registry: ArchetypeRegistry) -> None:
-    """Register 4 static (cascade_depth=0) t1 archetypes."""
+    """Register 4 single-step (cascade_depth=1) t1 archetypes."""
 
     base = _t1_base
 
-    # Simplest win — single small cluster
+    # Narrative Arc: 1 Cluster (Size 5-6) → Cascade (Gravity + Refill) → Terminal
     registry.register(ArchetypeSignature(
         id="t1_single",
         required_cluster_count=Range(1, 1),
@@ -53,7 +53,7 @@ def register_static_t1_archetypes(registry: ArchetypeRegistry) -> None:
         **base(),
     ))
 
-    # Win + almost-more — cluster plus near-misses
+    # Narrative Arc: 1-2 Clusters (Size 5-6) + 1-2 Near-Misses → Cascade (Gravity + Refill) → Terminal
     registry.register(ArchetypeSignature(
         id="t1_near_miss",
         required_cluster_count=Range(1, 2),
@@ -66,7 +66,7 @@ def register_static_t1_archetypes(registry: ArchetypeRegistry) -> None:
         **base(),
     ))
 
-    # Multiple clusters — 2-3 small clusters on the same board
+    # Narrative Arc: 2-3 Clusters (Size 5-6) → Cascade (Gravity + Refill) → Terminal
     registry.register(ArchetypeSignature(
         id="t1_multi",
         required_cluster_count=Range(2, 3),
@@ -79,8 +79,7 @@ def register_static_t1_archetypes(registry: ArchetypeRegistry) -> None:
         **base(),
     ))
 
-    # Win + scatter tease — cluster with 2 scatters (feature awareness)
-    # Spec cascade range is 0-2 but static generator uses depth=0 only
+    # Narrative Arc: 1-2 Clusters (Size 5-6) + 2 Scatters → Cascade (Gravity + Refill) → Terminal
     registry.register(ArchetypeSignature(
         id="t1_scatter_2",
         required_cluster_count=Range(1, 2),
@@ -148,7 +147,6 @@ def register_cascade_t1_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
         ),
         symbol_tier_per_step=None,
@@ -173,7 +171,6 @@ def register_cascade_t1_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -181,7 +178,6 @@ def register_cascade_t1_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
         ),
         symbol_tier_per_step=None,

@@ -36,9 +36,8 @@ class StepAssessment:
     is_first_step: bool
     must_terminate_now: bool
     should_terminate_soon: bool
-    # Booster type → minimum remaining spawns/fires still needed
+    # Booster type → minimum remaining spawns still needed
     needs_booster_spawn: dict[str, int]
-    needs_booster_fire: dict[str, int]
     needs_chain: bool
     needs_wild_bridge: bool
     payout_remaining: RangeFloat
@@ -94,11 +93,6 @@ class StepAssessor:
             for btype, remaining in progress.remaining_booster_spawns().items()
             if remaining.min_val > 0
         }
-        needs_fire = {
-            btype: remaining.min_val
-            for btype, remaining in progress.remaining_booster_fires().items()
-            if remaining.min_val > 0
-        }
 
         # Chain depth still unmet
         needs_chain = signature.required_chain_depth.min_val > progress.chain_depth_max
@@ -128,7 +122,7 @@ class StepAssessor:
 
         # Arming urgency — dormant boosters exist and remaining steps are tight
         booster_needs_arming_soon = self._compute_arming_urgency(
-            dormant_boosters, needs_fire, steps_remaining,
+            dormant_boosters, steps_remaining,
         )
 
         # Payout pacing — how much of the budget has been spent vs config thresholds
@@ -145,7 +139,6 @@ class StepAssessor:
             ),
             should_terminate_soon=steps_remaining.max_val <= 1,
             needs_booster_spawn=needs_spawn,
-            needs_booster_fire=needs_fire,
             needs_chain=needs_chain,
             needs_wild_bridge=needs_wild_bridge,
             payout_remaining=payout_remaining,
@@ -192,20 +185,17 @@ class StepAssessor:
     def _compute_arming_urgency(
         self,
         dormant_boosters: tuple[DormantBooster, ...],
-        needs_fire: dict[str, int],
         steps_remaining: Range,
     ) -> bool:
         """True when dormant boosters exist and steps are too tight to defer arming.
 
-        Checks whether the number of remaining steps minus the number of
-        fires still needed leaves at most `arming_urgency_horizon` steps
-        of slack. When slack runs out, arming must happen now.
+        Dormant boosters must be armed before the cascade ends — fires happen
+        automatically in the post-terminal booster phase. Urgency triggers when
+        remaining steps are within the arming horizon.
         """
         if not dormant_boosters:
             return False
-        total_fires_needed = sum(needs_fire.values())
-        slack = steps_remaining.max_val - total_fires_needed
-        return slack <= self._config.arming_urgency_horizon
+        return steps_remaining.max_val <= self._config.arming_urgency_horizon + 1
 
     def _compute_payout_pacing(
         self,

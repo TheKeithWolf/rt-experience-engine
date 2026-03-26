@@ -517,7 +517,6 @@ class TestInitialClusterStrategy:
                     cluster_symbol_tier=None,
                     must_spawn_booster="W",
                     must_arm_booster=None,
-                    must_fire_booster=None,
                     wild_behavior="spawn",
                 ),
                 CascadeStepConstraint(
@@ -526,7 +525,6 @@ class TestInitialClusterStrategy:
                     cluster_symbol_tier=None,
                     must_spawn_booster=None,
                     must_arm_booster=None,
-                    must_fire_booster=None,
                     wild_behavior="bridge",
                 ),
             ),
@@ -641,7 +639,6 @@ class TestInitialClusterStrategy:
                     cluster_symbol_tier=None,
                     must_spawn_booster="W",
                     must_arm_booster=None,
-                    must_fire_booster=None,
                     wild_behavior="spawn",
                 ),
                 CascadeStepConstraint(
@@ -650,7 +647,6 @@ class TestInitialClusterStrategy:
                     cluster_symbol_tier=None,
                     must_spawn_booster=None,
                     must_arm_booster=None,
-                    must_fire_booster=None,
                     wild_behavior="bridge",
                 ),
             ),
@@ -718,7 +714,6 @@ class TestInitialClusterStrategy:
                     cluster_symbol_tier=None,
                     must_spawn_booster="W",
                     must_arm_booster=None,
-                    must_fire_booster=None,
                     wild_behavior="spawn",
                 ),
                 CascadeStepConstraint(
@@ -727,7 +722,6 @@ class TestInitialClusterStrategy:
                     cluster_symbol_tier=None,
                     must_spawn_booster=None,
                     must_arm_booster=None,
-                    must_fire_booster=None,
                     wild_behavior="bridge",
                 ),
             ),

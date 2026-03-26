@@ -30,7 +30,6 @@ class StepType(enum.Enum):
     INITIAL = "initial"
     CASCADE_CLUSTER = "cascade_cluster"
     BOOSTER_ARM = "booster_arm"
-    BOOSTER_FIRE = "booster_fire"
     TERMINAL_DEAD = "terminal_dead"
     TERMINAL_NEAR_MISS = "terminal_near_miss"
 

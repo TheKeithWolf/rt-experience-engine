@@ -1,8 +1,9 @@
-"""Tests for StepTransitionSimulator.transition_with_boosters().
+"""Tests for StepTransitionSimulator.transition_and_arm() and execute_terminal_booster_phase().
 
-Verifies that the booster lifecycle (arm → fire → clear → gravity) is correctly
-integrated into the transition pipeline. Tests use a pre-set board with a
-dormant rocket adjacent to a cluster that will explode.
+Verifies that:
+- transition_and_arm() handles cluster explosion, spawning, gravity, and arming
+  (fires are deferred to the post-terminal phase)
+- execute_terminal_booster_phase() fires armed boosters on a dead board
 """
 
 from __future__ import annotations
@@ -103,14 +104,14 @@ def test_transition_returns_empty_booster_fields(
 
 
 # ---------------------------------------------------------------------------
-# TEST: transition_with_boosters fires a dormant rocket
+# TEST: transition_and_arm arms a dormant rocket (fires are deferred)
 # ---------------------------------------------------------------------------
 
-def test_transition_with_boosters_fires_rocket(
+def test_transition_and_arm_arms_rocket(
     simulator: StepTransitionSimulator,
     default_config: MasterConfig,
 ) -> None:
-    """Dormant rocket adjacent to exploding cluster gets armed and fires."""
+    """Dormant rocket adjacent to exploding cluster gets ARMED but not fired."""
     board = Board.empty(default_config.board)
 
     # Fill entire board with L2 so gravity works
@@ -146,27 +147,24 @@ def test_transition_with_boosters_fires_rocket(
         step_payout=50,
     )
 
-    result = simulator.transition_with_boosters(
+    result = simulator.transition_and_arm(
         board, step_result, tracker, grid_mults, phase_executor,
     )
 
-    # Rocket should have fired — booster_fire_records is non-empty
-    assert len(result.booster_fire_records) == 1
-    fire_rec = result.booster_fire_records[0]
-    assert fire_rec.booster_type == "R"
-    assert fire_rec.orientation == "H"
-    # Horizontal rocket at row 2 clears the entire row (minus immune positions)
-    assert fire_rec.affected_count > 0
+    # Rocket should be ARMED but NOT fired — fires are deferred to post-terminal phase
+    assert result.booster_fire_records == ()
+    assert result.booster_gravity_record is None
 
-    # Post-booster gravity should have run
-    assert result.booster_gravity_record is not None
-
-    # Board should be settled (no None cells in non-exploded area)
-    assert result.board is not None
+    # Verify the rocket is armed in the tracker
+    from ..boosters.state_machine import BoosterState
+    all_boosters = tracker.all_boosters()
+    rockets = [b for b in all_boosters if b.booster_type is Symbol.R]
+    assert len(rockets) == 1
+    assert rockets[0].state is BoosterState.ARMED
 
 
 # ---------------------------------------------------------------------------
-# TEST: transition_with_boosters with no armed boosters
+# TEST: transition_and_arm with no armed boosters
 # ---------------------------------------------------------------------------
 
 def test_freshly_spawned_booster_not_armed_by_source_cluster(
@@ -215,7 +213,7 @@ def test_freshly_spawned_booster_not_armed_by_source_cluster(
         step_payout=500,
     )
 
-    result = simulator.transition_with_boosters(
+    result = simulator.transition_and_arm(
         board, step_result, tracker, grid_mults, phase_executor,
     )
 
@@ -230,7 +228,7 @@ def test_freshly_spawned_booster_not_armed_by_source_cluster(
     assert rockets[0].state is BoosterState.DORMANT
 
 
-def test_transition_with_boosters_no_armed_no_fire(
+def test_transition_and_arm_no_armed_no_fire(
     simulator: StepTransitionSimulator,
     default_config: MasterConfig,
 ) -> None:
@@ -268,10 +266,117 @@ def test_transition_with_boosters_no_armed_no_fire(
         step_payout=50,
     )
 
-    result = simulator.transition_with_boosters(
+    result = simulator.transition_and_arm(
         board, step_result, tracker, grid_mults, phase_executor,
     )
 
     # No adjacent boosters → no fire phase
     assert result.booster_fire_records == ()
     assert result.booster_gravity_record is None
+
+
+# ---------------------------------------------------------------------------
+# TESTS: execute_terminal_booster_phase()
+# ---------------------------------------------------------------------------
+
+def test_terminal_booster_phase_fires_armed_rocket(
+    simulator: StepTransitionSimulator,
+    default_config: MasterConfig,
+) -> None:
+    """Armed rocket on a dead board fires and clears its row."""
+    board = Board.empty(default_config.board)
+
+    # Fill entire board so the rocket has cells to clear
+    for reel in range(7):
+        for row in range(7):
+            board.set(Position(reel, row), Symbol.L2)
+
+    # Place rocket at (3, 2) and arm it via adjacency to a fake cluster
+    rocket_pos = Position(3, 2)
+    tracker = BoosterTracker(default_config.board)
+    tracker.add(Symbol.R, rocket_pos, orientation="H")
+    # Arm by claiming an adjacent position as a cluster position
+    tracker.arm_adjacent(frozenset({Position(2, 2)}))
+
+    grid_mults = GridMultiplierGrid(default_config.grid_multiplier, default_config.board)
+    phase_executor = _make_phase_executor(tracker, default_config)
+
+    result = simulator.execute_terminal_booster_phase(
+        board, tracker, grid_mults, phase_executor,
+    )
+
+    # Rocket should have fired
+    assert len(result.booster_fire_records) == 1
+    fire_rec = result.booster_fire_records[0]
+    assert fire_rec.booster_type == "R"
+    assert fire_rec.orientation == "H"
+    assert fire_rec.affected_count > 0
+
+    # Post-booster gravity should have run
+    assert result.booster_gravity_record is not None
+
+    # No spawns in the terminal booster phase
+    assert result.spawns == ()
+
+
+def test_terminal_booster_phase_no_armed_returns_empty(
+    simulator: StepTransitionSimulator,
+    default_config: MasterConfig,
+) -> None:
+    """No armed boosters → empty fire records and no booster gravity."""
+    board = Board.empty(default_config.board)
+    for reel in range(7):
+        for row in range(7):
+            board.set(Position(reel, row), Symbol.L2)
+
+    # Dormant (not armed) rocket — should NOT fire
+    tracker = BoosterTracker(default_config.board)
+    tracker.add(Symbol.R, Position(3, 3), orientation="V")
+
+    grid_mults = GridMultiplierGrid(default_config.grid_multiplier, default_config.board)
+    phase_executor = _make_phase_executor(tracker, default_config)
+
+    result = simulator.execute_terminal_booster_phase(
+        board, tracker, grid_mults, phase_executor,
+    )
+
+    assert result.booster_fire_records == ()
+    assert result.booster_gravity_record is None
+
+
+def test_terminal_booster_phase_chain_propagation(
+    simulator: StepTransitionSimulator,
+    default_config: MasterConfig,
+) -> None:
+    """Armed rocket's blast hits a dormant bomb, chain-triggering it."""
+    board = Board.empty(default_config.board)
+    for reel in range(7):
+        for row in range(7):
+            board.set(Position(reel, row), Symbol.L2)
+
+    tracker = BoosterTracker(default_config.board)
+
+    # Horizontal rocket at (0, 3) — clears row 3. Armed via adjacency.
+    # Must be on both tracker and board for the fire handler to see other boosters in path
+    rocket_pos = Position(0, 3)
+    board.set(rocket_pos, Symbol.R)
+    tracker.add(Symbol.R, rocket_pos, orientation="H")
+    tracker.arm_adjacent(frozenset({Position(0, 2)}))
+
+    # Dormant bomb at (4, 3) — sits in the rocket's row, will be chain-triggered
+    # Must be on both tracker and board for the fire handler to detect it
+    bomb_pos = Position(4, 3)
+    board.set(bomb_pos, Symbol.B)
+    tracker.add(Symbol.B, bomb_pos)
+
+    grid_mults = GridMultiplierGrid(default_config.grid_multiplier, default_config.board)
+    phase_executor = _make_phase_executor(tracker, default_config)
+
+    result = simulator.execute_terminal_booster_phase(
+        board, tracker, grid_mults, phase_executor,
+    )
+
+    # Both rocket and bomb should have fired (chain reaction)
+    assert len(result.booster_fire_records) == 2
+    fired_types = {rec.booster_type for rec in result.booster_fire_records}
+    assert fired_types == {"R", "B"}

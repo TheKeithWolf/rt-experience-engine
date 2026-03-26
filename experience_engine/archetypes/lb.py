@@ -71,7 +71,6 @@ def register_lb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="LB",
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior=None,
             ),
             # Step 1: new cluster arms and fires the LB
@@ -81,7 +80,6 @@ def register_lb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="LB",
-                must_fire_booster="LB",
                 wild_behavior=None,
             ),
         ),
@@ -112,7 +110,6 @@ def register_lb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="LB",
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior=None,
             ),
             CascadeStepConstraint(
@@ -121,7 +118,6 @@ def register_lb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="LB",
-                must_fire_booster="LB",
                 wild_behavior=None,
             ),
         ),
@@ -156,7 +152,6 @@ def register_lb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="LB",
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior=None,
             ),
             # Step 1: cascade continues, building toward LB fire
@@ -166,7 +161,6 @@ def register_lb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior=None,
             ),
             # Step 2: cluster arms and fires the LB
@@ -176,7 +170,6 @@ def register_lb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="LB",
-                must_fire_booster="LB",
                 wild_behavior=None,
             ),
         ),
@@ -212,7 +205,6 @@ def register_lb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="LB",
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior=None,
             ),
             # Step 1: cluster arms the initiator, which fires and chains into LB
@@ -222,7 +214,6 @@ def register_lb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
                 wild_behavior=None,
             ),
         ),

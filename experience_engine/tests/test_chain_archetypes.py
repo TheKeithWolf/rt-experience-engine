@@ -193,7 +193,6 @@ class TestTypeWidening:
             cluster_symbol_tier=None,
             must_spawn_booster=("R", "B"),
             must_arm_booster=None,
-            must_fire_booster=None,
         )
         assert step.must_spawn_booster == ("R", "B")
 
@@ -205,7 +204,6 @@ class TestTypeWidening:
             cluster_symbol_tier=None,
             must_spawn_booster="B",
             must_arm_booster=None,
-            must_fire_booster=None,
         )
         assert step.must_spawn_booster == "B"
 
@@ -375,41 +373,6 @@ class TestLbCannotInitiateChain:
 # ===========================================================================
 # Archetype signature validation tests (TEST-P11-004 to P11-005)
 # ===========================================================================
-
-class TestBoosterPhaseMultiSignature:
-    """TEST-P11-004: booster_phase_multi has two distinct fire steps."""
-
-    def test_two_fire_steps_in_cascade_steps(
-        self, default_config: MasterConfig,
-    ) -> None:
-        """cascade_steps has at least 2 steps with must_fire_booster set."""
-        reg = ArchetypeRegistry(default_config)
-        register_chain_archetypes(reg)
-        sig = reg.get("booster_phase_multi")
-
-        fire_steps = [
-            step for step in sig.cascade_steps
-            if step.must_fire_booster is not None
-        ]
-        # Two distinct booster phases — each has a fire step
-        assert len(fire_steps) >= 2
-
-    def test_fire_steps_target_different_boosters(
-        self, default_config: MasterConfig,
-    ) -> None:
-        """Each fire step targets a different booster type."""
-        reg = ArchetypeRegistry(default_config)
-        register_chain_archetypes(reg)
-        sig = reg.get("booster_phase_multi")
-
-        fire_boosters = [
-            step.must_fire_booster
-            for step in sig.cascade_steps
-            if step.must_fire_booster is not None
-        ]
-        # Should be R and B (distinct types)
-        assert len(set(fire_boosters)) >= 2
-
 
 class TestCascadeToBoosterSignature:
     """TEST-P11-005: cascade_to_booster_to_cascade has growth pattern."""

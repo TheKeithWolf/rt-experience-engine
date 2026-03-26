@@ -72,7 +72,6 @@ def register_slb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="SLB",
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior=None,
             ),
             # Step 1: new cluster arms and fires the SLB
@@ -82,7 +81,6 @@ def register_slb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="SLB",
-                must_fire_booster="SLB",
                 wild_behavior=None,
             ),
         ),
@@ -116,7 +114,6 @@ def register_slb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="SLB",
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior=None,
             ),
             # Step 1: cascade builds grid multipliers
@@ -126,7 +123,6 @@ def register_slb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior=None,
             ),
             # Step 2: cluster arms and fires SLB on elevated-mult board
@@ -136,7 +132,6 @@ def register_slb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="SLB",
-                must_fire_booster="SLB",
                 wild_behavior=None,
             ),
         ),
@@ -170,7 +165,6 @@ def register_slb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="SLB",
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior=None,
             ),
             # Step 1: cluster arms initiator, which fires and chains into SLB
@@ -180,7 +174,6 @@ def register_slb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
                 wild_behavior=None,
             ),
         ),
@@ -215,7 +208,6 @@ def register_slb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="SLB",
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior=None,
             ),
             # Step 1: cascade with overlapping positions builds grid mults
@@ -225,7 +217,6 @@ def register_slb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior=None,
             ),
             # Step 2: more cascade for mult accumulation
@@ -235,7 +226,6 @@ def register_slb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster=None,
-                must_fire_booster=None,
                 wild_behavior=None,
             ),
             # Step 3: cluster arms and fires SLB on heavily-multiplied board
@@ -245,7 +235,6 @@ def register_slb_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="SLB",
-                must_fire_booster="SLB",
                 wild_behavior=None,
             ),
         ),

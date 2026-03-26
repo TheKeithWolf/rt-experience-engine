@@ -63,7 +63,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
         ),
         required_booster_spawns={"R": Range(1, 1)},
@@ -95,7 +94,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             # Step 1: new cluster arms the rocket, it fires H
             CascadeStepConstraint(
@@ -104,7 +102,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(1, 1)},
@@ -135,7 +132,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -143,7 +139,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(1, 1)},
@@ -174,7 +169,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -182,7 +176,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(1, 1)},
@@ -215,7 +208,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -223,7 +215,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(1, 1)},
@@ -256,7 +247,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             # Second rocket spawns from a different cluster
             CascadeStepConstraint(
@@ -265,7 +255,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(2, 2)},
@@ -297,7 +286,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -305,7 +293,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(1, 1), "B": Range(1, 1)},
@@ -336,7 +323,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -344,7 +330,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(1, 1), "LB": Range(1, 1)},
@@ -375,7 +360,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -383,7 +367,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(1, 1), "SLB": Range(1, 1)},
@@ -414,7 +397,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -422,7 +404,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(2, 2)},
@@ -457,7 +438,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=SymbolTier.LOW,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
         ),
         required_booster_spawns={"R": Range(1, 1)},
@@ -488,7 +468,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -496,7 +475,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(1, 1), "B": Range(1, 1)},
@@ -528,7 +506,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
         ),
         required_booster_spawns={"R": Range(2, 2)},
@@ -564,7 +541,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=SymbolTier.LOW,
                 must_spawn_booster=None,
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -572,7 +548,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             # Late step: rocket fires to rescue
             CascadeStepConstraint(
@@ -581,7 +556,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(1, 1)},
@@ -614,7 +588,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=SymbolTier.LOW,
                 must_spawn_booster=None,
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             # Step 1: bomb spawns early from 11-12 cluster
             CascadeStepConstraint(
@@ -623,7 +596,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="B",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             # Step 2+: rocket spawns, fires, and chains through the bomb
             CascadeStepConstraint(
@@ -632,7 +604,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(1, 1), "B": Range(1, 1)},
@@ -668,7 +639,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=SymbolTier.LOW,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -676,7 +646,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=SymbolTier.LOW,
                 must_spawn_booster="R",
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(2, 3)},
@@ -707,7 +676,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -715,7 +683,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(2, 2)},
@@ -751,7 +718,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -759,7 +725,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(1, 1)},
@@ -790,7 +755,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=SymbolTier.LOW,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -798,7 +762,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=SymbolTier.LOW,
                 must_spawn_booster="R",
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(2, 2)},
@@ -833,7 +796,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -841,7 +803,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(1, 1)},
@@ -874,7 +835,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -882,7 +842,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(1, 1), "B": Range(1, 1)},
@@ -915,7 +874,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster="R",
                 must_arm_booster=None,
-                must_fire_booster=None,
             ),
             CascadeStepConstraint(
                 cluster_count=Range(1, 2),
@@ -923,7 +881,6 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 cluster_symbol_tier=None,
                 must_spawn_booster=None,
                 must_arm_booster="R",
-                must_fire_booster="R",
             ),
         ),
         required_booster_spawns={"R": Range(1, 1), "B": Range(1, 1)},
