@@ -183,7 +183,18 @@ class StepTransitionSimulator:
         gravity_record = build_gravity_record(all_cluster_positions, settle_result)
 
         # 6. Arm dormant boosters adjacent to the exploding cluster positions
-        booster_tracker.arm_adjacent(frozenset(all_cluster_positions))
+        # Exclude freshly-spawned non-wild boosters — a booster at its source
+        # cluster's centroid is inherently adjacent and would fire immediately.
+        # Remap through gravity position_map since boosters may have fallen.
+        freshly_spawned_positions = frozenset(
+            position_map.get(sr.position, sr.position)
+            for sr in spawn_records
+            if sr.booster_type != Symbol.W.name
+        )
+        booster_tracker.arm_adjacent(
+            frozenset(all_cluster_positions),
+            exclude_positions=freshly_spawned_positions,
+        )
 
         # 7. Execute booster fire phase (fires all armed boosters with chain propagation)
         fire_results = phase_executor.execute_booster_phase(result_board)

@@ -169,6 +169,67 @@ def test_transition_with_boosters_fires_rocket(
 # TEST: transition_with_boosters with no armed boosters
 # ---------------------------------------------------------------------------
 
+def test_freshly_spawned_booster_not_armed_by_source_cluster(
+    simulator: StepTransitionSimulator,
+    default_config: MasterConfig,
+) -> None:
+    """A rocket spawned from a size-9 cluster must NOT fire in the same transition.
+
+    Regression test for the immediate-fire bug: freshly-spawned boosters sit at
+    their source cluster's centroid, so they are inherently adjacent to the
+    cluster positions. The exclusion set prevents arm_adjacent from arming them.
+    """
+    board = Board.empty(default_config.board)
+
+    # Fill board with L2 background
+    for reel in range(7):
+        for row in range(7):
+            board.set(Position(reel, row), Symbol.L2)
+
+    # Place a 9-cell L1 cluster (3x3 block at reels 1-3, rows 1-3)
+    # Size 9 → Rocket spawn per config spawn_thresholds
+    cluster_positions = frozenset(
+        Position(reel, row)
+        for reel in range(1, 4)
+        for row in range(1, 4)
+    )
+    for pos in cluster_positions:
+        board.set(pos, Symbol.L1)
+
+    # No pre-existing boosters — the only booster will be spawned during transition
+    tracker = BoosterTracker(default_config.board)
+    grid_mults = GridMultiplierGrid(default_config.grid_multiplier, default_config.board)
+    phase_executor = _make_phase_executor(tracker, default_config)
+
+    step_result = StepResult(
+        step_index=0,
+        clusters=(
+            ClusterRecord(
+                symbol=Symbol.L1, size=9, positions=cluster_positions,
+                step_index=0, payout=500,
+            ),
+        ),
+        spawns=(),
+        fires=(),
+        symbol_tier=None,
+        step_payout=500,
+    )
+
+    result = simulator.transition_with_boosters(
+        board, step_result, tracker, grid_mults, phase_executor,
+    )
+
+    # Rocket should have spawned but NOT fired
+    assert len(result.booster_fire_records) == 0
+
+    # Rocket should be DORMANT in tracker
+    from ..boosters.state_machine import BoosterState
+    all_boosters = tracker.all_boosters()
+    rockets = [b for b in all_boosters if b.booster_type is Symbol.R]
+    assert len(rockets) == 1
+    assert rockets[0].state is BoosterState.DORMANT
+
+
 def test_transition_with_boosters_no_armed_no_fire(
     simulator: StepTransitionSimulator,
     default_config: MasterConfig,

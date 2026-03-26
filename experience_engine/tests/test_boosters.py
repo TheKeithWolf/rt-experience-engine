@@ -157,6 +157,25 @@ class TestBoosterTrackerAdjacency:
         adjacent = tracker.check_adjacency(cluster_positions)
         assert len(adjacent) == 0
 
+    def test_excluded_position_not_detected(self, default_config: MasterConfig) -> None:
+        """Boosters at excluded positions are skipped by check_adjacency.
+
+        Prevents freshly-spawned boosters from arming on their source cluster.
+        """
+        tracker = BoosterTracker(default_config.board)
+        tracker.add(Symbol.R, Position(3, 3), orientation="H")
+
+        cluster_positions = frozenset({Position(2, 3), Position(1, 3)})
+
+        # Without exclusion — found
+        assert len(tracker.check_adjacency(cluster_positions)) == 1
+
+        # With exclusion — not found
+        assert len(tracker.check_adjacency(
+            cluster_positions,
+            exclude_positions=frozenset({Position(3, 3)}),
+        )) == 0
+
     def test_only_dormant_detected(self, default_config: MasterConfig) -> None:
         """Already-armed boosters are not returned by check_adjacency."""
         tracker = BoosterTracker(default_config.board)

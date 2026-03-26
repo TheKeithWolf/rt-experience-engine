@@ -54,12 +54,16 @@ class BoosterTracker:
         )
 
     def check_adjacency(
-        self, cluster_positions: frozenset[Position],
+        self,
+        cluster_positions: frozenset[Position],
+        exclude_positions: frozenset[Position] = frozenset(),
     ) -> list[BoosterInstance]:
         """Return DORMANT boosters orthogonally adjacent to any cluster position.
 
         Uses orthogonal_neighbors from primitives.board — single adjacency
         algorithm across the entire engine (DRY).
+        exclude_positions skips boosters at those positions — used to prevent
+        freshly-spawned boosters from being armed by their own source cluster.
         """
         result: list[BoosterInstance] = []
         seen: set[Position] = set()
@@ -69,6 +73,8 @@ class BoosterTracker:
                 if neighbor in seen:
                     continue
                 seen.add(neighbor)
+                if neighbor in exclude_positions:
+                    continue
                 booster = self._boosters.get(neighbor)
                 if booster is not None and booster.state is BoosterState.DORMANT:
                     result.append(booster)
@@ -76,13 +82,16 @@ class BoosterTracker:
         return result
 
     def arm_adjacent(
-        self, cluster_positions: frozenset[Position],
+        self,
+        cluster_positions: frozenset[Position],
+        exclude_positions: frozenset[Position] = frozenset(),
     ) -> list[BoosterInstance]:
         """Transition DORMANT → ARMED for boosters adjacent to cluster_positions.
 
         Returns the list of newly armed booster instances.
+        exclude_positions propagated to check_adjacency — see its docstring.
         """
-        dormant_adjacent = self.check_adjacency(cluster_positions)
+        dormant_adjacent = self.check_adjacency(cluster_positions, exclude_positions)
         armed: list[BoosterInstance] = []
 
         for booster in dormant_adjacent:

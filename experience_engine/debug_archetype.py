@@ -179,15 +179,27 @@ def render_empty_cells(board: Board) -> str:
     return f"  Empty cells ({len(empty)}): " + " ".join(parts)
 
 
-def render_booster_tracker_state(tracker: BoosterTracker) -> str:
-    """Render all tracked boosters with type, position, orientation, and state."""
+def render_booster_tracker_state(
+    tracker: BoosterTracker,
+    fresh_positions: frozenset[Position] | None = None,
+) -> str:
+    """Render all tracked boosters with type, position, orientation, and state.
+
+    fresh_positions labels boosters spawned this step — they cannot arm until a
+    future step's cluster is adjacent (Issue 1 exclusion logic).
+    """
     all_boosters = tracker.all_boosters()
     if not all_boosters:
         return "  Booster tracker: empty"
+    fresh = fresh_positions or frozenset()
     lines = [f"  Booster tracker ({len(all_boosters)} tracked):"]
     for b in all_boosters:
         orient = f" orientation={b.orientation}" if b.orientation else ""
-        lines.append(f"    {b.booster_type.name} at ({b.position.reel},{b.position.row}){orient} state={b.state.name}")
+        tag = " [FRESH — will not arm this step]" if b.position in fresh else ""
+        lines.append(
+            f"    {b.booster_type.name} at ({b.position.reel},{b.position.row})"
+            f"{orient} state={b.state.name}{tag}"
+        )
     return "\n".join(lines)
 
 
@@ -452,8 +464,14 @@ def diagnostic_attempt(
                 for s in transition_result.spawns:
                     print(f"    {s.booster_type} at ({s.position.reel},{s.position.row})")
 
+            # Label freshly-spawned non-wild boosters — makes exclusion logic visible
+            fresh_positions = frozenset(
+                s.position for s in transition_result.spawns
+                if s.booster_type != Symbol.W.name
+            )
+
             # Show booster tracker state after spawn + gravity
-            print(render_booster_tracker_state(booster_tracker))
+            print(render_booster_tracker_state(booster_tracker, fresh_positions))
 
             # Show booster fire results if any boosters fired
             if transition_result.booster_fire_records:
@@ -461,6 +479,11 @@ def diagnostic_attempt(
                 for fr in transition_result.booster_fire_records:
                     orient = f" orientation={fr.orientation}" if fr.orientation else ""
                     print(f"    FIRE: {fr.booster_type} at ({fr.position_reel},{fr.position_row}){orient}")
+                    # Show rocket path for directional boosters
+                    if fr.orientation == "H":
+                        print(f"      Path: row {fr.position_row}, reels 0-{board.num_reels - 1}")
+                    elif fr.orientation == "V":
+                        print(f"      Path: reel {fr.position_reel}, rows 0-{board.num_rows - 1}")
                     print(f"      Cleared: {fr.affected_count} cells, chains: {fr.chain_target_count}")
                     if fr.target_symbols:
                         print(f"      Targets: {fr.target_symbols}")
