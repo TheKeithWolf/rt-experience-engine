@@ -458,6 +458,13 @@ def diagnostic_attempt(
             board = transition_result.board
             print(f"\n  Transition: exploded clusters, gravity settled")
 
+            # Grid multiplier state — makes payout contribution visible per step
+            nonzero = grid_mults.nonzero_positions()
+            if nonzero:
+                print(f"\n  Grid multipliers ({len(nonzero)} active):")
+                for pos, val in nonzero:
+                    print(f"    ({pos.reel},{pos.row}): {val}")
+
             # Show booster spawns from this transition
             if transition_result.spawns:
                 print(f"\n  Spawns from transition:")

@@ -13,10 +13,14 @@ from __future__ import annotations
 import math
 
 from collections import Counter
+from typing import TYPE_CHECKING
 
 from ..config.schema import BoardConfig, BoosterConfig, SymbolConfig
 from .board import Board, Position, is_valid
-from .symbols import Symbol, symbol_from_name
+from .symbols import Symbol, is_wild, symbol_from_name
+
+if TYPE_CHECKING:
+    from ..boosters.tracker import BoosterTracker
 
 
 class BoosterRules:
@@ -246,3 +250,29 @@ class BoosterRules:
             reverse=True,
         )
         return tuple(ranked[:count])
+
+
+def place_booster(
+    booster_sym: Symbol,
+    position: Position,
+    board: Board,
+    tracker: BoosterTracker,
+    orientation: str | None = None,
+    source_cluster_index: int | None = None,
+) -> None:
+    """Write a spawned booster to the board and register non-wilds in the tracker.
+
+    Wilds occupy the board only (they're regular symbols for cluster purposes).
+    Non-wild boosters occupy the board AND register in the tracker — prevents
+    gravity holes at spawn positions that would cascade into payout drift.
+    """
+    if is_wild(booster_sym):
+        board.set(position, Symbol.W)
+    else:
+        # Non-wild boosters must occupy their cell to prevent gravity holes
+        board.set(position, booster_sym)
+        tracker.add(
+            booster_sym, position,
+            orientation=orientation,
+            source_cluster_index=source_cluster_index,
+        )

@@ -21,10 +21,10 @@ from typing import TYPE_CHECKING
 from ..boosters.tracker import BoosterTracker
 from ..config.schema import MasterConfig
 from ..primitives.board import Board, Position
-from ..primitives.booster_rules import BoosterRules
+from ..primitives.booster_rules import BoosterRules, place_booster
 from ..primitives.gravity import GravityDAG, settle
 from ..primitives.grid_multipliers import GridMultiplierGrid
-from ..primitives.symbols import Symbol, is_wild, symbol_from_name
+from ..primitives.symbols import Symbol, symbol_from_name
 from ..step_reasoner.progress import ClusterRecord
 from ..step_reasoner.results import SpawnRecord, StepResult
 from .data_types import (
@@ -278,21 +278,16 @@ class StepTransitionSimulator:
                     centroid, cluster.positions, frozenset(occupied),
                 )
 
-                if is_wild(booster_sym):
-                    # Wild goes on the board — not into the tracker
-                    board.set(position, Symbol.W)
-                else:
-                    # Non-wild boosters go into the tracker
-                    orientation: str | None = None
-                    if booster_sym is Symbol.R:
-                        orientation = rules.compute_rocket_orientation(
-                            cluster.positions,
-                        )
-                    tracker.add(
-                        booster_sym, position,
-                        orientation=orientation,
-                        source_cluster_index=cluster_idx,
+                orientation: str | None = None
+                if booster_sym is Symbol.R:
+                    orientation = rules.compute_rocket_orientation(
+                        cluster.positions,
                     )
+                place_booster(
+                    booster_sym, position, board, tracker,
+                    orientation=orientation,
+                    source_cluster_index=cluster_idx,
+                )
 
                 occupied.add(position)
                 spawn_records.append(SpawnRecord(

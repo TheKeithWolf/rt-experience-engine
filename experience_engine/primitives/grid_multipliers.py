@@ -72,3 +72,17 @@ class GridMultiplierGrid:
         new._num_rows = self._num_rows
         new._grid = [row[:] for row in self._grid]
         return new
+
+    def nonzero_positions(self) -> list[tuple[Position, int]]:
+        """Return positions with non-initial multiplier values.
+
+        Diagnostic visibility — shows which cells carry elevated values
+        into the next cascade step, making payout drift traceable.
+        """
+        result: list[tuple[Position, int]] = []
+        for reel in range(self._num_reels):
+            for row in range(self._num_rows):
+                val = self._grid[reel][row]
+                if val != self._config.initial_value:
+                    result.append((Position(reel, row), val))
+        return result
