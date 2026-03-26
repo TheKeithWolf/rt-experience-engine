@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from ..primitives.symbols import SymbolTier
+
 
 @dataclass(frozen=True, slots=True)
 class Range:
@@ -45,6 +47,18 @@ class RangeFloat:
     def contains(self, value: float) -> bool:
         """True if value is within [min_val, max_val]."""
         return self.min_val <= value <= self.max_val
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalNearMissSpec:
+    """Near-miss constraint for the final dead board after all cascades.
+
+    Shared between ArchetypeSignature and NarrativeArc — lives here to
+    avoid circular imports between archetypes.registry and narrative.arc.
+    """
+
+    count: Range
+    symbol_tier: SymbolTier | None
 
 
 @runtime_checkable

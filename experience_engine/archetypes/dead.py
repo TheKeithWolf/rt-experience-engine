@@ -29,6 +29,7 @@ def _dead_base() -> dict:
         rocket_orientation=None,
         lb_target_tier=None,
         symbol_tier_per_step=None,
+        narrative_arc=None,
         terminal_near_misses=None,
         dormant_boosters_on_terminal=None,
         payout_range=RangeFloat(0.0, 0.0),

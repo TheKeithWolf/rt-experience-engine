@@ -469,34 +469,39 @@ def test_validator_bridge_wild_consumed(
 # ---------------------------------------------------------------------------
 
 def test_wild_enable_rocket_cascade_steps(full_registry: ArchetypeRegistry) -> None:
-    """wild_enable_rocket has 3 cascade steps and fires 1 rocket."""
+    """wild_enable_rocket has 3 arc phases and fires 1 rocket."""
     sig = full_registry.get("wild_enable_rocket")
 
     # Cascade depth requires min 3 for the full W→R→fire arc
     assert sig.required_cascade_depth == Range(3, 4)
 
-    # Rocket must fire — overrides _wild_base empty dict
+    # Rocket must fire — derived from arc phase fires=("R",)
     assert sig.required_booster_fires == {"R": Range(1, 1)}
 
-    # 3 step constraints defined
-    assert sig.cascade_steps is not None
-    assert len(sig.cascade_steps) == 3
+    # 4 narrative phases: spawn → bridge → arm → fire (supersedes cascade_steps)
+    assert sig.narrative_arc is not None
+    assert len(sig.narrative_arc.phases) == 4
 
-    step0, step1, step2 = sig.cascade_steps
+    phase0, phase1, phase2, phase3 = sig.narrative_arc.phases
 
-    # Step 0: initial cluster spawns W
-    assert step0.must_spawn_booster == "W"
-    assert step0.wild_behavior == "spawn"
-    assert step0.cluster_sizes == (Range(7, 8),)
-    assert step0.must_arm_booster is None
+    # Phase 0: initial cluster spawns W
+    assert phase0.spawns == ("W",)
+    assert phase0.wild_behavior == "spawn"
+    assert phase0.cluster_sizes == (Range(7, 8),)
+    assert phase0.arms is None
 
-    # Step 1: W bridges → R spawns
-    assert step1.must_spawn_booster == "R"
-    assert step1.wild_behavior == "bridge"
-    assert step1.cluster_sizes == (Range(9, 10),)
-    assert step1.must_arm_booster is None
+    # Phase 1: W bridges → R spawns
+    assert phase1.spawns == ("R",)
+    assert phase1.wild_behavior == "bridge"
+    assert phase1.cluster_sizes == (Range(9, 10),)
+    assert phase1.arms is None
 
-    # Step 2: new cluster arms R → R fires
-    assert step2.must_arm_booster == "R"
-    assert step2.cluster_sizes == (Range(5, 6),)
-    assert step2.must_spawn_booster is None
+    # Phase 2: new cluster arms R
+    assert phase2.arms == ("R",)
+    assert phase2.cluster_sizes == (Range(5, 6),)
+    assert phase2.spawns is None
+
+    # Phase 3: R fires → clears row/col (terminal phase — no clusters)
+    assert phase3.fires == ("R",)
+    assert phase3.cluster_count == Range(0, 0)
+    assert phase3.spawns is None

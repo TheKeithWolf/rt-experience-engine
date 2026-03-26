@@ -93,8 +93,11 @@ class InitialClusterStrategy:
         )
 
         # Derive tier from the first cluster symbol placed
-        first_sym = multi_result.cluster_symbols[0]
-        cluster_tier = SymbolTier.LOW if first_sym.value <= 4 else SymbolTier.HIGH
+        if not multi_result.cluster_symbols:
+            cluster_tier = SymbolTier.ANY
+        else:
+            first_sym = multi_result.cluster_symbols[0]
+            cluster_tier = SymbolTier.LOW if first_sym.value <= 4 else SymbolTier.HIGH
 
         # Detect booster spawns from each cluster's size
         expected_spawns: list[str] = []
@@ -234,7 +237,17 @@ class InitialClusterStrategy:
         signature: ArchetypeSignature,
         progress: ProgressTracker,
     ) -> bool:
-        """Check if the next cascade step requires a wild bridge."""
+        """Check if the next cascade step requires a wild bridge.
+
+        Arc-based: peek at the next phase (or same phase if still repeating).
+        Legacy: index into cascade_steps[next_step].
+        """
+        # Arc-based path
+        next_phase = progress.peek_next_phase()
+        if next_phase is not None:
+            return next_phase.wild_behavior == "bridge"
+
+        # Legacy path
         next_step = progress.steps_completed + 1
         if signature.cascade_steps and next_step < len(signature.cascade_steps):
             return signature.cascade_steps[next_step].wild_behavior == "bridge"
@@ -245,7 +258,17 @@ class InitialClusterStrategy:
         signature: ArchetypeSignature,
         progress: ProgressTracker,
     ) -> bool:
-        """Check if the next step needs to arm a dormant booster."""
+        """Check if the next step needs to arm a dormant booster.
+
+        Arc-based: peek at the next phase's arms field.
+        Legacy: index into cascade_steps[next_step].must_arm_booster.
+        """
+        # Arc-based path
+        next_phase = progress.peek_next_phase()
+        if next_phase is not None:
+            return next_phase.arms is not None
+
+        # Legacy path
         next_step = progress.steps_completed + 1
         if signature.cascade_steps and next_step < len(signature.cascade_steps):
             step_spec = signature.cascade_steps[next_step]

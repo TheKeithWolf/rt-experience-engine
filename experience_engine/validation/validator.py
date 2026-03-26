@@ -346,6 +346,14 @@ class InstanceValidator:
                     1 for step_spec in sig.cascade_steps
                     if step_spec.wild_behavior == "bridge"
                 )
+            elif sig.narrative_arc is not None:
+                # Arc-based archetypes: bridge phases consume wilds, scaled
+                # by repetitions (each repetition represents one bridge event)
+                wild_consumed = sum(
+                    phase.repetitions.min_val
+                    for phase in sig.narrative_arc.phases
+                    if phase.wild_behavior == "bridge"
+                )
             wild_spawned = booster_spawn_counts.get("W", 0)
             expected_terminal = wild_spawned - wild_consumed
             if wild_count != expected_terminal:

@@ -104,12 +104,14 @@ class StepAssessor:
 
         payout_remaining = progress.remaining_payout_budget()
 
-        # Symbol tier from the narrative arc spec
-        required_tier = (
-            signature.symbol_tier_per_step.get(progress.steps_completed)
-            if signature.symbol_tier_per_step is not None
-            else None
-        )
+        # Symbol tier — from NarrativeArc phase or legacy symbol_tier_per_step
+        phase = progress.current_phase()
+        if phase is not None:
+            required_tier = phase.cluster_symbol_tier
+        elif signature.symbol_tier_per_step is not None:
+            required_tier = signature.symbol_tier_per_step.get(progress.steps_completed)
+        else:
+            required_tier = None
 
         # Dormant boosters that must survive to the terminal board
         dormant_must_survive = (
@@ -166,12 +168,19 @@ class StepAssessor:
         2. Inferred: active wilds on board + unmet spawn needs that benefit
            from wild adjacency (any non-wild booster still needed)
         """
-        current_step = progress.steps_completed
-        if signature.cascade_steps is not None:
-            if current_step < len(signature.cascade_steps):
-                step_spec = signature.cascade_steps[current_step]
-                if step_spec.wild_behavior == "bridge":
-                    return True
+        # Arc-based: read wild_behavior from current phase
+        phase = progress.current_phase()
+        if phase is not None:
+            if phase.wild_behavior == "bridge":
+                return True
+        else:
+            # Legacy: read from cascade_steps
+            current_step = progress.steps_completed
+            if signature.cascade_steps is not None:
+                if current_step < len(signature.cascade_steps):
+                    step_spec = signature.cascade_steps[current_step]
+                    if step_spec.wild_behavior == "bridge":
+                        return True
 
         # Inferred: wilds exist and there are still non-wild booster spawns needed
         if not context.active_wilds:

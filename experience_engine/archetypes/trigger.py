@@ -9,20 +9,17 @@ config.freespin.min_scatters_to_trigger.
 
 from __future__ import annotations
 
+from ..narrative.arc import NarrativeArc, NarrativePhase
 from ..pipeline.protocols import Range, RangeFloat
 from .registry import (
     ArchetypeRegistry,
     ArchetypeSignature,
-    CascadeStepConstraint,
+    build_arc_signature,
 )
 
 
-def _trigger_base() -> dict:
-    """Shared fields for all trigger archetypes.
-
-    Trigger family is freegame criteria. No rocket orientation, no LB tier
-    targeting, no wincap. All trigger archetypes award freespins.
-    """
+def _trigger_base_static() -> dict:
+    """Shared fields for depth-0 trigger archetypes (no cascade, no arc)."""
     return dict(
         family="trigger",
         criteria="freegame",
@@ -34,6 +31,21 @@ def _trigger_base() -> dict:
         symbol_tier_per_step=None,
         terminal_near_misses=None,
         dormant_boosters_on_terminal=None,
+        narrative_arc=None,
+    )
+
+
+def _trigger_base_arc() -> dict:
+    """Shared fields for arc-based trigger archetypes (used with build_arc_signature).
+
+    Does NOT include fields that build_arc_signature derives from the arc
+    (terminal_near_misses, dormant_boosters_on_terminal, rocket_orientation, lb_target_tier).
+    """
+    return dict(
+        family="trigger",
+        criteria="freegame",
+        triggers_freespin=True,
+        reaches_wincap=False,
     )
 
 
@@ -43,8 +55,6 @@ def register_trigger_archetypes(registry: ArchetypeRegistry) -> None:
     Organized by scatter count and complexity: pure trigger (2),
     trigger with win (1), trigger with booster (1).
     """
-    base = _trigger_base
-
     # -----------------------------------------------------------------------
     # trigger_4s — 4 scatters, no wins, static dead board
     # -----------------------------------------------------------------------
@@ -69,7 +79,7 @@ def register_trigger_archetypes(registry: ArchetypeRegistry) -> None:
         required_chain_depth=Range(0, 0),
         # No payout — trigger itself is the reward
         payout_range=RangeFloat(0.0, 0.0),
-        **base(),
+        **_trigger_base_static(),
     ))
 
     # -----------------------------------------------------------------------
@@ -77,34 +87,38 @@ def register_trigger_archetypes(registry: ArchetypeRegistry) -> None:
     # -----------------------------------------------------------------------
     # Trigger accompanied by modest cluster payout. The player gets both
     # a base game win and freespins — feels doubly rewarding.
-    registry.register(ArchetypeSignature(
+    _trigger_4s_win_arc = NarrativeArc(
+        phases=(
+            NarrativePhase(
+                id="scatter_win",
+                intent="Small clusters land alongside the scatters.",
+                # 0 = static (no cascade), 1-2 = short cascade alongside trigger
+                repetitions=Range(0, 2),
+                cluster_count=Range(1, 2),
+                cluster_sizes=(Range(5, 6),),
+                cluster_symbol_tier=None,
+                spawns=None, arms=None, fires=None,
+                wild_behavior=None,
+                ends_when="always",
+            ),
+        ),
+        payout=RangeFloat(0.1, 3.0),
+        wild_count_on_terminal=Range(0, 0),
+        terminal_near_misses=None,
+        dormant_boosters_on_terminal=None,
+        required_chain_depth=Range(0, 0),
+        rocket_orientation=None,
+        lb_target_tier=None,
+    )
+    registry.register(build_arc_signature(
+        _trigger_4s_win_arc,
         id="trigger_4s_with_win",
-        required_cluster_count=Range(1, 2),
-        required_cluster_sizes=(Range(5, 6),),
         required_cluster_symbols=None,
         required_scatter_count=Range(4, 4),
         required_near_miss_count=Range(0, 0),
         required_near_miss_symbol_tier=None,
-        # Clusters present — no dead-board component cap
         max_component_size=None,
-        # Optional short cascade alongside the trigger (0 = static, 1-2 = cascade)
-        required_cascade_depth=Range(0, 2),
-        cascade_steps=(
-            # Step 0: 1-2 small clusters alongside the scatters
-            CascadeStepConstraint(
-                cluster_count=Range(1, 2),
-                cluster_sizes=(Range(5, 6),),
-                cluster_symbol_tier=None,
-                must_spawn_booster=None,
-                must_arm_booster=None,
-            ),
-        ),
-        required_booster_spawns={},
-        required_booster_fires={},
-        required_chain_depth=Range(0, 0),
-        # Modest cluster payout — t1-level alongside the trigger
-        payout_range=RangeFloat(0.1, 3.0),
-        **base(),
+        **_trigger_base_arc(),
     ))
 
     # -----------------------------------------------------------------------
@@ -128,7 +142,7 @@ def register_trigger_archetypes(registry: ArchetypeRegistry) -> None:
         required_booster_fires={},
         required_chain_depth=Range(0, 0),
         payout_range=RangeFloat(0.0, 0.0),
-        **base(),
+        **_trigger_base_static(),
     ))
 
     # -----------------------------------------------------------------------
@@ -137,34 +151,38 @@ def register_trigger_archetypes(registry: ArchetypeRegistry) -> None:
     # Premium trigger with booster presence — 5 scatters plus clusters large
     # enough to spawn rockets or bombs. Boosters are dormant (no fires
     # required) — they carry visual excitement into freespin.
-    registry.register(ArchetypeSignature(
+    _trigger_5s_booster_arc = NarrativeArc(
+        phases=(
+            NarrativePhase(
+                id="booster_spawn",
+                intent="Large clusters spawn boosters alongside scatters.",
+                # 1-3 steps of booster-spawning cascade alongside trigger
+                repetitions=Range(1, 3),
+                cluster_count=Range(1, 2),
+                cluster_sizes=(Range(9, 14),),
+                cluster_symbol_tier=None,
+                # R or B may spawn — dormant visual presence
+                spawns=("R", "B"),
+                arms=None, fires=None,
+                wild_behavior=None,
+                ends_when="always",
+            ),
+        ),
+        payout=RangeFloat(0.5, 10.0),
+        wild_count_on_terminal=Range(0, 0),
+        terminal_near_misses=None,
+        dormant_boosters_on_terminal=None,
+        required_chain_depth=Range(0, 0),
+        rocket_orientation=None,
+        lb_target_tier=None,
+    )
+    registry.register(build_arc_signature(
+        _trigger_5s_booster_arc,
         id="trigger_5s_with_booster",
-        required_cluster_count=Range(1, 2),
-        # Clusters large enough to spawn R (9-10) or B (11-12) or larger
-        required_cluster_sizes=(Range(9, 14),),
         required_cluster_symbols=None,
         required_scatter_count=Range(5, 5),
         required_near_miss_count=Range(0, 0),
         required_near_miss_symbol_tier=None,
         max_component_size=None,
-        # Cascade needed — booster-spawning clusters require at least 1 step
-        required_cascade_depth=Range(1, 3),
-        cascade_steps=(
-            # Step 0: booster-spawning cluster(s) alongside scatters
-            CascadeStepConstraint(
-                cluster_count=Range(1, 2),
-                cluster_sizes=(Range(9, 14),),
-                cluster_symbol_tier=None,
-                # Spawn R or B — dormant presence for visual excitement
-                must_spawn_booster=("R", "B"),
-                must_arm_booster=None,
-            ),
-        ),
-        # Boosters spawn but are not required to fire — dormant visual presence
-        required_booster_spawns={"R": Range(0, 1), "B": Range(0, 1)},
-        required_booster_fires={},
-        required_chain_depth=Range(0, 0),
-        # Moderate payout from the booster-spawning clusters
-        payout_range=RangeFloat(0.5, 10.0),
-        **base(),
+        **_trigger_base_arc(),
     ))

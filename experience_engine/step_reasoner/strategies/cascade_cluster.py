@@ -195,7 +195,12 @@ class CascadeClusterStrategy:
         progress: ProgressTracker,
         signature: ArchetypeSignature,
     ) -> SymbolTier | None:
-        """Resolve the symbol tier for this step from the narrative arc spec."""
+        """Resolve the symbol tier for this step — from arc phase or legacy map."""
+        # Arc-based: read from current phase
+        phase = progress.current_phase()
+        if phase is not None:
+            return phase.cluster_symbol_tier
+        # Legacy: read from step-indexed tier map
         if signature.symbol_tier_per_step:
             return signature.symbol_tier_per_step.get(progress.steps_completed)
         return None

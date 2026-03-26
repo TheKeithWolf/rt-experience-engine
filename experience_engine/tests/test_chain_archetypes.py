@@ -380,32 +380,35 @@ class TestCascadeToBoosterSignature:
     def test_early_steps_are_small_clusters(
         self, default_config: MasterConfig,
     ) -> None:
-        """First steps have t1-level cluster sizes (5-6)."""
+        """First phase has t1-level cluster sizes (5-6)."""
         reg = ArchetypeRegistry(default_config)
         register_chain_archetypes(reg)
         sig = reg.get("cascade_to_booster_to_cascade")
 
-        # Step 0 and step 1 should have small clusters
-        assert sig.cascade_steps[0].cluster_sizes[0].max_val <= 6
-        assert sig.cascade_steps[1].cluster_sizes[0].max_val <= 6
+        # First phase (small_cascade_start) should have small clusters
+        arc = sig.narrative_arc
+        assert arc is not None
+        assert arc.phases[0].cluster_sizes[0].max_val <= 6
 
     def test_later_step_reaches_booster_threshold(
         self, default_config: MasterConfig,
     ) -> None:
-        """A later step reaches cluster size ≥ 9 (booster spawn threshold)."""
+        """A later phase reaches cluster size >= 9 (booster spawn threshold)."""
         reg = ArchetypeRegistry(default_config)
         register_chain_archetypes(reg)
         sig = reg.get("cascade_to_booster_to_cascade")
 
-        # Find the step that spawns a booster
-        booster_steps = [
-            step for step in sig.cascade_steps
-            if step.must_spawn_booster is not None
+        # Find the phase that spawns a booster
+        arc = sig.narrative_arc
+        assert arc is not None
+        booster_phases = [
+            phase for phase in arc.phases
+            if phase.spawns is not None
         ]
-        assert len(booster_steps) >= 1
-        # That step must have cluster size reaching booster threshold (9+)
-        spawn_step = booster_steps[0]
-        assert spawn_step.cluster_sizes[0].min_val >= 9
+        assert len(booster_phases) >= 1
+        # That phase must have cluster size reaching booster threshold (9+)
+        spawn_phase = booster_phases[0]
+        assert spawn_phase.cluster_sizes[0].min_val >= 9
 
     def test_no_scatters(
         self, default_config: MasterConfig,

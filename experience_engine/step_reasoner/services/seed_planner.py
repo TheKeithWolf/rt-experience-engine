@@ -190,11 +190,15 @@ class SeedPlanner:
         max_seeds = max(1, len(empty) // 2)
         selected = _weighted_select(empty, max_seeds, variance, rng)
 
-        # Resolve tier for the next step from the signature's narrative arc
-        next_step = progress.steps_completed + 1
+        # Resolve tier for the next step — from arc phase or legacy map
         tier = SymbolTier.ANY
-        if signature.symbol_tier_per_step and next_step in signature.symbol_tier_per_step:
-            tier = signature.symbol_tier_per_step[next_step]
+        next_phase = progress.peek_next_phase()
+        if next_phase is not None and next_phase.cluster_symbol_tier is not None:
+            tier = next_phase.cluster_symbol_tier
+        elif signature.symbol_tier_per_step:
+            next_step = progress.steps_completed + 1
+            if next_step in signature.symbol_tier_per_step:
+                tier = signature.symbol_tier_per_step[next_step]
 
         candidates = list(symbols_in_tier(tier, self._symbol_config))
         if not candidates:

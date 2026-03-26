@@ -13,7 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..config.schema import MasterConfig
-from ..pipeline.protocols import Range, RangeFloat
+from ..narrative.arc import NarrativeArc
+from ..narrative.derivation import derive_constraints
+from ..narrative.transitions import ALLOWED_TRANSITION_KEYS
+from ..pipeline.protocols import Range, RangeFloat, TerminalNearMissSpec
 from ..primitives.symbols import SymbolTier
 
 
@@ -44,13 +47,8 @@ FAMILY_CRITERIA: dict[str, str] = {
 # Supporting types
 # ---------------------------------------------------------------------------
 
-@dataclass(frozen=True, slots=True)
-class TerminalNearMissSpec:
-    """Near-miss constraint for the final dead board after all cascades."""
-
-    count: Range
-    symbol_tier: SymbolTier | None
-
+# TerminalNearMissSpec re-exported from pipeline.protocols (moved there to
+# break circular import with narrative.arc). Existing imports still work.
 
 @dataclass(frozen=True, slots=True)
 class CascadeStepConstraint:
@@ -116,6 +114,42 @@ class ArchetypeSignature:
     # Feature constraints
     triggers_freespin: bool
     reaches_wincap: bool
+
+    # Narrative definition — None for depth-0 archetypes, replaces cascade_steps
+    narrative_arc: NarrativeArc | None = None
+
+
+# ---------------------------------------------------------------------------
+# Arc-based signature factory
+# ---------------------------------------------------------------------------
+
+def build_arc_signature(arc: NarrativeArc, **kwargs: object) -> ArchetypeSignature:
+    """Build an ArchetypeSignature with derived fields computed from the arc.
+
+    Single construction path for arc-based signatures — eliminates drift
+    between the arc's phase definitions and the derived structural fields.
+    Callers pass identity/feature fields (id, family, criteria, scatter, etc.)
+    via kwargs; arc-derivable fields are computed here.
+    """
+    derived = derive_constraints(arc)
+    return ArchetypeSignature(
+        narrative_arc=arc,
+        required_cascade_depth=derived.cascade_depth,
+        required_cluster_count=derived.cluster_count,
+        required_cluster_sizes=derived.cluster_sizes,
+        required_booster_spawns=derived.booster_spawns,
+        required_booster_fires=derived.booster_fires,
+        required_chain_depth=arc.required_chain_depth,
+        payout_range=arc.payout,
+        terminal_near_misses=arc.terminal_near_misses,
+        dormant_boosters_on_terminal=arc.dormant_boosters_on_terminal,
+        rocket_orientation=arc.rocket_orientation,
+        lb_target_tier=arc.lb_target_tier,
+        # cascade_steps and symbol_tier_per_step set to None — superseded by arc
+        cascade_steps=None,
+        symbol_tier_per_step=None,
+        **kwargs,  # type: ignore[arg-type]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -213,13 +247,28 @@ class ArchetypeRegistry:
                     f"{min_scatters_to_trigger}, got {sig.required_scatter_count.min_val}",
                 )
 
-        # SIG-5: cascade_depth.max = 0 → cascade_steps must be None or empty
+        # SIG-5: cascade_depth.max = 0 → narrative_arc and cascade_steps must be None/empty
         if sig.required_cascade_depth.max_val == 0:
             if sig.cascade_steps is not None and len(sig.cascade_steps) > 0:
                 raise SignatureValidationError(
                     sig.id, "CONTRACT-SIG-5",
                     "cascade_depth.max=0 but cascade_steps is non-empty",
                 )
+            if sig.narrative_arc is not None:
+                raise SignatureValidationError(
+                    sig.id, "CONTRACT-SIG-5",
+                    "cascade_depth.max=0 but narrative_arc is not None",
+                )
+
+        # SIG-ARC: all NarrativePhase.ends_when values must exist in TRANSITION_RULES
+        if sig.narrative_arc is not None:
+            for phase in sig.narrative_arc.phases:
+                if phase.ends_when not in ALLOWED_TRANSITION_KEYS:
+                    raise SignatureValidationError(
+                        sig.id, "CONTRACT-SIG-ARC",
+                        f"unknown ends_when value '{phase.ends_when}' — "
+                        f"must be one of {sorted(ALLOWED_TRANSITION_KEYS)}",
+                    )
 
         # SIG-6: booster_fires non-empty → cascade_depth.min >= 1
         if sig.required_booster_fires:

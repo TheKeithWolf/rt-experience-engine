@@ -63,6 +63,15 @@ class ProgressTracker:
     # Step index → symbol tier observed (for narrative arc tracking)
     symbol_tiers_by_step: dict[int, SymbolTier] = field(default_factory=dict)
 
+    # Phase-tracking state for NarrativeArc-based archetypes.
+    # Tracks which phase we're in and how many repetitions of the current phase
+    # have been consumed. Used by is_satisfied(), current_step_size_ranges(),
+    # and the assessor to query phase-level constraints.
+    current_phase_index: int = 0
+    current_phase_repetitions: int = 0
+    # Number of repetitions completed per phase (indexed by phase position)
+    phases_completed: list[int] = field(default_factory=list)
+
     # -- Query methods (read-only) -----------------------------------------
 
     @staticmethod
@@ -124,13 +133,28 @@ class ProgressTracker:
     def is_satisfied(self) -> bool:
         """True when all cascade-phase minimums are met — ready to terminate.
 
-        Checks cascade depth, booster spawns, and payout budget.
+        For arc-based archetypes: all non-skippable phases have met their
+        minimum repetitions. For legacy archetypes: cascade_steps completion.
+        Both check cascade depth, booster spawns, and payout budget.
         Booster fires are validated at instance level after the post-terminal
         booster phase — they do not gate cascade termination.
         """
-        # All mandatory cascade steps must have been executed
-        if (self.signature.cascade_steps is not None
+        arc = self.signature.narrative_arc
+
+        if arc is not None:
+            # Arc-based: verify all phases with min > 0 have been completed
+            for phase_i, phase in enumerate(arc.phases):
+                reps_done = (
+                    self.current_phase_repetitions
+                    if phase_i == self.current_phase_index
+                    else (self.phases_completed[phase_i]
+                          if phase_i < len(self.phases_completed) else 0)
+                )
+                if reps_done < phase.repetitions.min_val:
+                    return False
+        elif (self.signature.cascade_steps is not None
                 and self.steps_completed < len(self.signature.cascade_steps)):
+            # Legacy: all mandatory cascade steps must have been executed
             return False
 
         # Cascade depth minimum met
@@ -151,16 +175,67 @@ class ProgressTracker:
     def current_step_size_ranges(self) -> tuple[Range, ...]:
         """Effective cluster size ranges for the current step.
 
-        Returns step-level constraints when cascade_steps defines sizes
-        for the current step index; falls back to signature-level sizes.
+        For arc-based archetypes: reads from the current phase's cluster_sizes.
+        For legacy archetypes: reads from cascade_steps[step_idx].
+        Falls back to signature-level sizes in all cases.
         """
+        arc = self.signature.narrative_arc
+
+        # Arc-based: read from the current phase
+        if arc is not None:
+            if self.current_phase_index < len(arc.phases):
+                phase_sizes = arc.phases[self.current_phase_index].cluster_sizes
+                if phase_sizes:
+                    return phase_sizes
+            return self.signature.required_cluster_sizes
+
+        # Legacy: read from cascade_steps
         if self.signature.cascade_steps is not None:
             step_idx = self.steps_completed
             if step_idx < len(self.signature.cascade_steps):
                 step_sizes = self.signature.cascade_steps[step_idx].cluster_sizes
                 if step_sizes is not None:
                     return step_sizes
+
         return self.signature.required_cluster_sizes
+
+    def current_phase(self):
+        """Return the current NarrativePhase, or None if no arc or past end."""
+        arc = self.signature.narrative_arc
+        if arc is not None and self.current_phase_index < len(arc.phases):
+            return arc.phases[self.current_phase_index]
+        return None
+
+    def peek_next_phase(self):
+        """Return the next NarrativePhase (after current), or None if at end.
+
+        If the current phase is still repeating (reps < max), the "next step"
+        is still in the same phase — return the current phase. Otherwise return
+        the phase after current.
+        """
+        arc = self.signature.narrative_arc
+        if arc is None:
+            return None
+        phase = self.current_phase()
+        if phase is not None and self.current_phase_repetitions < phase.repetitions.max_val:
+            return phase
+        next_idx = self.current_phase_index + 1
+        if next_idx < len(arc.phases):
+            return arc.phases[next_idx]
+        return None
+
+    def advance_phase(self) -> None:
+        """Advance to the next phase, recording repetitions completed.
+
+        Called when the current phase's transition predicate fires or max
+        repetitions are reached.
+        """
+        # Extend phases_completed to cover up to current_phase_index
+        while len(self.phases_completed) <= self.current_phase_index:
+            self.phases_completed.append(0)
+        self.phases_completed[self.current_phase_index] = self.current_phase_repetitions
+        self.current_phase_index += 1
+        self.current_phase_repetitions = 0
 
     # -- Mutation method (called once per step) -----------------------------
 
@@ -213,6 +288,10 @@ class ProgressTracker:
         # Narrative arc — record symbol tier for this step
         if step_result.symbol_tier is not None:
             self.symbol_tiers_by_step[step_result.step_index] = step_result.symbol_tier
+
+        # Phase tracking — increment repetitions for arc-based archetypes
+        if self.signature.narrative_arc is not None:
+            self.current_phase_repetitions += 1
 
     def sync_active_wilds(self, board: Board, board_config: BoardConfig) -> None:
         """Rebuild active_wilds from actual board state.

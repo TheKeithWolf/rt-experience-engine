@@ -7,9 +7,10 @@ deeper cascade archetypes (cascade_depth >= 2) that require the ASP sequence pla
 
 from __future__ import annotations
 
+from ..narrative.arc import NarrativeArc, NarrativePhase
 from ..pipeline.protocols import Range, RangeFloat
 from ..primitives.symbols import SymbolTier
-from .registry import ArchetypeRegistry, ArchetypeSignature, CascadeStepConstraint
+from .registry import ArchetypeRegistry, ArchetypeSignature, build_arc_signature
 
 
 def _t1_base() -> dict:
@@ -122,6 +123,24 @@ def _t1_cascade_base(**overrides: object) -> dict:
     return defaults
 
 
+def _t1_arc_base(**overrides: object) -> dict:
+    """Shared fields for arc-based t1 archetypes.
+
+    Only includes fields that build_arc_signature does NOT derive —
+    identity, feature flags, and component constraints. All cascade
+    structure comes from the NarrativeArc via build_arc_signature.
+    """
+    defaults = dict(
+        family="t1",
+        criteria="basegame",
+        max_component_size=None,
+        triggers_freespin=False,
+        reaches_wincap=False,
+    )
+    defaults.update(overrides)
+    return defaults
+
+
 def register_cascade_t1_archetypes(registry: ArchetypeRegistry) -> None:
     """Register 8 cascade (cascade_depth >= 1) t1 archetypes.
 
@@ -129,60 +148,71 @@ def register_cascade_t1_archetypes(registry: ArchetypeRegistry) -> None:
     before the CSP spatial solver can place clusters per cascade step.
     """
     base = _t1_cascade_base
+    arc_base = _t1_arc_base
 
     # Single cascade — one win, refill produces another, then dead
-    registry.register(ArchetypeSignature(
+    registry.register(build_arc_signature(
+        arc=NarrativeArc(
+            phases=(
+                NarrativePhase(
+                    id="t1_win",
+                    intent="Single cascade step with small clusters",
+                    repetitions=Range(1, 1),
+                    cluster_count=Range(1, 2),
+                    cluster_sizes=(Range(5, 6),),
+                    cluster_symbol_tier=None,
+                    spawns=None, arms=None, fires=None,
+                    wild_behavior=None,
+                    ends_when="always",
+                ),
+            ),
+            payout=RangeFloat(0.2, 6.0),
+            wild_count_on_terminal=Range(0, 0),
+            terminal_near_misses=None,
+            dormant_boosters_on_terminal=None,
+            required_chain_depth=Range(0, 0),
+            rocket_orientation=None,
+            lb_target_tier=None,
+        ),
         id="t1_cascade_1",
-        required_cluster_count=Range(1, 2),
-        required_cluster_sizes=(Range(5, 6),),
         required_cluster_symbols=None,
         required_scatter_count=Range(0, 1),
         required_near_miss_count=Range(0, 0),
         required_near_miss_symbol_tier=None,
-        required_cascade_depth=Range(1, 1),
-        cascade_steps=(
-            CascadeStepConstraint(
-                cluster_count=Range(1, 2),
-                cluster_sizes=(Range(5, 6),),
-                cluster_symbol_tier=None,
-                must_spawn_booster=None,
-                must_arm_booster=None,
-            ),
-        ),
-        symbol_tier_per_step=None,
-        payout_range=RangeFloat(0.2, 6.0),
-        **base(),
+        **arc_base(),
     ))
 
     # Double cascade — two refill cycles before dead
-    registry.register(ArchetypeSignature(
+    # Both steps have identical constraints, so one phase with repetitions=2
+    registry.register(build_arc_signature(
+        arc=NarrativeArc(
+            phases=(
+                NarrativePhase(
+                    id="t1_win",
+                    intent="Two identical cascade steps with small clusters",
+                    repetitions=Range(2, 2),
+                    cluster_count=Range(1, 2),
+                    cluster_sizes=(Range(5, 6),),
+                    cluster_symbol_tier=None,
+                    spawns=None, arms=None, fires=None,
+                    wild_behavior=None,
+                    ends_when="always",
+                ),
+            ),
+            payout=RangeFloat(0.4, 12.0),
+            wild_count_on_terminal=Range(0, 0),
+            terminal_near_misses=None,
+            dormant_boosters_on_terminal=None,
+            required_chain_depth=Range(0, 0),
+            rocket_orientation=None,
+            lb_target_tier=None,
+        ),
         id="t1_cascade_2",
-        required_cluster_count=Range(1, 2),
-        required_cluster_sizes=(Range(5, 6),),
         required_cluster_symbols=None,
         required_scatter_count=Range(0, 1),
         required_near_miss_count=Range(0, 0),
         required_near_miss_symbol_tier=None,
-        required_cascade_depth=Range(2, 2),
-        cascade_steps=(
-            CascadeStepConstraint(
-                cluster_count=Range(1, 2),
-                cluster_sizes=(Range(5, 6),),
-                cluster_symbol_tier=None,
-                must_spawn_booster=None,
-                must_arm_booster=None,
-            ),
-            CascadeStepConstraint(
-                cluster_count=Range(1, 2),
-                cluster_sizes=(Range(5, 6),),
-                cluster_symbol_tier=None,
-                must_spawn_booster=None,
-                must_arm_booster=None,
-            ),
-        ),
-        symbol_tier_per_step=None,
-        payout_range=RangeFloat(0.4, 12.0),
-        **base(),
+        **arc_base(),
     ))
 
     # Cascade with near-misses — win + almost-more + cascade continues
@@ -234,24 +264,37 @@ def register_cascade_t1_archetypes(registry: ArchetypeRegistry) -> None:
     ))
 
     # Long cascade forced to LOW tier symbols — extended tumble, modest payout
-    # symbol_tier_per_step covers all possible steps up to max depth
-    registry.register(ArchetypeSignature(
+    # cluster_symbol_tier on the phase enforces LOW tier at every step,
+    # replacing the old per-step dict with a single declarative constraint
+    registry.register(build_arc_signature(
+        arc=NarrativeArc(
+            phases=(
+                NarrativePhase(
+                    id="t1_low_win",
+                    intent="Extended low-tier cascade for modest sustained payout",
+                    repetitions=Range(3, 6),
+                    cluster_count=Range(1, 2),
+                    cluster_sizes=(Range(5, 6),),
+                    cluster_symbol_tier=SymbolTier.LOW,
+                    spawns=None, arms=None, fires=None,
+                    wild_behavior=None,
+                    ends_when="always",
+                ),
+            ),
+            payout=RangeFloat(0.3, 8.0),
+            wild_count_on_terminal=Range(0, 0),
+            terminal_near_misses=None,
+            dormant_boosters_on_terminal=None,
+            required_chain_depth=Range(0, 0),
+            rocket_orientation=None,
+            lb_target_tier=None,
+        ),
         id="t1_low_cascade",
-        required_cluster_count=Range(1, 2),
-        required_cluster_sizes=(Range(5, 6),),
         required_cluster_symbols=SymbolTier.LOW,
         required_scatter_count=Range(0, 1),
         required_near_miss_count=Range(0, 0),
         required_near_miss_symbol_tier=None,
-        required_cascade_depth=Range(3, 6),
-        cascade_steps=None,
-        # Force LOW tier on every possible non-terminal step (0 through max_depth)
-        symbol_tier_per_step={0: SymbolTier.LOW, 1: SymbolTier.LOW,
-                              2: SymbolTier.LOW, 3: SymbolTier.LOW,
-                              4: SymbolTier.LOW, 5: SymbolTier.LOW,
-                              6: SymbolTier.LOW},
-        payout_range=RangeFloat(0.3, 8.0),
-        **base(),
+        **arc_base(),
     ))
 
     # Win + 3 scatters (near-trigger) — can be static or shallow cascade
