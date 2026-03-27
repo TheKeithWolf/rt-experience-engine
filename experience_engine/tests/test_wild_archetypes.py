@@ -505,3 +505,114 @@ def test_wild_enable_rocket_cascade_steps(full_registry: ArchetypeRegistry) -> N
     assert phase3.fires == ("R",)
     assert phase3.cluster_count == Range(0, 0)
     assert phase3.spawns is None
+
+
+# ---------------------------------------------------------------------------
+# WB-040 through WB-043: Wild bridge scan E2E pipeline tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.slow
+def test_wb_040_wild_bridge_small_success_rate(tmp_path) -> None:
+    """WB-040: wild_bridge_small success rate >= 40% over 100 seeds."""
+    from ..run import main
+
+    output_dir = tmp_path / "output"
+    ret = main([
+        "--count", "100",
+        "--archetype", "wild_bridge_small",
+        "--seed", "1",
+        "--output", str(output_dir),
+    ])
+    assert ret == 0
+
+    import json
+    books_path = output_dir / "books_base.jsonl"
+    assert books_path.exists()
+    books = [json.loads(line) for line in books_path.read_text().splitlines() if line.strip()]
+    # At least 40% of seeds should produce valid books
+    assert len(books) >= 40, f"Only {len(books)}/100 books generated (< 40%)"
+
+
+@pytest.mark.slow
+def test_wb_041_no_double_wild_spawn(tmp_path) -> None:
+    """WB-041: No booster_spawn(W)=2 failures — wild bridge doesn't double-spawn."""
+    from ..run import main
+
+    output_dir = tmp_path / "output"
+    ret = main([
+        "--count", "50",
+        "--archetype", "wild_bridge_small",
+        "--seed", "42",
+        "--output", str(output_dir),
+    ])
+    assert ret == 0
+
+    import json
+    books_path = output_dir / "books_base.jsonl"
+    if books_path.exists():
+        for line in books_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            book = json.loads(line)
+            events = book.get("events", [])
+            wild_spawns = sum(
+                1 for e in events
+                if e.get("type") == "boosterSpawn" and e.get("boosterType") == "W"
+            )
+            # Each bridge arc should spawn at most 1 wild
+            assert wild_spawns <= 1, (
+                f"Book {book.get('id')} has {wild_spawns} wild spawns (expected <= 1)"
+            )
+
+
+@pytest.mark.slow
+def test_wb_042_wild_idle_no_regression(tmp_path) -> None:
+    """WB-042: wild_idle success rate unchanged after bridge scan refactor."""
+    from ..run import main
+
+    output_dir = tmp_path / "output"
+    ret = main([
+        "--count", "50",
+        "--archetype", "wild_idle",
+        "--seed", "1",
+        "--output", str(output_dir),
+    ])
+    assert ret == 0
+
+    import json
+    books_path = output_dir / "books_base.jsonl"
+    assert books_path.exists()
+    books = [json.loads(line) for line in books_path.read_text().splitlines() if line.strip()]
+    # wild_idle should still work — at least 20% success rate
+    assert len(books) >= 10, f"Only {len(books)}/50 wild_idle books (regression)"
+
+
+@pytest.mark.slow
+def test_wb_043_wild_enable_rocket_spawns_r(tmp_path) -> None:
+    """WB-043: wild_enable_rocket bridge phase produces R spawn, not W=2."""
+    from ..run import main
+
+    output_dir = tmp_path / "output"
+    ret = main([
+        "--count", "50",
+        "--archetype", "wild_enable_rocket",
+        "--seed", "1",
+        "--output", str(output_dir),
+    ])
+    assert ret == 0
+
+    import json
+    books_path = output_dir / "books_base.jsonl"
+    if books_path.exists():
+        books = [json.loads(line) for line in books_path.read_text().splitlines() if line.strip()]
+        for book in books:
+            events = book.get("events", [])
+            # Bridge phase should produce R spawns
+            r_spawns = sum(
+                1 for e in events
+                if e.get("type") == "boosterSpawn" and e.get("boosterType") == "R"
+            )
+            # Every successful wild_enable_rocket should have at least 1 R spawn
+            assert r_spawns >= 1, (
+                f"Book {book.get('id')} has no R spawns in wild_enable_rocket arc"
+            )

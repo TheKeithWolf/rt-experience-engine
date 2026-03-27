@@ -1044,7 +1044,7 @@ class TestSpawnPositions:
             step_payout=payout,
             grid_multipliers_snapshot=grid_snap,
             booster_spawn_types=("W",),
-            booster_spawn_positions=(("W", 5, 2),),
+            booster_spawn_positions=(("W", 5, 2, None),),
         )
 
         gen = EventStreamGenerator(default_config, paytable)
@@ -1086,7 +1086,7 @@ class TestSpawnPositions:
             step_payout=payout,
             grid_multipliers_snapshot=grid_snap,
             booster_spawn_types=("W", "W"),
-            booster_spawn_positions=(("W", 3, 1), ("W", 5, 2)),
+            booster_spawn_positions=(("W", 3, 1, None), ("W", 5, 2, None)),
         )
 
         gen = EventStreamGenerator(default_config, paytable)

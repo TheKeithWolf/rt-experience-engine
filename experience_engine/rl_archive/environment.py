@@ -252,7 +252,7 @@ class CascadeEnvironment:
                     s.booster_type for s in step_result.spawns
                 ),
                 booster_spawn_positions=tuple(
-                    (s.booster_type, s.position.reel, s.position.row)
+                    (s.booster_type, s.position.reel, s.position.row, s.orientation)
                     for s in step_result.spawns
                 ),
                 booster_fire_records=(),

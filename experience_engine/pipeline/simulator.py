@@ -348,6 +348,7 @@ class StepTransitionSimulator:
                     position=position,
                     source_cluster_index=cluster_idx,
                     step_index=step_index,
+                    orientation=orientation,
                 ))
 
         return spawn_records

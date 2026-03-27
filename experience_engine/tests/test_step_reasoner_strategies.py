@@ -40,7 +40,8 @@ from ..step_reasoner.strategies.initial_cluster import InitialClusterStrategy
 from ..step_reasoner.strategies.cascade_cluster import CascadeClusterStrategy
 from ..step_reasoner.strategies.booster_arm import BoosterArmStrategy
 from ..step_reasoner.strategies.booster_setup import BoosterSetupStrategy
-from ..step_reasoner.strategies.wild_bridge import WildBridgeStrategy
+from ..step_reasoner.strategies.wild_bridge import BridgeCandidate, WildBridgeStrategy
+from ..narrative.arc import NarrativeArc, NarrativePhase
 from ..variance.hints import VarianceHints
 
 
@@ -1083,6 +1084,462 @@ class TestWildBridgeStrategy:
 
         propagator_types = [type(p) for p in intent.wfc_propagators]
         assert WildBridgePropagator in propagator_types
+
+    # ------------------------------------------------------------------
+    # WB-001 through WB-003: _reachable_through_wild
+    # ------------------------------------------------------------------
+
+    def test_wb_001_reachable_chain_through_wild(
+        self, default_config,
+    ) -> None:
+        """WB-001: Full chain of same-symbol cells reachable through the wild."""
+        board = Board.empty(default_config.board)
+        wild_pos = Position(3, 2)
+        # H2 chain: (4,2) adjacent to wild, (4,3) and (4,4) extend the chain
+        board.set(Position(4, 2), Symbol.H2)
+        board.set(Position(4, 3), Symbol.H2)
+        board.set(Position(4, 4), Symbol.H2)
+
+        reachable = WildBridgeStrategy._reachable_through_wild(
+            wild_pos, Symbol.H2, board, default_config.board,
+        )
+        assert reachable == frozenset({Position(4, 2), Position(4, 3), Position(4, 4)})
+
+    def test_wb_002_reachable_both_sides_of_wild(
+        self, default_config,
+    ) -> None:
+        """WB-002: Same-symbol components on both sides of wild are merged."""
+        board = Board.empty(default_config.board)
+        wild_pos = Position(3, 3)
+        # L1 on one side
+        board.set(Position(2, 3), Symbol.L1)
+        board.set(Position(1, 3), Symbol.L1)
+        # L1 on the other side
+        board.set(Position(4, 3), Symbol.L1)
+
+        reachable = WildBridgeStrategy._reachable_through_wild(
+            wild_pos, Symbol.L1, board, default_config.board,
+        )
+        assert reachable == frozenset({
+            Position(2, 3), Position(1, 3), Position(4, 3),
+        })
+
+    def test_wb_003_no_component_touches_wild(
+        self, default_config,
+    ) -> None:
+        """WB-003: Symbol exists on board but no component is adjacent to wild."""
+        board = Board.empty(default_config.board)
+        wild_pos = Position(3, 3)
+        # H1 far from wild — not adjacent
+        board.set(Position(0, 0), Symbol.H1)
+        board.set(Position(0, 1), Symbol.H1)
+
+        reachable = WildBridgeStrategy._reachable_through_wild(
+            wild_pos, Symbol.H1, board, default_config.board,
+        )
+        assert reachable == frozenset()
+
+    # ------------------------------------------------------------------
+    # WB-010 through WB-015: _scan_bridge_candidates
+    # ------------------------------------------------------------------
+
+    def test_wb_010_scan_finds_candidate_with_correct_needed(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, rng,
+    ) -> None:
+        """WB-010: Candidate for H2 with 3 reachable cells → score=4, needed=1."""
+        wild_pos = Position(3, 3)
+        surviving = {
+            wild_pos: Symbol.W,
+            Position(2, 3): Symbol.H2,
+            Position(1, 3): Symbol.H2,
+            Position(4, 3): Symbol.H2,
+        }
+        context = _make_settled_context(
+            default_config, surviving=surviving, active_wilds=[wild_pos],
+        )
+        strategy = WildBridgeStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, rng,
+        )
+        candidates = strategy._scan_bridge_candidates(wild_pos, context, 5, None)
+
+        assert len(candidates) >= 1
+        h2_candidate = next(c for c in candidates if c.symbol is Symbol.H2)
+        assert h2_candidate.score == 4  # 3 reachable + 1 wild
+        assert h2_candidate.needed == 1
+
+    def test_wb_011_scan_ranks_by_needed_ascending(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, rng,
+    ) -> None:
+        """WB-011: Candidate with more reachable cells ranked first (lower needed)."""
+        wild_pos = Position(3, 3)
+        surviving = {
+            wild_pos: Symbol.W,
+            # L1: 1 reachable cell
+            Position(2, 3): Symbol.L1,
+            # H2: 3 reachable cells — chain extends away from wild
+            Position(4, 3): Symbol.H2,
+            Position(4, 4): Symbol.H2,
+            Position(4, 5): Symbol.H2,
+        }
+        context = _make_settled_context(
+            default_config, surviving=surviving, active_wilds=[wild_pos],
+        )
+        strategy = WildBridgeStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, rng,
+        )
+        candidates = strategy._scan_bridge_candidates(wild_pos, context, 5, None)
+
+        assert len(candidates) >= 2
+        # H2 has score 4 (3+1), needed 1; L1 has score 2 (1+1), needed 3
+        assert candidates[0].symbol is Symbol.H2
+        assert candidates[0].needed < candidates[1].needed
+
+    def test_wb_012_scan_no_standard_neighbors(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, rng,
+    ) -> None:
+        """WB-012: No standard symbols adjacent to wild → empty candidate list."""
+        wild_pos = Position(3, 3)
+        # Only special symbols and empty cells around the wild
+        surviving = {wild_pos: Symbol.W}
+        context = _make_settled_context(
+            default_config, surviving=surviving, active_wilds=[wild_pos],
+        )
+        strategy = WildBridgeStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, rng,
+        )
+        candidates = strategy._scan_bridge_candidates(wild_pos, context, 5, None)
+        assert candidates == []
+
+    def test_wb_013_scan_bridge_already_complete(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, rng,
+    ) -> None:
+        """WB-013: Score >= target → needed=0 (bridge already complete)."""
+        wild_pos = Position(3, 3)
+        # 4 L1 cells adjacent/reachable through wild → score 5, target 5
+        surviving = {
+            wild_pos: Symbol.W,
+            Position(2, 3): Symbol.L1,
+            Position(4, 3): Symbol.L1,
+            Position(3, 2): Symbol.L1,
+            Position(3, 4): Symbol.L1,
+        }
+        context = _make_settled_context(
+            default_config, surviving=surviving, active_wilds=[wild_pos],
+        )
+        strategy = WildBridgeStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, rng,
+        )
+        candidates = strategy._scan_bridge_candidates(wild_pos, context, 5, None)
+
+        l1_candidate = next(c for c in candidates if c.symbol is Symbol.L1)
+        assert l1_candidate.score == 5
+        assert l1_candidate.needed == 0
+
+    def test_wb_014_scan_tier_filter_high(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, rng,
+    ) -> None:
+        """WB-014: required_tier=HIGH filters out LOW symbols."""
+        wild_pos = Position(3, 3)
+        surviving = {
+            wild_pos: Symbol.W,
+            Position(2, 3): Symbol.L1,  # LOW
+            Position(4, 3): Symbol.H1,  # HIGH
+        }
+        context = _make_settled_context(
+            default_config, surviving=surviving, active_wilds=[wild_pos],
+        )
+        strategy = WildBridgeStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, rng,
+        )
+        candidates = strategy._scan_bridge_candidates(
+            wild_pos, context, 5, SymbolTier.HIGH,
+        )
+
+        symbols = {c.symbol for c in candidates}
+        assert Symbol.H1 in symbols
+        assert Symbol.L1 not in symbols
+
+    def test_wb_015_scan_tier_filter_high_only_low_present(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, rng,
+    ) -> None:
+        """WB-015: required_tier=HIGH but only LOW adjacent → empty list."""
+        wild_pos = Position(3, 3)
+        surviving = {
+            wild_pos: Symbol.W,
+            Position(2, 3): Symbol.L1,
+            Position(4, 3): Symbol.L2,
+        }
+        context = _make_settled_context(
+            default_config, surviving=surviving, active_wilds=[wild_pos],
+        )
+        strategy = WildBridgeStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, rng,
+        )
+        candidates = strategy._scan_bridge_candidates(
+            wild_pos, context, 5, SymbolTier.HIGH,
+        )
+        assert candidates == []
+
+    # ------------------------------------------------------------------
+    # WB-030 through WB-035: plan_step integration
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_bridge_phase(
+        *,
+        cluster_sizes: tuple[Range, ...] = (Range(5, 6),),
+        cluster_symbol_tier: SymbolTier | None = None,
+        spawns: tuple[str, ...] | None = None,
+    ) -> NarrativeArc:
+        """Build a minimal NarrativeArc with a single bridge phase."""
+        phase = NarrativePhase(
+            id="bridge",
+            intent="bridge through wild",
+            repetitions=Range(1, 1),
+            cluster_count=Range(1, 1),
+            cluster_sizes=cluster_sizes,
+            cluster_symbol_tier=cluster_symbol_tier,
+            spawns=spawns,
+            arms=None,
+            fires=None,
+            wild_behavior="bridge",
+            ends_when="cluster_exploded",
+        )
+        return NarrativeArc(
+            phases=(phase,),
+            payout=RangeFloat(0.5, 5.0),
+            wild_count_on_terminal=Range(0, 0),
+            terminal_near_misses=None,
+            dormant_boosters_on_terminal=None,
+            required_chain_depth=Range(0, 0),
+            rocket_orientation=None,
+            lb_target_tier=None,
+        )
+
+    def test_wb_030_plan_step_bridge_small(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, rng,
+    ) -> None:
+        """WB-030: wild_bridge_small — places cells to bridge, empty spawns."""
+        wild_pos = Position(3, 3)
+        surviving = {
+            wild_pos: Symbol.W,
+            Position(2, 3): Symbol.L1,
+            Position(1, 3): Symbol.L1,
+            Position(4, 3): Symbol.L1,
+        }
+        context = _make_settled_context(
+            default_config, surviving=surviving, active_wilds=[wild_pos],
+        )
+        arc = self._make_bridge_phase(cluster_sizes=(Range(5, 5),))
+        sig = _make_signature(
+            family="wild",
+            required_cluster_sizes=(Range(5, 5),),
+            required_cascade_depth=Range(2, 4),
+            narrative_arc=arc,
+        )
+        progress = _make_progress(sig, steps_completed=1)
+        variance = _make_variance_hints(default_config)
+
+        strategy = WildBridgeStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, rng,
+        )
+        intent = strategy.plan_step(context, progress, sig, variance)
+
+        # Score is 4 (3 reachable + 1 wild), target 5 → need 1 cell
+        assert len(intent.constrained_cells) == 1
+        assert intent.expected_spawns == []
+
+    def test_wb_031_plan_step_bridge_already_complete(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, rng,
+    ) -> None:
+        """WB-031: Bridge already complete → no constrained cells needed."""
+        wild_pos = Position(3, 3)
+        surviving = {
+            wild_pos: Symbol.W,
+            Position(2, 3): Symbol.L1,
+            Position(4, 3): Symbol.L1,
+            Position(3, 2): Symbol.L1,
+            Position(3, 4): Symbol.L1,
+        }
+        context = _make_settled_context(
+            default_config, surviving=surviving, active_wilds=[wild_pos],
+        )
+        arc = self._make_bridge_phase(cluster_sizes=(Range(5, 5),))
+        sig = _make_signature(
+            family="wild",
+            required_cluster_sizes=(Range(5, 5),),
+            required_cascade_depth=Range(2, 4),
+            narrative_arc=arc,
+        )
+        progress = _make_progress(sig, steps_completed=1)
+        variance = _make_variance_hints(default_config)
+
+        strategy = WildBridgeStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, rng,
+        )
+        intent = strategy.plan_step(context, progress, sig, variance)
+
+        assert len(intent.constrained_cells) == 0
+
+    def test_wb_032_plan_step_no_viable_candidates(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, rng,
+    ) -> None:
+        """WB-032: No viable bridge candidates → raises ValueError."""
+        wild_pos = Position(3, 3)
+        # Only the wild, no standard neighbors
+        surviving = {wild_pos: Symbol.W}
+        context = _make_settled_context(
+            default_config, surviving=surviving, active_wilds=[wild_pos],
+        )
+        arc = self._make_bridge_phase()
+        sig = _make_signature(
+            family="wild",
+            required_cluster_sizes=(Range(5, 5),),
+            required_cascade_depth=Range(2, 4),
+            narrative_arc=arc,
+        )
+        progress = _make_progress(sig, steps_completed=1)
+        variance = _make_variance_hints(default_config)
+
+        strategy = WildBridgeStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, rng,
+        )
+        with pytest.raises(ValueError, match="No viable bridge symbols"):
+            strategy.plan_step(context, progress, sig, variance)
+
+    def test_wb_033_plan_step_rocket_spawns(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, rng,
+    ) -> None:
+        """WB-033: wild_enable_rocket — expected_spawns=["R"] from phase."""
+        wild_pos = Position(3, 3)
+        # H3 chain of 5 adjacent to wild → score 6, target 9, needed 3
+        surviving = {
+            wild_pos: Symbol.W,
+            Position(4, 3): Symbol.H3,
+            Position(4, 4): Symbol.H3,
+            Position(4, 5): Symbol.H3,
+            Position(4, 2): Symbol.H3,
+            Position(4, 1): Symbol.H3,
+        }
+        context = _make_settled_context(
+            default_config, surviving=surviving, active_wilds=[wild_pos],
+        )
+        arc = self._make_bridge_phase(
+            cluster_sizes=(Range(9, 9),),
+            spawns=("R",),
+        )
+        sig = _make_signature(
+            family="wild",
+            required_cluster_sizes=(Range(9, 9),),
+            required_cascade_depth=Range(2, 6),
+            narrative_arc=arc,
+        )
+        progress = _make_progress(sig, steps_completed=1)
+        variance = _make_variance_hints(default_config)
+
+        strategy = WildBridgeStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, rng,
+        )
+        intent = strategy.plan_step(context, progress, sig, variance)
+
+        assert intent.expected_spawns == ["R"]
+        assert len(intent.constrained_cells) == 3
+
+    def test_wb_034_plan_step_high_tier_filter(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, rng,
+    ) -> None:
+        """WB-034: wild_bridge_large with HIGH tier → only HIGH symbol selected."""
+        wild_pos = Position(3, 3)
+        surviving = {
+            wild_pos: Symbol.W,
+            Position(2, 3): Symbol.L1,  # LOW — should be filtered out
+            Position(4, 3): Symbol.H1,  # HIGH — should be selected
+            Position(4, 4): Symbol.H1,
+            Position(4, 5): Symbol.H1,
+        }
+        context = _make_settled_context(
+            default_config, surviving=surviving, active_wilds=[wild_pos],
+        )
+        arc = self._make_bridge_phase(
+            cluster_sizes=(Range(5, 5),),
+            cluster_symbol_tier=SymbolTier.HIGH,
+        )
+        sig = _make_signature(
+            family="wild",
+            required_cluster_sizes=(Range(5, 5),),
+            required_cascade_depth=Range(2, 4),
+            narrative_arc=arc,
+        )
+        progress = _make_progress(sig, steps_completed=1)
+        variance = _make_variance_hints(default_config)
+
+        strategy = WildBridgeStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, rng,
+        )
+        intent = strategy.plan_step(context, progress, sig, variance)
+
+        # All constrained cells should be H1 (HIGH), not L1 (LOW)
+        for sym in intent.constrained_cells.values():
+            assert sym is Symbol.H1
+        assert intent.expected_cluster_tier is SymbolTier.HIGH
+
+    def test_wb_035_plan_step_tier_filter_no_match_raises(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, rng,
+    ) -> None:
+        """WB-035: HIGH tier required but only LOW adjacent → raises ValueError."""
+        wild_pos = Position(3, 3)
+        # Only LOW symbols adjacent to wild — HIGH tier filter rejects all
+        surviving = {
+            wild_pos: Symbol.W,
+            Position(2, 3): Symbol.L1,
+            Position(4, 3): Symbol.L2,
+        }
+        context = _make_settled_context(
+            default_config, surviving=surviving, active_wilds=[wild_pos],
+        )
+        arc = self._make_bridge_phase(
+            cluster_sizes=(Range(5, 5),),
+            cluster_symbol_tier=SymbolTier.HIGH,
+        )
+        sig = _make_signature(
+            family="wild",
+            required_cluster_sizes=(Range(5, 5),),
+            required_cascade_depth=Range(2, 4),
+            narrative_arc=arc,
+        )
+        progress = _make_progress(sig, steps_completed=1)
+        variance = _make_variance_hints(default_config)
+
+        strategy = WildBridgeStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, rng,
+        )
+        # HIGH tier required but only LOW symbols adjacent → no candidates
+        with pytest.raises(ValueError, match="No viable bridge symbols"):
+            strategy.plan_step(context, progress, sig, variance)
 
 
 # ---------------------------------------------------------------------------

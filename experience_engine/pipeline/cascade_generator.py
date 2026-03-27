@@ -183,6 +183,12 @@ class CascadeInstanceGenerator:
             step_results.append(step_result)
             progress.update(step_result)
 
+            # Sync wilds from the filled board — transition hasn't spawned new
+            # wilds yet, so active_wilds reflects only wilds present on the board.
+            # Without this, progress.update() adds the predicted spawn position
+            # which doesn't exist on the filled board yet.
+            progress.sync_active_wilds(filled, self._config.board)
+
             # Phase advancement — pre-transition, matching RL environment ordering.
             # Context from the FILLED board so predicates see the step's outcome,
             # not the explosion's aftermath.
@@ -381,6 +387,7 @@ class CascadeInstanceGenerator:
 
                 step_results.append(step_result)
                 progress.update(step_result)
+                progress.sync_active_wilds(filled, self._config.board)
 
                 # Phase advancement — pre-transition context from filled board
                 fill_context = BoardContext.from_board(
@@ -473,7 +480,7 @@ class CascadeInstanceGenerator:
             # Actual positions from TransitionResult (post-collision-resolution),
             # not StepResult centroids — events must reflect real board state.
             booster_spawn_positions=tuple(
-                (s.booster_type, s.position.reel, s.position.row)
+                (s.booster_type, s.position.reel, s.position.row, s.orientation)
                 for s in transition_spawns
             ),
             booster_fire_records=booster_fire_records,

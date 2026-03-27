@@ -23,6 +23,8 @@ class SpawnRecord:
     # Index into StepResult.clusters identifying which cluster spawned this booster
     source_cluster_index: int
     step_index: int
+    # Directional orientation for boosters that fire along an axis (e.g. "H"/"V" for rockets)
+    orientation: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

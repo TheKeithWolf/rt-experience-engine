@@ -346,8 +346,11 @@ class EventStreamGenerator:
         # Build type → list[position_dict] index from resolved spawn data.
         # Multiple spawns of the same type (e.g. two wilds) group naturally.
         positions_by_type: dict[str, list[dict]] = defaultdict(list)
-        for btype, reel, row in step.booster_spawn_positions:
-            positions_by_type[btype].append({"reel": reel, "row": row})
+        for btype, reel, row, orient in step.booster_spawn_positions:
+            pos_dict: dict[str, object] = {"reel": reel, "row": row}
+            if orient is not None:
+                pos_dict["orientation"] = orient
+            positions_by_type[btype].append(pos_dict)
 
         for spawn_type in step.booster_spawn_types:
             event_type = SPAWN_EVENT_TYPE.get(spawn_type)

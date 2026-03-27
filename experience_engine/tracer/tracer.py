@@ -255,7 +255,10 @@ class EventTracer:
                 reel = pos.get("reel", 0)
                 row = pos.get("row", 0)
                 if reel < len(self._board_state) and row < len(self._board_state[reel]):
-                    self._board_state[reel][row] = {"name": sym_name}
+                    # Orientation suffix (e.g. "H"/"V") produces "RH"/"RV" — generic for any oriented booster
+                    orient = pos.get("orientation", "")
+                    display_name = f"{sym_name}{orient}" if orient else sym_name
+                    self._board_state[reel][row] = {"name": display_name}
                     # Track freshly spawned positions — only these survive explosion
                     self._spawn_positions.add((reel, row))
 

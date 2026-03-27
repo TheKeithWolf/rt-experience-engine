@@ -472,6 +472,8 @@ def diagnostic_attempt(
                 return False, f"Step {step_idx} transition: {exc}", step_idx
 
             board = transition_result.board
+            # Board is truth — sync wild positions after gravity + consumption
+            progress.sync_active_wilds(transition_result.board, config.board)
             print(f"\n  Transition: exploded clusters, gravity settled")
 
             # Grid multiplier state — makes payout contribution visible per step
