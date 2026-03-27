@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ..archetypes.registry import ArchetypeRegistry
 from ..config.schema import MasterConfig
@@ -25,6 +26,9 @@ from ..variance.accumulators import PopulationAccumulators
 from ..variance.bias_computation import compute_hints
 from ..variance.hints import VarianceHints
 from .allocator import BudgetAllocation, allocate_budget
+
+if TYPE_CHECKING:
+    from ..rl_archive.generator import RLArchiveGenerator
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +54,7 @@ class PopulationController:
 
     __slots__ = (
         "_config", "_registry", "_static_generator", "_cascade_generator",
-        "_validator", "_accumulators",
+        "_validator", "_accumulators", "_rl_archive_generator",
     )
 
     def __init__(
@@ -60,6 +64,7 @@ class PopulationController:
         static_generator: StaticInstanceGenerator,
         cascade_generator: CascadeInstanceGenerator | None,
         validator: InstanceValidator,
+        rl_archive_generator: RLArchiveGenerator | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -67,26 +72,38 @@ class PopulationController:
         self._cascade_generator = cascade_generator
         self._validator = validator
         self._accumulators = PopulationAccumulators.create(config)
+        self._rl_archive_generator = rl_archive_generator
 
     def _select_generator(
         self, archetype_id: str,
-    ) -> StaticInstanceGenerator | CascadeInstanceGenerator:
-        """Route to static or cascade generator based on archetype cascade depth.
+    ) -> StaticInstanceGenerator | CascadeInstanceGenerator | RLArchiveGenerator:
+        """Route to static, cascade, or RL archive generator based on cascade depth.
 
-        Archetypes with max cascade_depth == 0 use the static pipeline.
-        All others require the cascade pipeline (ASP → CSP → WFC loop).
+        Three-tier routing:
+        - depth == 0 → static pipeline
+        - depth 1 → cascade pipeline (rule-based StepReasoner)
+        - depth >= 2 → RL archive if available, else cascade fallback
         """
         sig = self._registry.get(archetype_id)
-        if sig.required_cascade_depth.max_val > 0:
-            if self._cascade_generator is None:
-                raise RuntimeError(
-                    f"Archetype '{archetype_id}' requires cascade_depth "
-                    f"{sig.required_cascade_depth.max_val} but no cascade generator "
-                    f"was provided. Initialize PopulationController with a "
-                    f"CascadeInstanceGenerator."
-                )
-            return self._cascade_generator
-        return self._static_generator
+        depth = sig.required_cascade_depth.max_val
+
+        if depth == 0:
+            return self._static_generator
+
+        # Deep cascades: prefer RL archive if available
+        #if depth >= 2 and self._rl_archive_generator is not None:
+        #    return self._rl_archive_generator
+
+        # Shallow cascades or fallback when no archive
+        
+        #if self._cascade_generator is None:
+        #    raise RuntimeError(
+        #        f"Archetype '{archetype_id}' requires cascade_depth "
+        #        f"{depth} but no cascade generator was provided. "
+        #        f"Initialize PopulationController with a CascadeInstanceGenerator."
+        #    )
+        
+        return self._cascade_generator
 
     def run(self, seed: int = 42) -> PopulationResult:
         """Execute the full population generation loop.

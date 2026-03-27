@@ -17,7 +17,17 @@ from .schema import (
     BoosterConfig,
     CentipayoutConfig,
     ConfigValidationError,
+    DescriptorConfig,
     DiagnosticTarget,
+    CurriculumPhase,
+    EnvironmentConfig,
+    GeneratorConfig,
+    PolicyConfig,
+    QualityConfig,
+    RLArchiveDiagnosticsConfig,
+    ReporterConfig,
+    RewardConfig,
+    TrainingConfig,
     DiagnosticsConfig,
     FreespinConfig,
     GravityConfig,
@@ -28,6 +38,7 @@ from .schema import (
     PaytableConfig,
     PaytableEntry,
     PopulationConfig,
+    RLArchiveConfig,
     ReasonerConfig,
     SolverConfig,
     SpawnThreshold,
@@ -71,6 +82,7 @@ def load_config(path: Path) -> MasterConfig:
     output = _build_output(raw.get("output"))
     reasoner = _build_reasoner(raw.get("reasoner", {}))
     gravity_wfc = _build_gravity_wfc(raw.get("gravity_wfc"))
+    rl_archive = _build_rl_archive(raw.get("rl_archive"))
 
     # Cross-field validations
     _validate_spawn_thresholds(boosters.spawn_thresholds)
@@ -94,6 +106,7 @@ def load_config(path: Path) -> MasterConfig:
         reasoner=reasoner,
         output=output,
         gravity_wfc=gravity_wfc,
+        rl_archive=rl_archive,
     )
 
 
@@ -384,6 +397,305 @@ def _build_gravity_wfc(data: dict[str, Any] | None) -> GravityWfcConfig | None:
         min_symbol_weight=float(
             _require(data, "min_symbol_weight",
                      "gravity_wfc.min_symbol_weight")
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# RL Archive — optional MAP-Elites archive sub-configs
+# ---------------------------------------------------------------------------
+
+
+def _build_rl_archive(data: dict[str, Any] | None) -> RLArchiveConfig | None:
+    """Build RLArchiveConfig from YAML data, or None if section is absent.
+
+    Optional section — configs without rl_archive get None, which disables
+    the MAP-Elites archive system (cascade generator used as fallback).
+    """
+    if data is None:
+        return None
+
+    descriptor = _build_rl_descriptor(data.get("descriptor"))
+    quality = _build_rl_quality(data.get("quality"))
+    environment = _build_rl_environment(data.get("environment"))
+    reward = _build_rl_reward(data.get("reward"))
+    policy = _build_rl_policy(data.get("policy"))
+    training = _build_rl_training(data.get("training"))
+    generator = _build_rl_generator(data.get("generator"))
+    rl_diagnostics = _build_rl_diagnostics(data.get("diagnostics"))
+
+    return RLArchiveConfig(
+        descriptor=descriptor,
+        quality=quality,
+        environment=environment,
+        reward=reward,
+        policy=policy,
+        training=training,
+        generator=generator,
+        diagnostics=rl_diagnostics,
+    )
+
+
+def _build_rl_descriptor(data: dict[str, Any] | None) -> DescriptorConfig | None:
+    """Build DescriptorConfig for behavioral descriptor binning."""
+    if data is None:
+        return None
+    return DescriptorConfig(
+        spatial_col_bins=int(
+            _require(data, "spatial_col_bins", "rl_archive.descriptor.spatial_col_bins")
+        ),
+        spatial_row_bins=int(
+            _require(data, "spatial_row_bins", "rl_archive.descriptor.spatial_row_bins")
+        ),
+        payout_bins=int(
+            _require(data, "payout_bins", "rl_archive.descriptor.payout_bins")
+        ),
+    )
+
+
+def _build_rl_quality(data: dict[str, Any] | None) -> QualityConfig | None:
+    """Build QualityConfig for MAP-Elites quality scoring weights."""
+    if data is None:
+        return None
+    return QualityConfig(
+        payout_centering_weight=float(
+            _require(data, "payout_centering_weight",
+                     "rl_archive.quality.payout_centering_weight")
+        ),
+        escalation_weight=float(
+            _require(data, "escalation_weight",
+                     "rl_archive.quality.escalation_weight")
+        ),
+        cluster_size_weight=float(
+            _require(data, "cluster_size_weight",
+                     "rl_archive.quality.cluster_size_weight")
+        ),
+        productivity_weight=float(
+            _require(data, "productivity_weight",
+                     "rl_archive.quality.productivity_weight")
+        ),
+        multiplier_engagement_weight=float(
+            _require(data, "multiplier_engagement_weight",
+                     "rl_archive.quality.multiplier_engagement_weight")
+        ),
+    )
+
+
+def _build_rl_environment(data: dict[str, Any] | None) -> EnvironmentConfig | None:
+    """Build EnvironmentConfig for cascade RL training episodes."""
+    if data is None:
+        return None
+    return EnvironmentConfig(
+        max_episode_steps=int(
+            _require(data, "max_episode_steps",
+                     "rl_archive.environment.max_episode_steps")
+        ),
+        invalid_step_penalty=float(
+            _require(data, "invalid_step_penalty",
+                     "rl_archive.environment.invalid_step_penalty")
+        ),
+        completion_bonus=float(
+            _require(data, "completion_bonus",
+                     "rl_archive.environment.completion_bonus")
+        ),
+        failure_penalty=float(
+            _require(data, "failure_penalty",
+                     "rl_archive.environment.failure_penalty")
+        ),
+        feasibility_weight=float(
+            _require(data, "feasibility_weight",
+                     "rl_archive.environment.feasibility_weight")
+        ),
+        progress_weight=float(
+            _require(data, "progress_weight",
+                     "rl_archive.environment.progress_weight")
+        ),
+    )
+
+
+def _build_rl_reward(data: dict[str, Any] | None) -> RewardConfig | None:
+    """Build RewardConfig for phase-aware reward shaping."""
+    if data is None:
+        return None
+    return RewardConfig(
+        phase_match_reward=float(
+            _require(data, "phase_match_reward",
+                     "rl_archive.reward.phase_match_reward")
+        ),
+        cluster_match_reward=float(
+            _require(data, "cluster_match_reward",
+                     "rl_archive.reward.cluster_match_reward")
+        ),
+        spawn_match_reward=float(
+            _require(data, "spawn_match_reward",
+                     "rl_archive.reward.spawn_match_reward")
+        ),
+        fire_match_reward=float(
+            _require(data, "fire_match_reward",
+                     "rl_archive.reward.fire_match_reward")
+        ),
+        wild_behavior_match_reward=float(
+            _require(data, "wild_behavior_match_reward",
+                     "rl_archive.reward.wild_behavior_match_reward")
+        ),
+        feasibility_empty_cell_weight=float(
+            _require(data, "feasibility_empty_cell_weight",
+                     "rl_archive.reward.feasibility_empty_cell_weight")
+        ),
+        feasibility_adjacency_weight=float(
+            _require(data, "feasibility_adjacency_weight",
+                     "rl_archive.reward.feasibility_adjacency_weight")
+        ),
+    )
+
+
+def _build_rl_policy(data: dict[str, Any] | None) -> PolicyConfig | None:
+    """Build PolicyConfig for the cascade policy network architecture."""
+    if data is None:
+        return None
+    return PolicyConfig(
+        board_channels=int(
+            _require(data, "board_channels", "rl_archive.policy.board_channels")
+        ),
+        cnn_filters=int(
+            _require(data, "cnn_filters", "rl_archive.policy.cnn_filters")
+        ),
+        cnn_layers=int(
+            _require(data, "cnn_layers", "rl_archive.policy.cnn_layers")
+        ),
+        trunk_hidden=int(
+            _require(data, "trunk_hidden", "rl_archive.policy.trunk_hidden")
+        ),
+        archetype_embedding_dim=int(
+            _require(data, "archetype_embedding_dim",
+                     "rl_archive.policy.archetype_embedding_dim")
+        ),
+        phase_embedding_dim=int(
+            _require(data, "phase_embedding_dim",
+                     "rl_archive.policy.phase_embedding_dim")
+        ),
+        entropy_coefficient=float(
+            _require(data, "entropy_coefficient",
+                     "rl_archive.policy.entropy_coefficient")
+        ),
+    )
+
+
+def _build_rl_training(data: dict[str, Any] | None) -> TrainingConfig | None:
+    """Build TrainingConfig for PPO training hyperparameters and schedule."""
+    if data is None:
+        return None
+
+    # Build curriculum phases
+    curriculum_raw = _require(data, "curriculum", "rl_archive.training.curriculum")
+    if not isinstance(curriculum_raw, dict):
+        raise ConfigValidationError(
+            "rl_archive.training.curriculum", "must be a mapping"
+        )
+    phases_raw = _require(
+        curriculum_raw, "phases", "rl_archive.training.curriculum.phases"
+    )
+    curriculum_phases = tuple(
+        CurriculumPhase(
+            episode_threshold=int(p.get("episode_threshold", 0)),
+            difficulty_filter=str(p.get("difficulty_filter", "standard")),
+        )
+        for p in phases_raw
+    )
+
+    # Build reporter config
+    reporter_raw = _require(data, "reporter", "rl_archive.training.reporter")
+    reporter = ReporterConfig(
+        completion_rolling_window=int(
+            _require(reporter_raw, "completion_rolling_window",
+                     "rl_archive.training.reporter.completion_rolling_window")
+        ),
+        completion_trend_buckets=int(
+            _require(reporter_raw, "completion_trend_buckets",
+                     "rl_archive.training.reporter.completion_trend_buckets")
+        ),
+        plateau_warn_threshold=int(
+            _require(reporter_raw, "plateau_warn_threshold",
+                     "rl_archive.training.reporter.plateau_warn_threshold")
+        ),
+        condense_above_completion=float(
+            _require(reporter_raw, "condense_above_completion",
+                     "rl_archive.training.reporter.condense_above_completion")
+        ),
+        report_every_n_batches=int(
+            _require(reporter_raw, "report_every_n_batches",
+                     "rl_archive.training.reporter.report_every_n_batches")
+        ),
+    )
+
+    return TrainingConfig(
+        learning_rate=float(
+            _require(data, "learning_rate", "rl_archive.training.learning_rate")
+        ),
+        gamma=float(_require(data, "gamma", "rl_archive.training.gamma")),
+        gae_lambda=float(
+            _require(data, "gae_lambda", "rl_archive.training.gae_lambda")
+        ),
+        clip_epsilon=float(
+            _require(data, "clip_epsilon", "rl_archive.training.clip_epsilon")
+        ),
+        epochs_per_batch=int(
+            _require(data, "epochs_per_batch",
+                     "rl_archive.training.epochs_per_batch")
+        ),
+        batch_size=int(
+            _require(data, "batch_size", "rl_archive.training.batch_size")
+        ),
+        max_training_episodes=int(
+            _require(data, "max_training_episodes",
+                     "rl_archive.training.max_training_episodes")
+        ),
+        checkpoint_interval=int(
+            _require(data, "checkpoint_interval",
+                     "rl_archive.training.checkpoint_interval")
+        ),
+        imitation_epochs=int(
+            _require(data, "imitation_epochs",
+                     "rl_archive.training.imitation_epochs")
+        ),
+        imitation_batch_size=int(
+            _require(data, "imitation_batch_size",
+                     "rl_archive.training.imitation_batch_size")
+        ),
+        curriculum=curriculum_phases,
+        reporter=reporter,
+    )
+
+
+def _build_rl_generator(data: dict[str, Any] | None) -> GeneratorConfig | None:
+    """Build GeneratorConfig for the RL archive production generator."""
+    if data is None:
+        return None
+    return GeneratorConfig(
+        archive_dir=str(
+            _require(data, "archive_dir", "rl_archive.generator.archive_dir")
+        ),
+        min_coverage_warn=float(
+            _require(data, "min_coverage_warn",
+                     "rl_archive.generator.min_coverage_warn")
+        ),
+    )
+
+
+def _build_rl_diagnostics(
+    data: dict[str, Any] | None,
+) -> RLArchiveDiagnosticsConfig | None:
+    """Build RLArchiveDiagnosticsConfig for archive health reporting."""
+    if data is None:
+        return None
+    return RLArchiveDiagnosticsConfig(
+        coverage_warn_threshold=float(
+            _require(data, "coverage_warn_threshold",
+                     "rl_archive.diagnostics.coverage_warn_threshold")
+        ),
+        coverage_fail_threshold=float(
+            _require(data, "coverage_fail_threshold",
+                     "rl_archive.diagnostics.coverage_fail_threshold")
         ),
     )
 

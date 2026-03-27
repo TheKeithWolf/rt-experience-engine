@@ -554,6 +554,323 @@ class GravityWfcConfig:
 
 
 # ---------------------------------------------------------------------------
+# RL Archive — sub-configs for MAP-Elites archive system
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class DescriptorConfig:
+    """Behavioral descriptor binning for MAP-Elites archive cells.
+
+    Controls how cascade trajectories are discretized into behavioral niches.
+    Spatial bins divide the board into regions; payout bins divide the arc's
+    payout range into equal-width buckets.
+    """
+
+    spatial_col_bins: int
+    spatial_row_bins: int
+    payout_bins: int
+
+    def __post_init__(self) -> None:
+        if self.spatial_col_bins < 1:
+            raise ConfigValidationError(
+                "rl_archive.descriptor.spatial_col_bins", "must be >= 1"
+            )
+        if self.spatial_row_bins < 1:
+            raise ConfigValidationError(
+                "rl_archive.descriptor.spatial_row_bins", "must be >= 1"
+            )
+        if self.payout_bins < 1:
+            raise ConfigValidationError(
+                "rl_archive.descriptor.payout_bins", "must be >= 1"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class QualityConfig:
+    """Weights for multi-component quality scoring in the MAP-Elites archive.
+
+    Each weight controls how much that quality dimension contributes to the
+    overall score. Setting a weight to 0.0 disables that component.
+    Negative weights are forbidden.
+    """
+
+    payout_centering_weight: float
+    escalation_weight: float
+    cluster_size_weight: float
+    productivity_weight: float
+    multiplier_engagement_weight: float
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "payout_centering_weight",
+            "escalation_weight",
+            "cluster_size_weight",
+            "productivity_weight",
+            "multiplier_engagement_weight",
+        ):
+            if getattr(self, field_name) < 0.0:
+                raise ConfigValidationError(
+                    f"rl_archive.quality.{field_name}", "must be >= 0.0"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class EnvironmentConfig:
+    """Cascade environment parameters for RL training episodes.
+
+    Controls episode length, reward shaping for invalid/terminal steps,
+    and how feasibility and progress contribute to the per-step reward.
+    """
+
+    max_episode_steps: int
+    invalid_step_penalty: float
+    completion_bonus: float
+    failure_penalty: float
+    feasibility_weight: float
+    progress_weight: float
+
+    def __post_init__(self) -> None:
+        if self.max_episode_steps < 1:
+            raise ConfigValidationError(
+                "rl_archive.environment.max_episode_steps", "must be >= 1"
+            )
+        if not (0.0 <= self.feasibility_weight <= 1.0):
+            raise ConfigValidationError(
+                "rl_archive.environment.feasibility_weight",
+                "must be in [0.0, 1.0]",
+            )
+        if not (0.0 <= self.progress_weight <= 1.0):
+            raise ConfigValidationError(
+                "rl_archive.environment.progress_weight",
+                "must be in [0.0, 1.0]",
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class RewardConfig:
+    """Weights for the phase-aware reward function.
+
+    Each weight controls how much that reward component contributes.
+    Field-iteration reward: the reward computer iterates over phase constraint
+    fields and adds the corresponding weight when the step result matches.
+    """
+
+    phase_match_reward: float
+    cluster_match_reward: float
+    spawn_match_reward: float
+    fire_match_reward: float
+    wild_behavior_match_reward: float
+    feasibility_empty_cell_weight: float
+    feasibility_adjacency_weight: float
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "feasibility_empty_cell_weight",
+            "feasibility_adjacency_weight",
+        ):
+            val = getattr(self, field_name)
+            if not (0.0 <= val <= 1.0):
+                raise ConfigValidationError(
+                    f"rl_archive.reward.{field_name}",
+                    f"must be in [0.0, 1.0], got {val}",
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyConfig:
+    """Neural network architecture parameters for the cascade policy.
+
+    All spatial dimensions are derived from BoardConfig at construction
+    time — this config controls layer counts, widths, and embedding sizes.
+    """
+
+    # Extra non-symbol board channels (multiplier, empty, wild, booster, etc.)
+    board_channels: int
+    cnn_filters: int
+    cnn_layers: int
+    trunk_hidden: int
+    archetype_embedding_dim: int
+    phase_embedding_dim: int
+    entropy_coefficient: float
+
+    def __post_init__(self) -> None:
+        if self.board_channels < 1:
+            raise ConfigValidationError(
+                "rl_archive.policy.board_channels", "must be >= 1"
+            )
+        if self.cnn_filters < 1:
+            raise ConfigValidationError(
+                "rl_archive.policy.cnn_filters", "must be >= 1"
+            )
+        if self.cnn_layers < 1:
+            raise ConfigValidationError(
+                "rl_archive.policy.cnn_layers", "must be >= 1"
+            )
+        if self.trunk_hidden < 1:
+            raise ConfigValidationError(
+                "rl_archive.policy.trunk_hidden", "must be >= 1"
+            )
+        if self.entropy_coefficient < 0.0:
+            raise ConfigValidationError(
+                "rl_archive.policy.entropy_coefficient", "must be >= 0.0"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class CurriculumPhase:
+    """One phase in the training curriculum schedule.
+
+    Difficulty filters control which archetypes are eligible:
+    "standard" = cascade_depth 2-3, "hard" = depth >= 4, "all" = depth >= 2.
+    """
+
+    episode_threshold: int
+    difficulty_filter: str
+
+    def __post_init__(self) -> None:
+        if self.episode_threshold < 0:
+            raise ConfigValidationError(
+                "rl_archive.training.curriculum.episode_threshold",
+                "must be >= 0",
+            )
+        if self.difficulty_filter not in ("standard", "hard", "all"):
+            raise ConfigValidationError(
+                "rl_archive.training.curriculum.difficulty_filter",
+                f"must be 'standard', 'hard', or 'all', got '{self.difficulty_filter}'",
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ReporterConfig:
+    """Console reporter tuning parameters for training progress display."""
+
+    completion_rolling_window: int
+    completion_trend_buckets: int
+    plateau_warn_threshold: int
+    condense_above_completion: float
+    report_every_n_batches: int
+
+    def __post_init__(self) -> None:
+        if self.completion_rolling_window < 1:
+            raise ConfigValidationError(
+                "rl_archive.training.reporter.completion_rolling_window",
+                "must be >= 1",
+            )
+        if self.report_every_n_batches < 1:
+            raise ConfigValidationError(
+                "rl_archive.training.reporter.report_every_n_batches",
+                "must be >= 1",
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingConfig:
+    """PPO training hyperparameters and schedule.
+
+    Controls learning rate, GAE parameters, batch sizing, curriculum
+    scheduling, and reporter verbosity.
+    """
+
+    learning_rate: float
+    gamma: float
+    gae_lambda: float
+    clip_epsilon: float
+    epochs_per_batch: int
+    batch_size: int
+    max_training_episodes: int
+    checkpoint_interval: int
+    imitation_epochs: int
+    imitation_batch_size: int
+    curriculum: tuple[CurriculumPhase, ...]
+    reporter: ReporterConfig
+
+    def __post_init__(self) -> None:
+        if self.learning_rate <= 0.0:
+            raise ConfigValidationError(
+                "rl_archive.training.learning_rate", "must be > 0.0"
+            )
+        if not (0.0 <= self.gamma <= 1.0):
+            raise ConfigValidationError(
+                "rl_archive.training.gamma", "must be in [0.0, 1.0]"
+            )
+        if self.batch_size < 1:
+            raise ConfigValidationError(
+                "rl_archive.training.batch_size", "must be >= 1"
+            )
+        if self.max_training_episodes < 1:
+            raise ConfigValidationError(
+                "rl_archive.training.max_training_episodes", "must be >= 1"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratorConfig:
+    """Configuration for the RL archive production generator.
+
+    Controls where trained archives are stored and the minimum coverage
+    level before a warning is emitted during population generation.
+    """
+
+    archive_dir: str
+    min_coverage_warn: float
+
+    def __post_init__(self) -> None:
+        if not (0.0 <= self.min_coverage_warn <= 1.0):
+            raise ConfigValidationError(
+                "rl_archive.generator.min_coverage_warn",
+                "must be in [0.0, 1.0]",
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class RLArchiveDiagnosticsConfig:
+    """Thresholds for archive health reporting.
+
+    Coverage below warn_threshold → "warn" status.
+    Coverage below fail_threshold → "fail" status.
+    """
+
+    coverage_warn_threshold: float
+    coverage_fail_threshold: float
+
+    def __post_init__(self) -> None:
+        if not (0.0 <= self.coverage_warn_threshold <= 1.0):
+            raise ConfigValidationError(
+                "rl_archive.diagnostics.coverage_warn_threshold",
+                "must be in [0.0, 1.0]",
+            )
+        if not (0.0 <= self.coverage_fail_threshold <= 1.0):
+            raise ConfigValidationError(
+                "rl_archive.diagnostics.coverage_fail_threshold",
+                "must be in [0.0, 1.0]",
+            )
+        if self.coverage_fail_threshold > self.coverage_warn_threshold:
+            raise ConfigValidationError(
+                "rl_archive.diagnostics",
+                "coverage_fail_threshold must be <= coverage_warn_threshold",
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class RLArchiveConfig:
+    """Top-level RL archive configuration aggregating all sub-configs.
+
+    Each sub-config is optional (None) until its implementation phase lands.
+    The entire rl_archive section is optional in default.yaml — omitting it
+    preserves full backward compatibility.
+    """
+
+    descriptor: DescriptorConfig | None = None
+    quality: QualityConfig | None = None
+    environment: EnvironmentConfig | None = None
+    reward: RewardConfig | None = None
+    policy: PolicyConfig | None = None
+    training: TrainingConfig | None = None
+    generator: GeneratorConfig | None = None
+    diagnostics: RLArchiveDiagnosticsConfig | None = None
+
+
+# ---------------------------------------------------------------------------
 # Master Config
 # ---------------------------------------------------------------------------
 
@@ -585,3 +902,5 @@ class MasterConfig:
     output: OutputConfig | None = None
     # Gravity-aware WFC tuning — optional to preserve backward compatibility
     gravity_wfc: GravityWfcConfig | None = None
+    # RL archive — optional MAP-Elites archive system for deep cascade generation
+    rl_archive: RLArchiveConfig | None = None
