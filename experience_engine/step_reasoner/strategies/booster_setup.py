@@ -22,6 +22,7 @@ from ..services.cluster_builder import ClusterBuilder
 from ..services.forward_simulator import ForwardSimulator
 from ..services.landing_evaluator import BoosterLandingEvaluator
 from ..services.seed_planner import SeedPlanner
+from ..services.spatial_context import StepSpatialContext
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
 from ...variance.hints import VarianceHints
@@ -38,7 +39,8 @@ class BoosterSetupStrategy:
 
     __slots__ = (
         "_config", "_forward_sim", "_cluster_builder", "_seed_planner",
-        "_chain_eval", "_spawn_eval", "_landing_eval", "_booster_rules", "_rng",
+        "_chain_eval", "_spawn_eval", "_landing_eval", "_booster_rules",
+        "_rng", "_spatial",
     )
 
     def __init__(
@@ -51,6 +53,7 @@ class BoosterSetupStrategy:
         spawn_eval: SpawnEvaluator,
         landing_eval: BoosterLandingEvaluator,
         rng: random.Random,
+        spatial: StepSpatialContext | None = None,
     ) -> None:
         self._config = config
         self._forward_sim = forward_sim
@@ -61,6 +64,7 @@ class BoosterSetupStrategy:
         self._landing_eval = landing_eval
         self._booster_rules = BoosterRules(config.boosters, config.board, config.symbols)
         self._rng = rng
+        self._spatial = spatial
 
     def plan_step(
         self,

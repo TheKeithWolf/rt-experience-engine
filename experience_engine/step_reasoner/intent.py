@@ -80,3 +80,6 @@ class StepIntent:
     # WFC mechanisms. None for terminal/dead steps (no explosion planned).
     planned_explosion: frozenset[Position] | None = None
     is_terminal: bool = False
+    # Reserve zone for future-step WFC suppression — cells the next step
+    # needs clear for cluster formation. None for terminal steps (no demand).
+    reserve_zone: frozenset[Position] | None = None

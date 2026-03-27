@@ -100,29 +100,37 @@ class SeedPlanner:
         variance: VarianceHints,
         rng: random.Random,
         exclusions: tuple[ClusterExclusion, ...] = (),
+        utility_scores: dict[Position, float] | None = None,
     ) -> dict[Position, Symbol]:
         """Place symbols in refill zone that gravity will carry adjacent to the wild.
 
-        Finds empty positions (refill slots) in columns whose cells border the
-        wild's post-gravity position. Seeds placed here fall downward toward
-        the wild, forming the basis for a future bridge cluster.
-        """
-        # Target adjacencies — positions the bridge symbols must end up adjacent to
-        target_neighbors = set(
-            orthogonal_neighbors(wild_post_gravity_pos, self._board_config)
-        )
+        When utility_scores is provided, all empty positions are eligible and
+        scoring replaces column-set filtering — gravity alignment and influence
+        steer seeds toward positions that actually reach the wild after settle.
 
-        # Eligible refill positions: empty slots in columns that contain target adjacencies
-        target_columns = {n.reel for n in target_neighbors}
-        eligible = [
-            pos for pos in settle_result.empty_positions
-            if pos.reel in target_columns
-        ]
+        Without utility_scores, falls back to column-matching heuristic.
+        """
+        if utility_scores is not None:
+            # Spatial intelligence path — all refill slots are candidates,
+            # utility scores encode gravity alignment + influence proximity
+            eligible = list(settle_result.empty_positions)
+        else:
+            # Legacy column-matching — only positions in target neighbor columns
+            target_neighbors = set(
+                orthogonal_neighbors(wild_post_gravity_pos, self._board_config)
+            )
+            target_columns = {n.reel for n in target_neighbors}
+            eligible = [
+                pos for pos in settle_result.empty_positions
+                if pos.reel in target_columns
+            ]
 
         if not eligible:
             return {}
 
-        selected = _weighted_select(eligible, count, variance, rng)
+        selected = _weighted_select(
+            eligible, count, variance, rng, utility_scores,
+        )
         return self._filter_excluded(
             {pos: bridge_symbol for pos in selected}, exclusions,
         )
@@ -134,24 +142,31 @@ class SeedPlanner:
         variance: VarianceHints,
         rng: random.Random,
         exclusions: tuple[ClusterExclusion, ...] = (),
+        utility_scores: dict[Position, float] | None = None,
     ) -> dict[Position, Symbol]:
         """Place symbols near a dormant booster to enable a future arming cluster.
 
-        Seeds land in refill positions whose columns neighbor the booster,
-        setting up a cluster that will explode adjacent to the booster
-        and trigger its activation.
-        """
-        # Columns adjacent to the booster position
-        booster_neighbors = orthogonal_neighbors(
-            booster_post_gravity_pos, self._board_config,
-        )
-        target_columns = {n.reel for n in booster_neighbors}
-        target_columns.add(booster_post_gravity_pos.reel)
+        When utility_scores is provided, all empty positions are eligible and
+        scoring replaces column-adjacency filtering — booster adjacency factor
+        and gravity alignment steer seeds toward the arming zone.
 
-        eligible = [
-            pos for pos in settle_result.empty_positions
-            if pos.reel in target_columns
-        ]
+        Without utility_scores, falls back to column-adjacency heuristic.
+        """
+        if utility_scores is not None:
+            # Spatial intelligence path — all refill slots are candidates,
+            # utility scores encode booster adjacency + gravity alignment
+            eligible = list(settle_result.empty_positions)
+        else:
+            # Legacy column-adjacency — only booster column + neighbor columns
+            booster_neighbors = orthogonal_neighbors(
+                booster_post_gravity_pos, self._board_config,
+            )
+            target_columns = {n.reel for n in booster_neighbors}
+            target_columns.add(booster_post_gravity_pos.reel)
+            eligible = [
+                pos for pos in settle_result.empty_positions
+                if pos.reel in target_columns
+            ]
 
         if not eligible:
             return {}
@@ -162,7 +177,9 @@ class SeedPlanner:
         # Place seeds in eligible positions — enough to form a cluster seed
         # but not so many that we constrain future steps excessively
         seed_count = min(len(eligible), self._board_config.min_cluster_size - 1)
-        selected = _weighted_select(eligible, seed_count, variance, rng)
+        selected = _weighted_select(
+            eligible, seed_count, variance, rng, utility_scores,
+        )
         return self._filter_excluded(
             {pos: arm_symbol for pos in selected}, exclusions,
         )
@@ -254,8 +271,13 @@ def _weighted_select(
     count: int,
     variance: VarianceHints,
     rng: random.Random,
+    utility_scores: dict[Position, float] | None = None,
 ) -> list[Position]:
     """Select up to `count` positions weighted by variance.spatial_bias.
+
+    When utility_scores is provided, each position's weight is multiplied
+    by its utility score — higher-utility positions are selected more often.
+    This replaces column-matching heuristics with continuous spatial scoring.
 
     Returns fewer than `count` if fewer candidates are available.
     Does not return duplicates.
@@ -270,7 +292,11 @@ def _weighted_select(
     for _ in range(count):
         if not remaining:
             break
-        weights = [variance.spatial_bias.get(p, 1.0) for p in remaining]
+        weights = [
+            variance.spatial_bias.get(p, 1.0)
+            * (utility_scores.get(p, 1.0) if utility_scores else 1.0)
+            for p in remaining
+        ]
         chosen = rng.choices(remaining, weights=weights, k=1)[0]
         selected.append(chosen)
         remaining.remove(chosen)

@@ -15,7 +15,7 @@ from collections import Counter, deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..config.schema import BoardConfig, GravityWfcConfig, MasterConfig
+from ..config.schema import BoardConfig, GravityWfcConfig, MasterConfig, SymbolConfig
 from ..primitives.board import Position, orthogonal_neighbors
 from ..primitives.symbols import Symbol, SymbolTier, symbols_in_tier, tier_of
 from .propagators import compute_border
@@ -266,3 +266,20 @@ def _compute_compression_columns(
                 result.add(pos)
 
     return frozenset(result)
+
+
+def build_reserve_zone(
+    positions: frozenset[Position],
+    suppression_multiplier: float,
+    symbol_config: SymbolConfig,
+) -> WeightZone:
+    """Reserve zone for future-step demand — suppresses all standard symbols.
+
+    Cells in the reserve zone are where the next step needs clear space
+    for cluster formation. Returns a WeightZone that applies uniform
+    suppression to all standard symbols, stacking multiplicatively with
+    existing zones in SpatialWeightMap.
+    """
+    all_symbols = list(symbols_in_tier(SymbolTier.ANY, symbol_config))
+    adjustments = {s: suppression_multiplier for s in all_symbols}
+    return WeightZone(positions=positions, adjustments=adjustments)

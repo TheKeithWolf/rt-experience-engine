@@ -68,6 +68,8 @@ def build_default_registry(
     from .services.boundary_analyzer import BoundaryAnalyzer
     from .services.forward_simulator import ForwardSimulator
     from .services.cluster_builder import ClusterBuilder
+    from .services.gravity_field import GravityFieldService
+    from .services.influence_map import InfluenceMap
     from .services.landing_criteria import (
         WildBridgeCriterion, RocketArmCriterion, BombArmCriterion,
         LightballArmCriterion,
@@ -75,6 +77,11 @@ def build_default_registry(
     from .services.landing_evaluator import BoosterLandingEvaluator
     from .services.near_miss_planner import NearMissPlanner
     from .services.seed_planner import SeedPlanner
+    from .services.spatial_context import StepSpatialContext
+    from .services.utility_scorer import (
+        UtilityScorer, InfluenceFactor, GravityAlignmentFactor,
+        BoosterAdjacencyFactor, MergeRiskFactor,
+    )
     from ..primitives.booster_rules import BoosterRules
     from .strategies.booster_arm import BoosterArmStrategy
     from .strategies.booster_setup import BoosterSetupStrategy
@@ -113,9 +120,31 @@ def build_default_registry(
         forward_sim, booster_rules, config.board, landing_criteria,
     )
 
+    # Spatial intelligence — constructed once when config section is present.
+    # Gives strategies foresight about where future steps need space.
+    spatial: StepSpatialContext | None = None
+    if config.spatial_intelligence is not None:
+        gravity_field_svc = GravityFieldService(gravity_dag, config.board)
+        influence_map_svc = InfluenceMap(
+            config.spatial_intelligence, config.board,
+        )
+        factors = [
+            InfluenceFactor(),
+            GravityAlignmentFactor(),
+            BoosterAdjacencyFactor(),
+            MergeRiskFactor(),
+        ]
+        utility_scorer = UtilityScorer(
+            factors, config.spatial_intelligence.utility_factor_weights,
+        )
+        spatial = StepSpatialContext(
+            gravity_field_svc, influence_map_svc, utility_scorer,
+        )
+
     registry = StrategyRegistry()
 
-    # Terminal strategies — simplest, minimal dependencies
+    # Terminal strategies — simplest, minimal dependencies.
+    # No spatial intelligence — terminal steps have no future-step demand.
     registry.register("terminal_dead", TerminalDeadStrategy(config, rng))
     registry.register("terminal_near_miss", TerminalNearMissStrategy(
         config, cluster_builder, rng,
@@ -128,26 +157,30 @@ def build_default_registry(
     registry.register("initial_cluster", InitialClusterStrategy(
         config, forward_sim, cluster_builder, seed_planner,
         spawn_evaluator, near_miss_planner, landing_eval, rng,
+        spatial=spatial,
     ))
 
     # Cascade strategy — general mid-cascade
     registry.register("cascade_cluster", CascadeClusterStrategy(
-        config, forward_sim, cluster_builder, seed_planner, spawn_evaluator, rng,
+        config, forward_sim, cluster_builder, seed_planner,
+        spawn_evaluator, rng, spatial=spatial,
     ))
 
     # Wild strategy — bridge through wild symbol
     registry.register("wild_bridge", WildBridgeStrategy(
         config, forward_sim, cluster_builder, seed_planner, rng,
+        spatial=spatial,
     ))
 
     # Booster strategies — arming and chain arrangement
     registry.register("booster_arm", BoosterArmStrategy(
         config, forward_sim, cluster_builder, seed_planner,
-        chain_evaluator, landing_eval, rng,
+        chain_evaluator, landing_eval, rng, spatial=spatial,
     ))
     registry.register("booster_setup", BoosterSetupStrategy(
         config, forward_sim, cluster_builder, seed_planner,
         chain_evaluator, spawn_evaluator, landing_eval, rng,
+        spatial=spatial,
     ))
 
     return registry

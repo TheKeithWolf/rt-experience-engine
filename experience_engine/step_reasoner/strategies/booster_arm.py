@@ -20,7 +20,10 @@ from ..progress import ProgressTracker
 from ..services.cluster_builder import ClusterBuilder
 from ..services.forward_simulator import ForwardSimulator
 from ..services.landing_evaluator import BoosterLandingEvaluator
+from ..services.influence_map import DemandSpec
 from ..services.seed_planner import SeedPlanner, build_cluster_exclusions
+from ..services.spatial_context import StepSpatialContext
+from ..services.utility_scorer import ScoringContext
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
 from ...variance.hints import VarianceHints
@@ -36,6 +39,7 @@ class BoosterArmStrategy:
     __slots__ = (
         "_config", "_forward_sim", "_cluster_builder",
         "_seed_planner", "_chain_eval", "_landing_eval", "_rng",
+        "_spatial",
     )
 
     def __init__(
@@ -47,6 +51,7 @@ class BoosterArmStrategy:
         chain_eval: ChainEvaluator,
         landing_eval: BoosterLandingEvaluator,
         rng: random.Random,
+        spatial: StepSpatialContext | None = None,
     ) -> None:
         self._config = config
         self._forward_sim = forward_sim
@@ -55,6 +60,7 @@ class BoosterArmStrategy:
         self._chain_eval = chain_eval
         self._landing_eval = landing_eval
         self._rng = rng
+        self._spatial = spatial
 
     def plan_step(
         self,
@@ -94,6 +100,7 @@ class BoosterArmStrategy:
 
         # Plan chain arrangement if this booster can initiate a chain
         strategic_cells: dict[Position, Symbol] = {}
+        reserve_zone: frozenset[Position] | None = None
         if self._needs_chain(target_booster, progress, signature):
             hypothetical = self._forward_sim.build_hypothetical(
                 context.board,
@@ -116,9 +123,34 @@ class BoosterArmStrategy:
                 [(frozenset(cluster_positions), cluster_symbol)],
                 self._config.board,
             )
+
+            # Compute utility scores for arm seed placement — gravity alignment
+            # and booster adjacency steer seeds toward the arming zone
+            utility_scores: dict[Position, float] | None = None
+            if self._spatial:
+                demand = DemandSpec(
+                    centroid=booster_pos,
+                    cluster_size=self._config.board.min_cluster_size,
+                    booster_type=target_booster.booster_type,
+                )
+                influence = self._spatial.influence_map.compute(demand)
+                reserve_zone = self._spatial.influence_map.reserve_zone(influence)
+                scoring_ctx = ScoringContext(
+                    influence=influence,
+                    gravity_field=self._spatial.gravity_field,
+                    demand=demand,
+                    cluster_positions=frozenset(cluster_positions),
+                    board_config=self._config.board,
+                    booster_landing=booster_pos,
+                )
+                utility_scores = self._spatial.utility_scorer.score_candidates(
+                    list(settle_result.empty_positions), scoring_ctx,
+                )
+
             strategic_cells = self._seed_planner.plan_arm_seeds(
                 booster_pos, settle_result, variance, self._rng,
                 exclusions=exclusions,
+                utility_scores=utility_scores,
             )
 
         constrained = {pos: cluster_symbol for pos in cluster_positions}
@@ -144,6 +176,7 @@ class BoosterArmStrategy:
             # Arming cluster positions will explode — gates gravity-aware WFC
             planned_explosion=frozenset(cluster_positions),
             is_terminal=False,
+            reserve_zone=reserve_zone,
         )
 
     def _select_booster_to_arm(

@@ -23,9 +23,12 @@ from ..intent import StepIntent, StepType
 from ..progress import ProgressTracker
 from ..services.cluster_builder import ClusterBuilder
 from ..services.forward_simulator import ForwardSimulator
+from ..services.influence_map import DemandSpec
 from ..services.landing_evaluator import BoosterLandingEvaluator
 from ..services.near_miss_planner import NearMissPlanner
 from ..services.seed_planner import SeedPlanner, build_cluster_exclusions
+from ..services.spatial_context import StepSpatialContext
+from ..services.utility_scorer import ScoringContext
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
 from ...variance.hints import VarianceHints
@@ -43,6 +46,7 @@ class InitialClusterStrategy:
     __slots__ = (
         "_config", "_forward_sim", "_cluster_builder", "_seed_planner",
         "_spawn_eval", "_near_miss_planner", "_landing_eval", "_rng",
+        "_spatial",
     )
 
     def __init__(
@@ -55,6 +59,7 @@ class InitialClusterStrategy:
         near_miss_planner: NearMissPlanner,
         landing_eval: BoosterLandingEvaluator,
         rng: random.Random,
+        spatial: StepSpatialContext | None = None,
     ) -> None:
         self._config = config
         self._forward_sim = forward_sim
@@ -64,6 +69,7 @@ class InitialClusterStrategy:
         self._near_miss_planner = near_miss_planner
         self._landing_eval = landing_eval
         self._rng = rng
+        self._spatial = spatial
 
     def plan_step(
         self,
@@ -123,7 +129,7 @@ class InitialClusterStrategy:
             (r.planned_positions, sym)
             for r, sym in zip(multi_result.clusters, multi_result.cluster_symbols)
         ]
-        strategic_cells = self._plan_strategic_seeds(
+        strategic_cells, reserve_zone = self._plan_strategic_seeds(
             context, cluster_groups, first_booster,
             settle_result, progress, signature, variance,
         )
@@ -173,6 +179,7 @@ class InitialClusterStrategy:
             # All cluster positions will explode — gates gravity-aware WFC mechanisms
             planned_explosion=frozenset(multi_result.all_occupied),
             is_terminal=False,
+            reserve_zone=reserve_zone,
         )
 
     def _plan_strategic_seeds(
@@ -184,10 +191,14 @@ class InitialClusterStrategy:
         progress: ProgressTracker,
         signature: ArchetypeSignature,
         variance: VarianceHints,
-    ) -> dict[Position, Symbol]:
-        """Backward reasoning — determine what future steps need and seed accordingly."""
+    ) -> tuple[dict[Position, Symbol], frozenset[Position] | None]:
+        """Backward reasoning — determine what future steps need and seed accordingly.
+
+        Returns (strategic_cells, reserve_zone). reserve_zone is None when
+        spatial intelligence is disabled or the step has no future demand.
+        """
         if progress.must_terminate_soon():
-            return {}
+            return {}, None
 
         # Exclusion zones prevent strategic seeds from merging into clusters —
         # strategic cells are pinned before WFC, so ClusterBoundaryPropagator
@@ -214,23 +225,74 @@ class InitialClusterStrategy:
 
                 # Bridge uses first cluster's symbol as the bridge symbol
                 bridge_symbol = cluster_groups[0][1]
-                return self._seed_planner.plan_bridge_seeds(
+                utility_scores, reserve_zone = self._compute_spatial_scores(
+                    cluster_positions, booster_landing, booster_type,
+                    self._config.board.min_cluster_size - 1, settle_result,
+                )
+                seeds = self._seed_planner.plan_bridge_seeds(
                     booster_landing, settle_result, bridge_symbol,
                     self._config.board.min_cluster_size - 1,
                     variance, self._rng,
                     exclusions=exclusions,
+                    utility_scores=utility_scores,
                 )
+                return seeds, reserve_zone
 
             if self._next_step_needs_arming_cluster(signature, progress):
-                return self._seed_planner.plan_arm_seeds(
+                utility_scores, reserve_zone = self._compute_spatial_scores(
+                    cluster_positions, booster_landing, booster_type,
+                    self._config.board.min_cluster_size, settle_result,
+                )
+                seeds = self._seed_planner.plan_arm_seeds(
                     booster_landing, settle_result, variance, self._rng,
                     exclusions=exclusions,
+                    utility_scores=utility_scores,
                 )
+                return seeds, reserve_zone
 
-        return self._seed_planner.plan_generic_seeds(
+        seeds = self._seed_planner.plan_generic_seeds(
             settle_result, progress, signature, variance, self._rng,
             exclusions=exclusions,
         )
+        return seeds, None
+
+    def _compute_spatial_scores(
+        self,
+        cluster_positions: frozenset[Position],
+        booster_landing: Position,
+        booster_type: str,
+        next_cluster_size: int,
+        settle_result,
+    ) -> tuple[dict[Position, float] | None, frozenset[Position] | None]:
+        """Compute utility scores and reserve zone using spatial intelligence.
+
+        Returns (utility_scores, reserve_zone). Both are None when spatial
+        intelligence is disabled.
+        """
+        if self._spatial is None:
+            return None, None
+
+        demand = DemandSpec(
+            centroid=booster_landing,
+            cluster_size=next_cluster_size,
+            booster_type=booster_type,
+        )
+        influence = self._spatial.influence_map.compute(demand)
+        reserve_zone = self._spatial.influence_map.reserve_zone(influence)
+
+        scoring_ctx = ScoringContext(
+            influence=influence,
+            gravity_field=self._spatial.gravity_field,
+            demand=demand,
+            cluster_positions=cluster_positions,
+            board_config=self._config.board,
+            booster_landing=booster_landing,
+        )
+        candidates = list(settle_result.empty_positions)
+        utility_scores = self._spatial.utility_scorer.score_candidates(
+            candidates, scoring_ctx,
+        )
+        return utility_scores, reserve_zone
 
     def _next_step_needs_wild_bridge(
         self,

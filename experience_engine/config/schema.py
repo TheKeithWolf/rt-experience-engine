@@ -554,6 +554,75 @@ class GravityWfcConfig:
 
 
 # ---------------------------------------------------------------------------
+# Spatial Intelligence — foresight for cascade seed placement
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class SpatialIntelligenceConfig:
+    """Tuning parameters for the spatial intelligence layer.
+
+    Controls Gaussian influence falloff, gravity field weighting, and
+    multi-objective utility scoring for cascade seed placement. Gives
+    the solver foresight about where future steps need space, replacing
+    retry-luck with informed first-attempt placement.
+    """
+
+    # Gaussian influence — sigma = base + cluster_size × scale_per_cell
+    influence_sigma_base: float
+    influence_sigma_scale_per_cell: float
+
+    # Per-booster sigma multipliers — keyed by booster name from spawn_thresholds.
+    # Wider zones for boosters whose next-step mechanics need more adjacent space.
+    # e.g. W bridge needs adjacent refill across multiple columns (1.35×),
+    # B blast radius extends effective zone (1.2×), R is column-linear (1.0×).
+    booster_sigma_multipliers: dict[str, float]
+
+    # Influence threshold below which a cell is NOT in the reserve zone.
+    # Cells above this threshold get WFC suppression for the current step.
+    reserve_threshold: float
+
+    # Utility factor weights — keyed by factor name for registry lookup.
+    # Positive weights are additive, negative weights are subtractive (e.g. merge_risk).
+    utility_factor_weights: dict[str, float]
+
+    # WFC suppression multiplier for cells inside the reserve zone.
+    # Applied alongside existing suppression zones in SpatialWeightMap.
+    reserve_suppression_multiplier: float
+
+    def __post_init__(self) -> None:
+        if self.influence_sigma_base <= 0:
+            raise ConfigValidationError(
+                "spatial_intelligence.influence_sigma_base", "must be > 0",
+            )
+        if self.influence_sigma_scale_per_cell <= 0:
+            raise ConfigValidationError(
+                "spatial_intelligence.influence_sigma_scale_per_cell",
+                "must be > 0",
+            )
+        if not (0.0 < self.reserve_threshold < 1.0):
+            raise ConfigValidationError(
+                "spatial_intelligence.reserve_threshold",
+                "must be in (0, 1)",
+            )
+        for name, mult in self.booster_sigma_multipliers.items():
+            if mult <= 0:
+                raise ConfigValidationError(
+                    f"spatial_intelligence.booster_sigma_multipliers.{name}",
+                    "must be > 0",
+                )
+        if not self.utility_factor_weights:
+            raise ConfigValidationError(
+                "spatial_intelligence.utility_factor_weights",
+                "must not be empty",
+            )
+        if not (0.0 < self.reserve_suppression_multiplier <= 1.0):
+            raise ConfigValidationError(
+                "spatial_intelligence.reserve_suppression_multiplier",
+                "must be in (0, 1]",
+            )
+
+
+# ---------------------------------------------------------------------------
 # RL Archive — sub-configs for MAP-Elites archive system
 # ---------------------------------------------------------------------------
 
@@ -902,5 +971,7 @@ class MasterConfig:
     output: OutputConfig | None = None
     # Gravity-aware WFC tuning — optional to preserve backward compatibility
     gravity_wfc: GravityWfcConfig | None = None
+    # Spatial intelligence — foresight for cascade seed placement
+    spatial_intelligence: SpatialIntelligenceConfig | None = None
     # RL archive — optional MAP-Elites archive system for deep cascade generation
     rl_archive: RLArchiveConfig | None = None

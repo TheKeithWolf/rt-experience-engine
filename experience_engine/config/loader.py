@@ -41,6 +41,7 @@ from .schema import (
     RLArchiveConfig,
     ReasonerConfig,
     SolverConfig,
+    SpatialIntelligenceConfig,
     SpawnThreshold,
     SymbolConfig,
     WincapConfig,
@@ -82,6 +83,9 @@ def load_config(path: Path) -> MasterConfig:
     output = _build_output(raw.get("output"))
     reasoner = _build_reasoner(raw.get("reasoner", {}))
     gravity_wfc = _build_gravity_wfc(raw.get("gravity_wfc"))
+    spatial_intelligence = _build_spatial_intelligence(
+        raw.get("spatial_intelligence"),
+    )
     rl_archive = _build_rl_archive(raw.get("rl_archive"))
 
     # Cross-field validations
@@ -106,6 +110,7 @@ def load_config(path: Path) -> MasterConfig:
         reasoner=reasoner,
         output=output,
         gravity_wfc=gravity_wfc,
+        spatial_intelligence=spatial_intelligence,
         rl_archive=rl_archive,
     )
 
@@ -397,6 +402,51 @@ def _build_gravity_wfc(data: dict[str, Any] | None) -> GravityWfcConfig | None:
         min_symbol_weight=float(
             _require(data, "min_symbol_weight",
                      "gravity_wfc.min_symbol_weight")
+        ),
+    )
+
+
+def _build_spatial_intelligence(
+    data: dict[str, Any] | None,
+) -> SpatialIntelligenceConfig | None:
+    """Build SpatialIntelligenceConfig from YAML data, or None if absent.
+
+    Optional section — configs without spatial_intelligence disable the
+    foresight layer and strategies fall back to column-matching heuristics.
+    """
+    if data is None:
+        return None
+    prefix = "spatial_intelligence"
+    return SpatialIntelligenceConfig(
+        influence_sigma_base=float(
+            _require(data, "influence_sigma_base",
+                     f"{prefix}.influence_sigma_base"),
+        ),
+        influence_sigma_scale_per_cell=float(
+            _require(data, "influence_sigma_scale_per_cell",
+                     f"{prefix}.influence_sigma_scale_per_cell"),
+        ),
+        booster_sigma_multipliers={
+            str(k): float(v)
+            for k, v in _require(
+                data, "booster_sigma_multipliers",
+                f"{prefix}.booster_sigma_multipliers",
+            ).items()
+        },
+        reserve_threshold=float(
+            _require(data, "reserve_threshold",
+                     f"{prefix}.reserve_threshold"),
+        ),
+        utility_factor_weights={
+            str(k): float(v)
+            for k, v in _require(
+                data, "utility_factor_weights",
+                f"{prefix}.utility_factor_weights",
+            ).items()
+        },
+        reserve_suppression_multiplier=float(
+            _require(data, "reserve_suppression_multiplier",
+                     f"{prefix}.reserve_suppression_multiplier"),
         ),
     )
 

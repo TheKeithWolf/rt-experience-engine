@@ -324,6 +324,34 @@ gravity_wfc:
   # Absolute floor for spatial weights — prevents zero-probability symbols
   min_symbol_weight: 0.01
 
+# Spatial intelligence — foresight for cascade seed placement.
+# Gives the solver spatial awareness about where future steps need space,
+# replacing column-matching heuristics with Gaussian influence fields and
+# multi-objective utility scoring.
+spatial_intelligence:
+  # Gaussian sigma = base + cluster_size × scale_per_cell
+  influence_sigma_base: 0.8
+  influence_sigma_scale_per_cell: 0.22
+  # Booster-specific sigma scaling — wider zones for mechanics needing more space.
+  # W bridge needs adjacent refill across multiple columns, B blast radius extends
+  # effective zone, R is column-linear.
+  booster_sigma_multipliers:
+    W: 1.35
+    R: 1.0
+    B: 1.2
+    LB: 1.0
+    SLB: 1.0
+  # Reserve zone boundary — Gaussian values below this are outside the zone
+  reserve_threshold: 0.25
+  # Multi-objective utility weights — negative weights are subtractive
+  utility_factor_weights:
+    influence: 0.5
+    gravity_alignment: 0.15
+    booster_adjacency: 0.25
+    merge_risk: -0.3
+  # WFC suppression for cells in the reserve zone
+  reserve_suppression_multiplier: 0.15
+
 # RL Archive — MAP-Elites archive system for deep cascade generation (depth >= 2).
 # Entire section is optional — omitting it disables archive generation and
 # falls back to the rule-based CascadeInstanceGenerator.

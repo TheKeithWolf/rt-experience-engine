@@ -24,7 +24,9 @@ from ..board_filler.gravity_ordering import (
     GravityGroupComputer,
 )
 from ..board_filler.propagators import PostGravityPropagator
-from ..board_filler.spatial_weights import SpatialWeightMap, build_weight_zones
+from ..board_filler.spatial_weights import (
+    SpatialWeightMap, build_reserve_zone, build_weight_zones,
+)
 from ..board_filler.wfc_solver import WFCBoardFiller
 from ..config.schema import MasterConfig
 from ..primitives.board import Board, Position
@@ -148,6 +150,16 @@ class StepExecutor:
 
         # Mechanism 1: spatial weight map from intent's cluster/seed positions
         zones = build_weight_zones(intent, self._config)
+
+        # Spatial intelligence reserve zone — suppresses standard symbols in
+        # positions the next step needs clear for cluster formation
+        if intent.reserve_zone and self._config.spatial_intelligence:
+            zones.append(build_reserve_zone(
+                intent.reserve_zone,
+                self._config.spatial_intelligence.reserve_suppression_multiplier,
+                self._config.symbols,
+            ))
+
         base_weights = intent.wfc_symbol_weights or {}
         spatial_weights = SpatialWeightMap(
             base_weights, zones, gwfc.min_symbol_weight,

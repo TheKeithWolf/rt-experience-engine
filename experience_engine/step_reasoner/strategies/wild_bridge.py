@@ -23,7 +23,9 @@ from ..intent import StepIntent, StepType
 from ..progress import ProgressTracker
 from ..services.cluster_builder import ClusterBuilder
 from ..services.forward_simulator import ForwardSimulator
+from ..services.influence_map import DemandSpec
 from ..services.seed_planner import SeedPlanner, build_cluster_exclusions
+from ..services.spatial_context import StepSpatialContext
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
 from ...variance.hints import VarianceHints
@@ -40,7 +42,7 @@ class WildBridgeStrategy:
 
     __slots__ = (
         "_config", "_forward_sim", "_cluster_builder",
-        "_seed_planner", "_rng",
+        "_seed_planner", "_rng", "_spatial",
     )
 
     def __init__(
@@ -50,12 +52,14 @@ class WildBridgeStrategy:
         cluster_builder: ClusterBuilder,
         seed_planner: SeedPlanner,
         rng: random.Random,
+        spatial: StepSpatialContext | None = None,
     ) -> None:
         self._config = config
         self._forward_sim = forward_sim
         self._cluster_builder = cluster_builder
         self._seed_planner = seed_planner
         self._rng = rng
+        self._spatial = spatial
 
     def plan_step(
         self,
@@ -127,6 +131,7 @@ class WildBridgeStrategy:
 
         # Backward reasoning: seed the next step if not terminal
         strategic_cells: dict[Position, Symbol] = {}
+        reserve_zone: frozenset[Position] | None = None
         if not progress.must_terminate_soon():
             settle_result = self._forward_sim.simulate_explosion(
                 hypothetical, bridge_positions,
@@ -136,6 +141,18 @@ class WildBridgeStrategy:
                 [(frozenset(bridge_positions), bridge_symbol)],
                 self._config.board,
             )
+
+            # Reserve space around dormant boosters for next-step arming
+            if self._spatial and progress.dormant_boosters:
+                target_booster = progress.dormant_boosters[0]
+                demand = DemandSpec(
+                    centroid=target_booster.position,
+                    cluster_size=self._config.board.min_cluster_size,
+                    booster_type=target_booster.booster_type,
+                )
+                influence = self._spatial.influence_map.compute(demand)
+                reserve_zone = self._spatial.influence_map.reserve_zone(influence)
+
             strategic_cells = self._seed_planner.plan_generic_seeds(
                 settle_result, progress, signature, variance, self._rng,
                 exclusions=exclusions,
@@ -165,6 +182,7 @@ class WildBridgeStrategy:
             # Both bridge cluster and wilds explode — union feeds gravity-aware WFC
             planned_explosion=frozenset(bridge_positions) | frozenset(context.active_wilds),
             is_terminal=False,
+            reserve_zone=reserve_zone,
         )
 
     def _select_bridge_symbol(

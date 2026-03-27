@@ -30,7 +30,10 @@ from ..services.boundary_analyzer import BoundaryAnalysis
 from ..services.cluster_builder import ClusterBuilder
 from ..services.forward_simulator import ForwardSimulator
 from ..services.merge_policy import ClusterPositionResult, MergePolicy
+from ..services.influence_map import DemandSpec
 from ..services.seed_planner import SeedPlanner, build_cluster_exclusions
+from ..services.spatial_context import StepSpatialContext
+from ..services.utility_scorer import ScoringContext
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
 from ...variance.hints import VarianceHints
@@ -46,7 +49,7 @@ class CascadeClusterStrategy:
 
     __slots__ = (
         "_config", "_forward_sim", "_cluster_builder", "_seed_planner",
-        "_spawn_eval", "_rng",
+        "_spawn_eval", "_rng", "_spatial",
     )
 
     def __init__(
@@ -57,6 +60,7 @@ class CascadeClusterStrategy:
         seed_planner: SeedPlanner,
         spawn_eval: SpawnEvaluator,
         rng: random.Random,
+        spatial: StepSpatialContext | None = None,
     ) -> None:
         self._config = config
         self._forward_sim = forward_sim
@@ -64,6 +68,7 @@ class CascadeClusterStrategy:
         self._seed_planner = seed_planner
         self._spawn_eval = spawn_eval
         self._rng = rng
+        self._spatial = spatial
 
     def plan_step(
         self,
@@ -140,6 +145,7 @@ class CascadeClusterStrategy:
 
         # Backward reasoning: seed the next step if not terminal
         strategic_cells: dict[Position, Symbol] = {}
+        reserve_zone: frozenset[Position] | None = None
         if not progress.must_terminate_soon():
             hypothetical = self._forward_sim.build_hypothetical(
                 context.board,
@@ -153,6 +159,19 @@ class CascadeClusterStrategy:
                 [(frozenset(result.planned_positions), cluster_symbol)],
                 self._config.board,
             )
+
+            # Compute reserve zone for future-step demand if spatial intelligence
+            # is available and there are dormant boosters to plan around
+            if self._spatial and progress.dormant_boosters:
+                target_booster = progress.dormant_boosters[0]
+                demand = DemandSpec(
+                    centroid=target_booster.position,
+                    cluster_size=self._config.board.min_cluster_size,
+                    booster_type=target_booster.booster_type,
+                )
+                influence = self._spatial.influence_map.compute(demand)
+                reserve_zone = self._spatial.influence_map.reserve_zone(influence)
+
             strategic_cells = self._seed_planner.plan_generic_seeds(
                 settle_result, progress, signature, variance, self._rng,
                 exclusions=exclusions,
@@ -186,6 +205,7 @@ class CascadeClusterStrategy:
             # Cluster positions will explode — gates gravity-aware WFC mechanisms
             planned_explosion=frozenset(result.planned_positions),
             is_terminal=False,
+            reserve_zone=reserve_zone,
         )
 
     # -- Helpers -----------------------------------------------------------
