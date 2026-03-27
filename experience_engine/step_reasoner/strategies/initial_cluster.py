@@ -129,7 +129,7 @@ class InitialClusterStrategy:
             (r.planned_positions, sym)
             for r, sym in zip(multi_result.clusters, multi_result.cluster_symbols)
         ]
-        strategic_cells, reserve_zone = self._plan_strategic_seeds(
+        strategic_cells, reserve_zone, predicted_wild_positions = self._plan_strategic_seeds(
             context, cluster_groups, first_booster,
             settle_result, progress, signature, variance,
         )
@@ -180,6 +180,7 @@ class InitialClusterStrategy:
             planned_explosion=frozenset(multi_result.all_occupied),
             is_terminal=False,
             reserve_zone=reserve_zone,
+            predicted_wild_positions=predicted_wild_positions,
         )
 
     def _plan_strategic_seeds(
@@ -191,14 +192,16 @@ class InitialClusterStrategy:
         progress: ProgressTracker,
         signature: ArchetypeSignature,
         variance: VarianceHints,
-    ) -> tuple[dict[Position, Symbol], frozenset[Position] | None]:
+    ) -> tuple[dict[Position, Symbol], frozenset[Position] | None, frozenset[Position] | None]:
         """Backward reasoning — determine what future steps need and seed accordingly.
 
-        Returns (strategic_cells, reserve_zone). reserve_zone is None when
-        spatial intelligence is disabled or the step has no future demand.
+        Returns (strategic_cells, reserve_zone, predicted_wild_positions).
+        predicted_wild_positions carries the booster landing when the spawned
+        booster is a Wild and the next step needs a wild bridge — enables
+        PostGravityPropagator to count the wild as same-symbol during BFS.
         """
         if progress.must_terminate_soon():
-            return {}, None
+            return {}, None, None
 
         # Exclusion zones prevent strategic seeds from merging into clusters —
         # strategic cells are pinned before WFC, so ClusterBoundaryPropagator
@@ -236,7 +239,10 @@ class InitialClusterStrategy:
                     exclusions=exclusions,
                     utility_scores=utility_scores,
                 )
-                return seeds, reserve_zone
+                # Wild landing position lets PostGravityPropagator count
+                # the wild as same-symbol, preventing WFC from building
+                # groups that merge through it into booster-spawning clusters
+                return seeds, reserve_zone, frozenset({booster_landing})
 
             if self._next_step_needs_arming_cluster(signature, progress):
                 utility_scores, reserve_zone = self._compute_spatial_scores(
@@ -248,13 +254,13 @@ class InitialClusterStrategy:
                     exclusions=exclusions,
                     utility_scores=utility_scores,
                 )
-                return seeds, reserve_zone
+                return seeds, reserve_zone, None
 
         seeds = self._seed_planner.plan_generic_seeds(
             settle_result, progress, signature, variance, self._rng,
             exclusions=exclusions,
         )
-        return seeds, None
+        return seeds, None, None
 
     def _compute_spatial_scores(
         self,

@@ -599,17 +599,22 @@ def _virtual_component_size(
     start: Position,
     symbol: Symbol,
     virtual_neighbors_fn,
+    wild_positions: frozenset[Position] | None = None,
 ) -> int:
     """BFS component size using virtual (post-gravity) adjacency.
 
-    Counts how many collapsed cells hold `symbol` and are reachable from
-    `start` via virtual_neighbors. Includes `start` itself in the count
-    (assumes it would hold `symbol`).
+    Counts how many collapsed cells hold ``symbol`` and are reachable from
+    ``start`` via virtual_neighbors. Wild positions are treated as
+    same-symbol — matching detect_clusters() union-find semantics where
+    wilds bridge adjacent standard-symbol groups (C-COMPAT-2).
+
+    Includes ``start`` itself in the count (assumes it would hold ``symbol``).
 
     Separate from max_component_size in cluster_detection.py because that
     function operates on physical adjacency — this one uses the post-gravity
     virtual graph via a neighbor function parameter.
     """
+    wild_set = wild_positions or frozenset()
     visited: set[Position] = {start}
     queue = deque([start])
     count = 1  # start position counted
@@ -620,7 +625,7 @@ def _virtual_component_size(
             if neighbor in visited:
                 continue
             visited.add(neighbor)
-            if board.get(neighbor) is symbol:
+            if board.get(neighbor) is symbol or neighbor in wild_set:
                 count += 1
                 queue.append(neighbor)
 
@@ -639,13 +644,21 @@ class PostGravityPropagator:
     identically to NoClusterPropagator.
     """
 
-    __slots__ = ("_virtual_neighbors_fn", "_threshold")
+    __slots__ = ("_virtual_neighbors_fn", "_threshold", "_wild_positions")
 
-    def __init__(self, virtual_neighbors_fn, threshold: int) -> None:
+    def __init__(
+        self,
+        virtual_neighbors_fn,
+        threshold: int,
+        wild_positions: frozenset[Position] | None = None,
+    ) -> None:
         # Callable: Position → list[Position] — from PostGravityAdjacency
         self._virtual_neighbors_fn = virtual_neighbors_fn
         # Cluster prevention threshold — from config.board.min_cluster_size
         self._threshold = threshold
+        # Predicted wild landings — wilds count as same-symbol during BFS,
+        # matching detect_clusters() semantics (C-COMPAT-2)
+        self._wild_positions = wild_positions or frozenset()
 
     def propagate(
         self,
@@ -667,10 +680,11 @@ class PostGravityPropagator:
 
             to_remove: list[Symbol] = []
             for sym in cells[neighbor].possibilities:
-                # Fast pre-check: if no same-symbol virtual neighbors exist,
-                # placing this symbol creates an isolated component of size 1
+                # Fast pre-check: if no same-symbol or wild virtual neighbors
+                # exist, placing this symbol creates an isolated component of
+                # size 1 — skip the expensive BFS
                 has_same = any(
-                    board.get(vn) is sym
+                    board.get(vn) is sym or vn in self._wild_positions
                     for vn in self._virtual_neighbors_fn(neighbor)
                 )
                 if self._threshold > 1 and not has_same:
@@ -680,6 +694,7 @@ class PostGravityPropagator:
                 # in post-gravity space?
                 component = _virtual_component_size(
                     board, neighbor, sym, self._virtual_neighbors_fn,
+                    self._wild_positions,
                 )
                 if component >= self._threshold:
                     to_remove.append(sym)
@@ -702,4 +717,5 @@ class PostGravityPropagator:
             return True
         return _virtual_component_size(
             board, position, sym, self._virtual_neighbors_fn,
+            self._wild_positions,
         ) < self._threshold

@@ -173,6 +173,7 @@ class StepExecutor:
         gravity_propagator = PostGravityPropagator(
             adjacency.virtual_neighbors,
             self._config.board.min_cluster_size,
+            wild_positions=intent.predicted_wild_positions,
         )
 
         # Mechanism 3: gravity-group collapse ordering

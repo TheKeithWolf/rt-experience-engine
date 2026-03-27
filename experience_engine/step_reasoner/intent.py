@@ -83,3 +83,7 @@ class StepIntent:
     # Reserve zone for future-step WFC suppression — cells the next step
     # needs clear for cluster formation. None for terminal steps (no demand).
     reserve_zone: frozenset[Position] | None = None
+    # Predicted wild landing positions — enables PostGravityPropagator to
+    # count wilds as same-symbol during virtual BFS, preventing WFC from
+    # building groups that merge through wilds into booster-spawning clusters.
+    predicted_wild_positions: frozenset[Position] | None = None

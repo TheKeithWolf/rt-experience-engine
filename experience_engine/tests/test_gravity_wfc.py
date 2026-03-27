@@ -29,6 +29,7 @@ from ..board_filler.propagators import (
     NoClusterPropagator,
     NoSpecialSymbolPropagator,
     PostGravityPropagator,
+    _virtual_component_size,
 )
 from ..board_filler.spatial_weights import (
     SpatialWeightMap,
@@ -71,6 +72,7 @@ def _make_intent(
     is_terminal: bool = False,
     propagators: list | None = None,
     weights: dict[Symbol, float] | None = None,
+    predicted_wild_positions: frozenset[Position] | None = None,
 ) -> StepIntent:
     """Helper to build a StepIntent with minimal boilerplate."""
     return StepIntent(
@@ -90,6 +92,7 @@ def _make_intent(
         terminal_dormant_boosters=None,
         planned_explosion=planned_explosion,
         is_terminal=is_terminal,
+        predicted_wild_positions=predicted_wild_positions,
     )
 
 
@@ -1085,3 +1088,214 @@ class TestGravityWfcIntegration:
             f"Post-gravity produced {len(post_clusters)} survivor clusters — "
             f"gravity-aware WFC should minimize these"
         )
+
+
+# ===================================================================
+# Phase 10: Wild-Aware PostGravityPropagator
+# ===================================================================
+
+
+def _linear_neighbors(pos: Position) -> list[Position]:
+    """Simple linear adjacency — positions at (col±1, same row).
+
+    Used by wild-aware tests for deterministic virtual neighbor graphs
+    without requiring a full PostGravityAdjacency setup.
+    """
+    return [Position(pos.reel + d, pos.row) for d in (-1, 1)]
+
+
+def _make_linear_board(symbol_positions: dict[int, Symbol], num_cols: int = 8) -> Board:
+    """Create a 1-row board with symbols at specified column indices."""
+    board = Board(num_cols, 1)
+    for col, sym in symbol_positions.items():
+        board.set(Position(col, 0), sym)
+    return board
+
+
+class TestVirtualComponentSizeWildAware:
+    """Tests for _virtual_component_size with wild_positions parameter."""
+
+    def test_gwfc_040a_without_wilds_groups_stay_separate(self) -> None:
+        """TEST-GWFC-040a: Two groups of 3 separated by empty cell → size 3."""
+        # Group A: columns 0-2, Group B: columns 4-6, gap at column 3
+        positions = {col: Symbol.L1 for col in range(3)}
+        positions.update({col: Symbol.L1 for col in range(4, 7)})
+        board = _make_linear_board(positions)
+
+        size = _virtual_component_size(
+            board, Position(0, 0), Symbol.L1, _linear_neighbors,
+        )
+        assert size == 3
+
+    def test_gwfc_040b_wild_bridges_groups(self) -> None:
+        """TEST-GWFC-040b: Wild at separator position bridges groups → size 7."""
+        positions = {col: Symbol.L1 for col in range(3)}
+        positions.update({col: Symbol.L1 for col in range(4, 7)})
+        board = _make_linear_board(positions)
+
+        wild_pos = frozenset({Position(3, 0)})
+        size = _virtual_component_size(
+            board, Position(0, 0), Symbol.L1, _linear_neighbors,
+            wild_positions=wild_pos,
+        )
+        # 3 L1 + 1 wild + 3 L1 = 7
+        assert size == 7
+
+    def test_gwfc_040c_wild_not_in_path_no_effect(self) -> None:
+        """TEST-GWFC-040c: Wild position not adjacent to either group → no bridging."""
+        positions = {col: Symbol.L1 for col in range(3)}
+        positions.update({col: Symbol.L1 for col in range(4, 7)})
+        # Need 2 rows so wild at row 1 is valid but not in linear path
+        board = Board(8, 2)
+        for col, sym in positions.items():
+            board.set(Position(col, 0), sym)
+
+        # Wild is on row 1 — linear neighbors only traverse same row
+        wild_pos = frozenset({Position(3, 1)})
+        size = _virtual_component_size(
+            board, Position(0, 0), Symbol.L1, _linear_neighbors,
+            wild_positions=wild_pos,
+        )
+        assert size == 3
+
+
+class TestPostGravityPropagatorWildAware:
+    """Tests for PostGravityPropagator with wild_positions."""
+
+    def test_gwfc_041a_without_wilds_allows_flanking(self) -> None:
+        """TEST-GWFC-041a: Without wild_positions, propagator allows L1 flanking
+        a future wild because each side is below threshold."""
+        # 3 L1 at columns 0-2, gap at 3, uncollapsed at 4
+        board = _make_linear_board({0: Symbol.L1, 1: Symbol.L1, 2: Symbol.L1})
+
+        propagator = PostGravityPropagator(
+            _linear_neighbors, threshold=5,
+        )
+
+        cells = {
+            Position(4, 0): CellState({Symbol.L1, Symbol.L2}),
+        }
+        # Collapse column 2 — propagator checks virtual neighbors (col 1, col 3)
+        # Col 3 is empty, col 4 is two hops away and not a direct virtual neighbor
+        propagator.propagate(board, cells, Position(2, 0), None)
+
+        # L1 should NOT be pruned — propagator doesn't see through the gap
+        assert Symbol.L1 in cells[Position(4, 0)].possibilities
+
+    def test_gwfc_041b_with_wilds_prunes_through_bridge(self) -> None:
+        """TEST-GWFC-041b: With wild_positions, propagator prunes L1 that would
+        merge through the wild into a component >= threshold."""
+        # 4 L1 at columns 0-3, wild at column 4, uncollapsed at 5
+        board = _make_linear_board(
+            {0: Symbol.L1, 1: Symbol.L1, 2: Symbol.L1, 3: Symbol.L1},
+        )
+        wild_pos = frozenset({Position(4, 0)})
+
+        propagator = PostGravityPropagator(
+            _linear_neighbors, threshold=5,
+            wild_positions=wild_pos,
+        )
+
+        cells = {
+            Position(5, 0): CellState({Symbol.L1, Symbol.L2}),
+        }
+        # Collapse at column 4 (wild position) — propagate to column 5
+        changed = propagator.propagate(board, cells, Position(4, 0), None)
+
+        # L1 should be pruned — 4 L1 + wild + L1 = 6 >= threshold 5
+        assert Symbol.L1 not in cells[Position(5, 0)].possibilities
+        assert Position(5, 0) in changed
+
+    def test_gwfc_041c_different_symbol_not_pruned(self) -> None:
+        """TEST-GWFC-041c: Wild bridging is symbol-specific — L2 is not pruned
+        even when L1 would be."""
+        board = _make_linear_board(
+            {0: Symbol.L1, 1: Symbol.L1, 2: Symbol.L1, 3: Symbol.L1},
+        )
+        wild_pos = frozenset({Position(4, 0)})
+
+        propagator = PostGravityPropagator(
+            _linear_neighbors, threshold=5,
+            wild_positions=wild_pos,
+        )
+
+        cells = {
+            Position(5, 0): CellState({Symbol.L1, Symbol.L2}),
+        }
+        propagator.propagate(board, cells, Position(4, 0), None)
+
+        # L2 should survive — the L1 bridge doesn't affect L2 component size
+        assert Symbol.L2 in cells[Position(5, 0)].possibilities
+
+
+class TestStepExecutorWildForwarding:
+    """Tests for StepExecutor forwarding predicted_wild_positions to propagator."""
+
+    def test_gwfc_042_forwards_wild_positions(
+        self, config: MasterConfig, gravity_dag: GravityDAG,
+    ) -> None:
+        """TEST-GWFC-042: _build_gravity_aware_constraints forwards
+        predicted_wild_positions to PostGravityPropagator."""
+        executor = StepExecutor(config, gravity_dag=gravity_dag)
+        wild_pos = frozenset({Position(3, 4)})
+        cluster = {Position(3, 3): Symbol.L1}
+        intent = _make_intent(
+            constrained=cluster,
+            planned_explosion=frozenset(cluster.keys()),
+            propagators=[NoSpecialSymbolPropagator(config.symbols)],
+            weights={sym: 1.0 for sym in Symbol if sym.value <= 7},
+            predicted_wild_positions=wild_pos,
+        )
+
+        board = Board.empty(config.board)
+        constraints = executor._build_gravity_aware_constraints(
+            intent, board, frozenset(cluster.keys()),
+            [pos for pos in board.all_positions() if pos not in cluster],
+        )
+
+        # Find the PostGravityPropagator and verify it carries wild positions
+        pgp = next(
+            p for p in constraints.propagators
+            if isinstance(p, PostGravityPropagator)
+        )
+        assert pgp._wild_positions == wild_pos
+
+    def test_gwfc_043_none_yields_empty_wild_positions(
+        self, config: MasterConfig, gravity_dag: GravityDAG,
+    ) -> None:
+        """TEST-GWFC-043: predicted_wild_positions=None → propagator gets empty frozenset."""
+        executor = StepExecutor(config, gravity_dag=gravity_dag)
+        cluster = {Position(3, 3): Symbol.L1}
+        intent = _make_intent(
+            constrained=cluster,
+            planned_explosion=frozenset(cluster.keys()),
+            propagators=[NoSpecialSymbolPropagator(config.symbols)],
+            weights={sym: 1.0 for sym in Symbol if sym.value <= 7},
+        )
+
+        board = Board.empty(config.board)
+        constraints = executor._build_gravity_aware_constraints(
+            intent, board, frozenset(cluster.keys()),
+            [pos for pos in board.all_positions() if pos not in cluster],
+        )
+
+        pgp = next(
+            p for p in constraints.propagators
+            if isinstance(p, PostGravityPropagator)
+        )
+        assert pgp._wild_positions == frozenset()
+
+
+class TestStepIntentWildPositions:
+    """Tests for StepIntent predicted_wild_positions field."""
+
+    def test_si_050_none_default(self) -> None:
+        """TEST-SI-050: StepIntent with predicted_wild_positions=None constructs OK."""
+        intent = _make_intent()
+        assert intent.predicted_wild_positions is None
+
+    def test_si_051_frozenset_readable(self) -> None:
+        """TEST-SI-051: StepIntent with predicted_wild_positions is frozen and readable."""
+        wild_pos = frozenset({Position(3, 4)})
+        intent = _make_intent(predicted_wild_positions=wild_pos)
+        assert intent.predicted_wild_positions == wild_pos

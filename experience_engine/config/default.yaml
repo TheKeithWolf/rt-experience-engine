@@ -346,7 +346,7 @@ spatial_intelligence:
   # Multi-objective utility weights — negative weights are subtractive
   utility_factor_weights:
     influence: 0.5
-    gravity_alignment: 0.15
+    gravity_alignment: 0.3
     booster_adjacency: 0.25
     merge_risk: -0.3
   # WFC suppression for cells in the reserve zone
