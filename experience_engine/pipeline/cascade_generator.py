@@ -38,6 +38,7 @@ from .data_types import (
 from .step_executor import StepExecutor
 from .step_validator import StepValidator, StepValidationFailed
 from .simulator import StepTransitionSimulator
+from ..narrative.transitions import build_transition_rules, try_advance_phase
 
 if TYPE_CHECKING:
     from ..boosters.phase_executor import BoosterPhaseExecutor
@@ -61,7 +62,7 @@ class CascadeInstanceGenerator:
     __slots__ = (
         "_config", "_registry", "_gravity_dag", "_paytable",
         "_booster_rules", "_reasoner", "_executor", "_validator",
-        "_simulator",
+        "_simulator", "_transition_rules",
     )
 
     def __init__(
@@ -87,6 +88,7 @@ class CascadeInstanceGenerator:
         self._executor = executor
         self._validator = validator
         self._simulator = simulator
+        self._transition_rules = build_transition_rules(config.board, config.symbols)
 
     def generate(
         self,
@@ -180,6 +182,18 @@ class CascadeInstanceGenerator:
 
             step_results.append(step_result)
             progress.update(step_result)
+
+            # Phase advancement — pre-transition, matching RL environment ordering.
+            # Context from the FILLED board so predicates see the step's outcome,
+            # not the explosion's aftermath.
+            fill_context = BoardContext.from_board(
+                filled, grid_mults,
+                progress.dormant_boosters, progress.active_wilds,
+                self._config.board,
+            )
+            try_advance_phase(
+                progress, step_result, self._transition_rules, fill_context,
+            )
 
             transition_data = None
             if not intent.is_terminal:
@@ -367,6 +381,16 @@ class CascadeInstanceGenerator:
 
                 step_results.append(step_result)
                 progress.update(step_result)
+
+                # Phase advancement — pre-transition context from filled board
+                fill_context = BoardContext.from_board(
+                    filled, grid_mults,
+                    progress.dormant_boosters, progress.active_wilds,
+                    self._config.board,
+                )
+                try_advance_phase(
+                    progress, step_result, self._transition_rules, fill_context,
+                )
 
                 transition_data = None
                 if not intent.is_terminal:

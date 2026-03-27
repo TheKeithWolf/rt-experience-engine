@@ -18,6 +18,7 @@ from ..primitives.symbols import Symbol, is_standard
 if TYPE_CHECKING:
     from ..config.schema import BoardConfig, SymbolConfig
     from ..step_reasoner.context import BoardContext
+    from ..step_reasoner.progress import ProgressTracker
     from ..step_reasoner.results import StepResult
 
 
@@ -86,3 +87,48 @@ def build_transition_rules(
 ALLOWED_TRANSITION_KEYS: frozenset[str] = frozenset({
     "always", "no_clusters", "no_bridges", "booster_fired",
 })
+
+# Transition rules that inspect BoardContext and can't evaluate when ctx is None
+_CONTEXT_DEPENDENT_RULES: frozenset[str] = frozenset({"no_bridges"})
+
+
+def try_advance_phase(
+    progress: ProgressTracker,
+    step_result: StepResult,
+    transition_rules: dict[str, TransitionPredicate],
+    context: BoardContext | None = None,
+) -> bool:
+    """Advance to the next narrative phase if the current phase is complete.
+
+    Checks two conditions (same logic as NarrativeArcValidator):
+    1. Max repetitions reached → advance unconditionally
+    2. Transition predicate fires AND min repetitions met → advance
+
+    Returns True if the phase advanced, False otherwise.
+
+    context is optional — transition predicates that inspect board state
+    (e.g., "no_bridges") require it. Context-independent predicates
+    ("always", "no_clusters", "booster_fired") work with context=None.
+    """
+    phase = progress.current_phase()
+    if phase is None:
+        return False
+
+    # Condition 1: max repetitions exhausted
+    if progress.current_phase_repetitions >= phase.repetitions.max_val:
+        progress.advance_phase()
+        return True
+
+    # Condition 2: transition predicate fires
+    predicate = transition_rules.get(phase.ends_when)
+    if predicate is not None:
+        # Context-dependent predicates can't evaluate without context —
+        # skip (conservative: don't advance without evidence)
+        if context is None and phase.ends_when in _CONTEXT_DEPENDENT_RULES:
+            return False
+        if predicate(step_result, context):
+            if progress.current_phase_repetitions >= phase.repetitions.min_val:
+                progress.advance_phase()
+                return True
+
+    return False

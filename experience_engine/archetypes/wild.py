@@ -142,7 +142,7 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
         ),
         payout=RangeFloat(0.4, 15.0),
         # W consumed in bridge — no wilds on terminal
-        wild_count_on_terminal=Range(0, 0),
+        wild_count_on_terminal=Range(0, 1),
         terminal_near_misses=None,
         dormant_boosters_on_terminal=None,
         required_chain_depth=Range(0, 0),

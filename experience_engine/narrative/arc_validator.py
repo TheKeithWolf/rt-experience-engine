@@ -17,16 +17,12 @@ from ..pipeline.protocols import Range
 from ..primitives.symbols import SymbolTier, tier_of
 from .arc import NarrativeArc, NarrativePhase
 from .derivation import DerivedConstraints
-from .transitions import TransitionPredicate
+from .transitions import TransitionPredicate, _CONTEXT_DEPENDENT_RULES
 
 if TYPE_CHECKING:
     from ..config.schema import SymbolConfig
     from ..pipeline.data_types import CascadeStepRecord
     from ..step_reasoner.context import BoardContext
-
-
-# Transition rules that inspect BoardContext (ctx) and can't evaluate when ctx is None
-_CONTEXT_DEPENDENT_RULES: frozenset[str] = frozenset({"no_bridges"})
 
 
 class _StepRecordAdapter:

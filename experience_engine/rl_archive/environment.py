@@ -21,7 +21,7 @@ from ..board_filler.wfc_solver import FillFailed
 from ..pipeline.step_validator import StepValidationFailed
 from ..boosters.tracker import BoosterTracker
 from ..config.schema import EnvironmentConfig, MasterConfig
-from ..narrative.transitions import build_transition_rules
+from ..narrative.transitions import build_transition_rules, try_advance_phase
 from ..pipeline.data_types import CascadeStepRecord, GeneratedInstance
 from ..primitives.board import Board, Position
 from ..primitives.grid_multipliers import GridMultiplierGrid
@@ -178,8 +178,11 @@ class CascadeEnvironment:
         self._progress.update(step_result)
         self._step_records.append(step_result)
 
-        # Phase progression — greedy linear matching applied online
-        self._advance_phase_if_ready(step_result)
+        # Phase advancement — pre-transition context, same ordering as cascade generator
+        context = self._build_context()
+        try_advance_phase(
+            self._progress, step_result, self._transition_rules, context,
+        )
 
         # Transition (gravity, booster spawning) unless terminal
         if not intent.is_terminal:
@@ -297,31 +300,6 @@ class CascadeEnvironment:
         """Build observation from current state."""
         context = self._build_context()
         return self._obs_builder.build(context, self._progress, self._arc)
-
-    def _advance_phase_if_ready(self, step_result: StepResult) -> None:
-        """Advance narrative phase using greedy linear matching.
-
-        Same logic as NarrativeArcValidator but applied online, step-by-step.
-        Checks if the current phase's transition predicate fires or if max
-        repetitions are reached.
-        """
-        phase = self._progress.current_phase()
-        if phase is None:
-            return
-
-        # Check if max repetitions reached → advance
-        if self._progress.current_phase_repetitions >= phase.repetitions.max_val:
-            self._progress.advance_phase()
-            return
-
-        # Check transition predicate
-        if phase.ends_when in self._transition_rules:
-            predicate = self._transition_rules[phase.ends_when]
-            context = self._build_context()
-            if predicate(step_result, context):
-                # Only advance if minimum repetitions are met
-                if self._progress.current_phase_repetitions >= phase.repetitions.min_val:
-                    self._progress.advance_phase()
 
 
 def _default_hints() -> VarianceHints:

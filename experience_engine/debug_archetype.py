@@ -39,6 +39,7 @@ from .step_reasoner.results import StepResult
 from .validation.validator import InstanceValidator
 from .variance.hints import VarianceHints
 from .variance.accumulators import PopulationAccumulators
+from .narrative.transitions import build_transition_rules, try_advance_phase
 from .variance.bias_computation import compute_hints
 
 # Reuse pipeline construction from run.py
@@ -225,6 +226,7 @@ def diagnostic_attempt(
     grid_mults = GridMultiplierGrid(config.grid_multiplier, config.board)
     booster_tracker = BoosterTracker(config.board)
     progress = ProgressTracker(sig, config.centipayout.multiplier)
+    transition_rules = build_transition_rules(config.board, config.symbols)
 
     # Build booster phase executor if the archetype fires boosters
     phase_executor = (
@@ -418,6 +420,20 @@ def diagnostic_attempt(
         step_results.append(step_result)
         step_boards.append((board_before, filled))
         progress.update(step_result)
+
+        # Phase advancement — pre-transition context from filled board
+        fill_context = BoardContext.from_board(
+            filled, grid_mults,
+            progress.dormant_boosters, progress.active_wilds,
+            config.board,
+        )
+        advanced = try_advance_phase(
+            progress, step_result, transition_rules, fill_context,
+        )
+        if advanced:
+            phase = progress.current_phase()
+            phase_name = phase.id if phase else "(past end)"
+            print(f"\n  >> Phase advanced → {phase_name}")
 
         # Show cumulative progress
         cum_payout = progress.cumulative_payout / config.centipayout.multiplier
