@@ -58,7 +58,7 @@ class StrategySelector:
 
 
 # ---------------------------------------------------------------------------
-# Default rules — covers the 7 non-default strategy triggers
+# Default rules — covers the 8 non-default strategy triggers
 # ---------------------------------------------------------------------------
 
 DEFAULT_SELECTION_RULES: list[SelectionRule] = [
@@ -79,10 +79,16 @@ DEFAULT_SELECTION_RULES: list[SelectionRule] = [
         condition=lambda a: a.is_first_step and a.signature_is_dead_family,
         priority=90,
     ),
+    # Wild bridge setup — more specific than initial_cluster, wins at same step
+    SelectionRule(
+        strategy_name="initial_wild_bridge",
+        condition=lambda a: a.is_first_step and a.next_phase_is_wild_bridge,
+        priority=89,
+    ),
     SelectionRule(
         strategy_name="initial_cluster",
         condition=lambda a: a.is_first_step,
-        priority=89,
+        priority=88,
     ),
     # Mid-cascade priorities — booster lifecycle and chaining
     SelectionRule(

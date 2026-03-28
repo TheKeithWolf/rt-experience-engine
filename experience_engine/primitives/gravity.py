@@ -155,6 +155,57 @@ def settle(
     )
 
 
+def build_gravity_mappings(
+    move_steps: tuple[tuple[tuple[Position, Position], ...], ...],
+    board_config: BoardConfig,
+    excluded: frozenset[Position] = frozenset(),
+) -> tuple[dict[Position, Position], dict[Position, list[Position]]]:
+    """Build pre→post and post→pre gravity position mappings.
+
+    Tracks each non-excluded cell through all gravity move passes to find
+    its final post-gravity position. Used by PostGravityAdjacency (for
+    virtual adjacency) and BridgePathTracer (for backward path mapping).
+
+    Returns:
+        (pre_to_post, post_to_pre) — bidirectional mapping dicts.
+        pre_to_post maps each surviving pre-gravity position to its
+        post-gravity destination. post_to_pre maps each post-gravity
+        position to all pre-gravity origins that land there.
+    """
+    all_positions = [
+        Position(reel, row)
+        for reel in range(board_config.num_reels)
+        for row in range(board_config.num_rows)
+    ]
+
+    # Every surviving cell starts mapped to itself
+    pre_to_post: dict[Position, Position] = {
+        pos: pos for pos in all_positions
+        if pos not in excluded
+    }
+
+    # Chase each cell through gravity passes — A→B in pass 1, B→C in
+    # pass 2 means A's final position is C
+    for pass_moves in move_steps:
+        move_map: dict[Position, Position] = {}
+        for source, dest in pass_moves:
+            move_map[source] = dest
+
+        for pre_pos in pre_to_post:
+            current_post = pre_to_post[pre_pos]
+            if current_post in move_map:
+                pre_to_post[pre_pos] = move_map[current_post]
+
+    # Reverse mapping — post-gravity position to all pre-gravity origins
+    post_to_pre: dict[Position, list[Position]] = {}
+    for pre_pos, post_pos in pre_to_post.items():
+        if post_pos not in post_to_pre:
+            post_to_pre[post_pos] = []
+        post_to_pre[post_pos].append(pre_pos)
+
+    return pre_to_post, post_to_pre
+
+
 def predict_empty_cells(
     dag: GravityDAG,
     exploded: frozenset[Position],

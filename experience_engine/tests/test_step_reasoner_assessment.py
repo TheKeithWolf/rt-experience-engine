@@ -135,6 +135,7 @@ def _make_assessment(**overrides) -> StepAssessment:
         booster_needs_arming_soon=False,
         payout_running_low=False,
         payout_running_high=False,
+        next_phase_is_wild_bridge=False,
     )
     defaults.update(overrides)
     return StepAssessment(**defaults)
@@ -308,10 +309,31 @@ class TestStrategySelector:
         assert selector.select(assessment) == "initial_dead"
 
     def test_initial_cluster_for_non_dead(self) -> None:
-        """R5-011: first step + non-dead → 'initial_cluster'."""
+        """R5-011: first step + non-dead + non-bridge → 'initial_cluster'."""
         selector = StrategySelector(DEFAULT_SELECTION_RULES)
         assessment = _make_assessment(is_first_step=True)
         assert selector.select(assessment) == "initial_cluster"
+
+    def test_initial_wild_bridge_selected(self) -> None:
+        """R5-NEW: first step + next_phase_is_wild_bridge → 'initial_wild_bridge'."""
+        selector = StrategySelector(DEFAULT_SELECTION_RULES)
+        assessment = _make_assessment(
+            is_first_step=True, next_phase_is_wild_bridge=True,
+        )
+        assert selector.select(assessment) == "initial_wild_bridge"
+
+    def test_initial_wild_bridge_over_initial_cluster(self) -> None:
+        """initial_wild_bridge (89) beats initial_cluster (88) when both match first_step."""
+        selector = StrategySelector(DEFAULT_SELECTION_RULES)
+        # Both is_first_step rules match, but wild_bridge has higher priority
+        assessment = _make_assessment(
+            is_first_step=True, next_phase_is_wild_bridge=True,
+        )
+        assert selector.select(assessment) == "initial_wild_bridge"
+
+        # Without bridge flag, initial_cluster catches it
+        assessment_no_bridge = _make_assessment(is_first_step=True)
+        assert selector.select(assessment_no_bridge) == "initial_cluster"
 
     def test_booster_arm_selected(self) -> None:
         """R5-012: booster_needs_arming_soon → 'booster_arm'."""
@@ -382,7 +404,7 @@ class TestStrategyRegistry:
     def test_build_default_registry_returns_all_strategies(
         self, default_config,
     ) -> None:
-        """R5-019: build_default_registry registers all 8 strategies (Step 6 complete)."""
+        """R5-019: build_default_registry registers all 9 strategies (Step 6 complete)."""
         from ..primitives.gravity import GravityDAG
         from ..step_reasoner.evaluators import (
             ChainEvaluator, PayoutEstimator, SpawnEvaluator,
@@ -406,7 +428,7 @@ class TestStrategyRegistry:
         )
         expected = sorted([
             "booster_arm", "booster_setup", "cascade_cluster",
-            "initial_cluster", "initial_dead", "terminal_dead",
-            "terminal_near_miss", "wild_bridge",
+            "initial_cluster", "initial_dead", "initial_wild_bridge",
+            "terminal_dead", "terminal_near_miss", "wild_bridge",
         ])
         assert registry.available() == expected

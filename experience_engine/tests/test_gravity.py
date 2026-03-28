@@ -2,7 +2,7 @@
 
 from ..config.schema import MasterConfig
 from ..primitives.board import Board, Position
-from ..primitives.gravity import GravityDAG, settle, predict_empty_cells
+from ..primitives.gravity import GravityDAG, settle, predict_empty_cells, build_gravity_mappings
 from ..primitives.symbols import Symbol
 
 
@@ -194,3 +194,60 @@ def test_p1_036_conservation(default_config: MasterConfig) -> None:
 
     result = settle(dag, board, exploded, default_config.gravity)
     assert len(result.empty_positions) == len(exploded)
+
+
+# ---------------------------------------------------------------------------
+# GME-001 / GME-002: build_gravity_mappings extraction correctness
+# ---------------------------------------------------------------------------
+
+def test_gme_001_build_gravity_mappings_matches_inline(default_config: MasterConfig) -> None:
+    """GME-001: build_gravity_mappings() produces the same pre→post mapping
+    as the old inline algorithm in PostGravityAdjacency._compute()."""
+    board = _filled_board(default_config)
+    dag = GravityDAG(default_config.board, default_config.gravity)
+
+    # Explode a cluster in the middle of the board
+    exploded = frozenset({
+        Position(3, 3), Position(3, 4), Position(3, 5),
+        Position(4, 4), Position(4, 5),
+    })
+    result = settle(dag, board, exploded, default_config.gravity)
+
+    pre_to_post, post_to_pre = build_gravity_mappings(
+        result.move_steps, default_config.board, excluded=exploded,
+    )
+
+    # Verify pre_to_post: every non-exploded position maps to some position
+    all_positions = {
+        Position(r, c)
+        for r in range(default_config.board.num_reels)
+        for c in range(default_config.board.num_rows)
+    }
+    surviving = all_positions - exploded
+    assert set(pre_to_post.keys()) == surviving
+
+    # Verify post_to_pre is the reverse mapping
+    for pre_pos, post_pos in pre_to_post.items():
+        assert pre_pos in post_to_pre[post_pos]
+
+    # Verify every post_to_pre entry maps back to pre_to_post
+    for post_pos, pre_list in post_to_pre.items():
+        for pre_pos in pre_list:
+            assert pre_to_post[pre_pos] == post_pos
+
+
+def test_gme_002_excluded_positions_absent(default_config: MasterConfig) -> None:
+    """GME-002: Excluded positions do not appear in pre_to_post keys."""
+    board = _filled_board(default_config)
+    dag = GravityDAG(default_config.board, default_config.gravity)
+
+    exploded = frozenset({Position(2, 5), Position(2, 6), Position(3, 6)})
+    result = settle(dag, board, exploded, default_config.gravity)
+
+    pre_to_post, _ = build_gravity_mappings(
+        result.move_steps, default_config.board, excluded=exploded,
+    )
+
+    # No exploded position should be in the mapping
+    for pos in exploded:
+        assert pos not in pre_to_post

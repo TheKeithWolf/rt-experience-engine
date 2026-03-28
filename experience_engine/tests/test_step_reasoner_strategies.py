@@ -495,11 +495,16 @@ class TestInitialClusterStrategy:
                     queue.append(n)
         assert visited == positions
 
-    def test_r6_010_strategic_cells_nonempty_when_bridge_needed(
+    def test_r6_010_no_predicted_wild_for_bridge_signature(
         self, default_config, forward_simulator, cluster_builder,
         seed_planner, spawn_evaluator, near_miss_planner, landing_evaluator, rng,
     ) -> None:
-        """R6-010: InitialClusterStrategy strategic_cells non-empty when next step needs bridge seeds."""
+        """R6-010: InitialClusterStrategy does not handle bridge arcs — no predicted_wild_positions.
+
+        Bridge setup is now handled by InitialWildBridgeStrategy. When given a
+        bridge signature, InitialClusterStrategy falls through to generic seeds
+        and does not set predicted_wild_positions.
+        """
         from ..archetypes.registry import CascadeStepConstraint
         strategy = InitialClusterStrategy(
             default_config, forward_simulator, cluster_builder,
@@ -536,8 +541,8 @@ class TestInitialClusterStrategy:
 
         intent = strategy.plan_step(context, progress, sig, variance)
 
-        # Strategic cells should be non-empty — bridge seeds planned
-        assert len(intent.strategic_cells) > 0
+        # InitialClusterStrategy no longer handles bridge — no predicted wild positions
+        assert intent.predicted_wild_positions is None
 
     def test_r6_011_scatter_positions_in_constrained_cells(
         self, default_config, forward_simulator, cluster_builder,
@@ -611,14 +616,14 @@ class TestInitialClusterStrategy:
             for p in intent.wfc_propagators
         )
 
-    def test_initial_cluster_rejects_wild_not_adjacent_to_refill(
+    def test_initial_cluster_no_bridge_seeds_for_bridge_signature(
         self, default_config, forward_simulator, cluster_builder,
         seed_planner, spawn_evaluator, near_miss_planner, landing_evaluator, rng,
     ) -> None:
-        """ValueError when wild lands outside refill zone — bridge impossible.
+        """R6-010b: InitialClusterStrategy no longer produces bridge seeds.
 
-        Calls _plan_strategic_seeds directly with a controlled SettleResult
-        where the wild position has no adjacent empty cells.
+        Bridge setup is now handled by InitialWildBridgeStrategy. When given
+        a bridge signature, _plan_strategic_seeds falls through to generic seeds.
         """
         from ..archetypes.registry import CascadeStepConstraint
         from ..primitives.gravity import SettleResult
@@ -655,25 +660,19 @@ class TestInitialClusterStrategy:
         progress = _make_progress(sig)
         variance = _make_variance_hints(default_config)
 
-        # Cluster at reels 0-6, row 6 (bottom row) — centroid settles deep
+        # Cluster at reels 0-6, row 6 (bottom row)
         cluster_positions = frozenset(Position(r, 6) for r in range(7))
         cluster_groups = [(cluster_positions, Symbol.L1)]
 
-        # Empty cells only at top of columns 0-2 — far from (6,6)
         empty_positions = tuple(Position(r, 0) for r in range(3))
-        # Verify precondition: wild at (6,6) has no adjacent empties
-        wild_nbrs = set(orthogonal_neighbors(Position(6, 6), default_config.board))
-        assert not (wild_nbrs & set(empty_positions)), "Test setup: wild must not neighbor empties"
-
         settle_result = SettleResult(
             board=Board.empty(default_config.board),
             move_steps=(),
             empty_positions=empty_positions,
         )
 
-        # _plan_strategic_seeds calls the landing evaluator internally, which
-        # uses predict_booster_landing and simulate_explosion. Patch both to
-        # control the booster landing position and the refill zone.
+        # _plan_strategic_seeds should NOT take the bridge path — it no longer
+        # has a bridge branch. It will fall through to arming or generic seeds.
         from unittest.mock import patch
         with patch.object(
             ForwardSimulator, "predict_booster_landing",
@@ -683,11 +682,12 @@ class TestInitialClusterStrategy:
             return_value=settle_result,
         ):
             context = _make_empty_context(default_config)
-            with pytest.raises(ValueError, match="no viable refill adjacency"):
-                strategy._plan_strategic_seeds(
-                    context, cluster_groups, "W",
-                    settle_result, progress, sig, variance,
-                )
+            seeds, reserve_zone, wild_positions = strategy._plan_strategic_seeds(
+                context, cluster_groups, "W",
+                settle_result, progress, sig, variance,
+            )
+            # No predicted_wild_positions — bridge branch is gone
+            assert wild_positions is None
 
     def test_initial_cluster_caps_wild_spawns_from_step_sizes(
         self, default_config, forward_simulator, cluster_builder,

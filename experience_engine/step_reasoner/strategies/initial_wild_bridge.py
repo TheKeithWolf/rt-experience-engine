@@ -1,9 +1,12 @@
-"""Initial cluster strategy — step 0 for archetypes that need clusters.
+"""Initial wild bridge strategy — step 0 for arcs whose next phase is a wild bridge.
 
-Places cluster(s) on an empty board, forward-simulates gravity to predict
-post-explosion board state, then backward-reasons about strategic seed
-placements for future cascade steps. Supports multi-cluster archetypes
-(e.g., t1_multi_cascade) via ClusterBuilder.build_multi_cluster().
+Places a wild-spawning cluster, forward-simulates to predict the Wild's
+post-gravity landing, then uses BridgePathTracer to deterministically trace
+the path from the Wild to the refill zone. Bridge symbols are assigned to
+the traced path positions (pre-gravity coordinates) so that WildBridgeStrategy
+at step 1 can complete the bridge with minimal shortfall.
+
+Replaces the probabilistic bridge branch that was in InitialClusterStrategy.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from ..context import BoardContext
 from ..evaluators import SpawnEvaluator
 from ..intent import StepIntent, StepType
 from ..progress import ProgressTracker
+from ..services.bridge_path_tracer import BridgePathTracer
 from ..services.cluster_builder import ClusterBuilder
 from ..services.forward_simulator import ForwardSimulator
 from ..services.influence_map import DemandSpec
@@ -34,19 +38,26 @@ from ...pipeline.protocols import Range
 from ...variance.hints import VarianceHints
 
 
-class InitialClusterStrategy:
-    """Builds the initial board with cluster(s), scatters, near-misses, and strategic seeds.
+# Minimum landing viability score — below this threshold the wild's landing
+# position has no viable refill adjacency and the cluster should be retried
+_MIN_LANDING_SCORE = 0.1
 
-    This strategy does the most forward simulation because the initial board
-    determines the entire cascade trajectory. It reasons about cluster
-    placement, booster spawn prediction, and backward seeding for future steps.
-    Near-misses are placed via NearMissPlanner when the archetype requires them.
+
+class InitialWildBridgeStrategy:
+    """Step 0 for wild bridge arcs: cluster + deterministic bridge path setup.
+
+    Single responsibility: place a wild-spawning cluster, predict where the
+    Wild lands, trace the bridge path from landing to refill zone, and assign
+    bridge symbols to the traced path. WildBridgeStrategy at step 1 observes
+    the planted path via _scan_bridge_candidates() and places only the shortfall.
+
+    All dependencies are injected — no self-construction.
     """
 
     __slots__ = (
         "_config", "_forward_sim", "_cluster_builder", "_seed_planner",
-        "_spawn_eval", "_near_miss_planner", "_landing_eval", "_rng",
-        "_spatial",
+        "_spawn_eval", "_near_miss_planner", "_landing_eval",
+        "_bridge_tracer", "_rng", "_spatial",
     )
 
     def __init__(
@@ -58,6 +69,7 @@ class InitialClusterStrategy:
         spawn_eval: SpawnEvaluator,
         near_miss_planner: NearMissPlanner,
         landing_eval: BoosterLandingEvaluator,
+        bridge_tracer: BridgePathTracer,
         rng: random.Random,
         spatial: StepSpatialContext | None = None,
     ) -> None:
@@ -68,6 +80,7 @@ class InitialClusterStrategy:
         self._spawn_eval = spawn_eval
         self._near_miss_planner = near_miss_planner
         self._landing_eval = landing_eval
+        self._bridge_tracer = bridge_tracer
         self._rng = rng
         self._spatial = spatial
 
@@ -78,63 +91,97 @@ class InitialClusterStrategy:
         signature: ArchetypeSignature,
         variance: VarianceHints,
     ) -> StepIntent:
-        # Place N clusters via shared multi-cluster loop (DRY — ClusterBuilder)
-        cluster_count = self._cluster_builder.select_cluster_count(
-            signature.required_cluster_count, self._rng,
-        )
-
-        # Use step-level sizes for both cap check and cluster building —
-        # signature-level sizes may include non-wild-spawning ranges (e.g., 5-6)
-        # while step-level sizes (e.g., 7-8) correctly reflect this step's constraints
+        # Wild bridge arcs use a single cluster — cap count to 1
         step_sizes = progress.current_step_size_ranges()
 
-        # Cap cluster count to Wild spawn budget when every cluster would spawn a Wild
+        # Cap to wild spawn budget when every size range spawns a Wild
+        cluster_count = 1
         if self._all_sizes_spawn_wilds(step_sizes):
             wild_budget = progress.remaining_booster_spawns().get("W")
             if wild_budget is not None:
                 cluster_count = min(cluster_count, wild_budget.max_val)
+
         multi_result = self._cluster_builder.build_multi_cluster(
             context, cluster_count, list(step_sizes),
             progress, signature, variance, self._rng,
         )
 
-        # Derive tier from the first cluster symbol placed
+        # Derive tier from the cluster symbol placed
         if not multi_result.cluster_symbols:
             cluster_tier = SymbolTier.ANY
         else:
             first_sym = multi_result.cluster_symbols[0]
             cluster_tier = SymbolTier.LOW if first_sym.value <= 4 else SymbolTier.HIGH
 
-        # Detect booster spawns from each cluster's size
+        # Detect booster spawn — should be "W" for wild bridge arcs
         expected_spawns: list[str] = []
         for size in multi_result.cluster_sizes:
             booster_type = self._spawn_eval.booster_for_size(size)
             if booster_type:
                 expected_spawns.append(booster_type)
 
-        # Forward simulate: all clusters explode simultaneously
+        # Forward simulate the cluster explosion + gravity
         hypothetical = self._forward_sim.build_hypothetical(
             context.board, multi_result.all_constrained,
         )
         settle_result = self._forward_sim.simulate_explosion(
             hypothetical, multi_result.all_occupied,
         )
-        predicted_post_gravity = settle_result
 
-        # Backward reasoning: plant strategic seeds for the next step
-        # Use first cluster's booster type for seed planning (if any)
+        # Predict Wild landing — score validates the landing has viable refill adjacency
         first_booster = expected_spawns[0] if expected_spawns else None
-        # Build once — reused for both seed exclusion and propagator construction
+        cluster_positions = frozenset(multi_result.all_occupied)
+        if not first_booster:
+            raise ValueError("Wild bridge arc requires a booster-spawning cluster size")
+
+        ctx, score = self._landing_eval.evaluate_and_score(
+            cluster_positions, context.board, first_booster,
+        )
+        booster_landing = ctx.landing_position
+
+        if score < _MIN_LANDING_SCORE:
+            raise ValueError(
+                f"{first_booster} at {booster_landing} scored {score:.2f} — "
+                f"no viable refill adjacency, retry cluster placement"
+            )
+
+        # Resolve bridge target size from the next phase's cluster sizes
+        next_phase = progress.peek_next_phase()
+        if next_phase is not None and next_phase.cluster_sizes:
+            target_bridge_size = next_phase.cluster_sizes[0].min_val
+        else:
+            target_bridge_size = self._config.board.min_cluster_size
+
+        # Trace the bridge path from wild landing to refill zone
+        bridge_plan = self._bridge_tracer.plan(
+            booster_landing, settle_result, target_bridge_size,
+        )
+
+        # Build strategic cells: bridge_symbol at each pre-gravity path position
+        bridge_symbol = multi_result.cluster_symbols[0]
         cluster_groups = [
             (r.planned_positions, sym)
             for r, sym in zip(multi_result.clusters, multi_result.cluster_symbols)
         ]
-        strategic_cells, reserve_zone, predicted_wild_positions = self._plan_strategic_seeds(
-            context, cluster_groups, first_booster,
-            settle_result, progress, signature, variance,
+        exclusions = build_cluster_exclusions(cluster_groups, self._config.board)
+        strategic_cells = self._seed_planner._filter_excluded(
+            {pre_pos: bridge_symbol for pre_pos in bridge_plan.path_pre_to_post},
+            exclusions,
         )
 
-        # Scatter placement if required — avoid all cluster positions
+        # Spatial intelligence — compute reserve zone around refill centroid
+        # so next step's WFC doesn't fill bridge path positions with wrong symbols
+        reserve_zone: frozenset[Position] | None = None
+        if self._spatial is not None:
+            demand = DemandSpec(
+                centroid=bridge_plan.refill_centroid,
+                cluster_size=target_bridge_size,
+                booster_type=first_booster,
+            )
+            influence = self._spatial.influence_map.compute(demand)
+            reserve_zone = self._spatial.influence_map.reserve_zone(influence)
+
+        # Scatter placement if required — avoid cluster + strategic cells
         constrained: dict[Position, Symbol] = dict(multi_result.all_constrained)
         scatter_count = self._resolve_scatter_count(signature)
         if scatter_count > 0:
@@ -143,7 +190,7 @@ class InitialClusterStrategy:
             for pos in scatter_positions:
                 constrained[pos] = Symbol.S
 
-        # Near-miss placement — pass all cluster symbols so the planner avoids merging
+        # Near-miss placement
         nm_result = self._near_miss_planner.place(
             context, signature, variance,
             avoid=frozenset(constrained) | frozenset(strategic_cells),
@@ -152,8 +199,6 @@ class InitialClusterStrategy:
         )
         constrained.update(nm_result.constrained_cells)
 
-        # Propagators for WFC noise fill — one ClusterBoundaryPropagator per cluster
-        # group prevents same-symbol survivors at each cluster's edge
         propagators = self._select_propagators(
             cluster_groups=cluster_groups,
             near_miss_groups=nm_result.groups or None,
@@ -173,124 +218,17 @@ class InitialClusterStrategy:
             expected_fires=[],
             wfc_propagators=propagators,
             wfc_symbol_weights=variance.symbol_weights,
-            predicted_post_gravity=predicted_post_gravity,
+            predicted_post_gravity=settle_result,
             terminal_near_misses=None,
             terminal_dormant_boosters=None,
-            # All cluster positions will explode — gates gravity-aware WFC mechanisms
             planned_explosion=frozenset(multi_result.all_occupied),
             is_terminal=False,
             reserve_zone=reserve_zone,
-            predicted_wild_positions=predicted_wild_positions,
+            # Wild landing position lets PostGravityPropagator count the wild
+            # as same-symbol, preventing WFC from forming groups that merge
+            # through it into booster-spawning clusters
+            predicted_wild_positions=frozenset({booster_landing}),
         )
-
-    def _plan_strategic_seeds(
-        self,
-        context: BoardContext,
-        cluster_groups: list[tuple[frozenset[Position], Symbol]],
-        booster_type: str | None,
-        settle_result,
-        progress: ProgressTracker,
-        signature: ArchetypeSignature,
-        variance: VarianceHints,
-    ) -> tuple[dict[Position, Symbol], frozenset[Position] | None, frozenset[Position] | None]:
-        """Backward reasoning — determine what future steps need and seed accordingly.
-
-        Returns (strategic_cells, reserve_zone, predicted_wild_positions).
-        """
-        if progress.must_terminate_soon():
-            return {}, None, None
-
-        # Exclusion zones prevent strategic seeds from merging into clusters —
-        # strategic cells are pinned before WFC, so ClusterBoundaryPropagator
-        # cannot guard them
-        exclusions = build_cluster_exclusions(cluster_groups, self._config.board)
-
-        # Predict where the booster will land and score the landing's viability
-        # for the next cascade step (bridge, arm, or chain)
-        if booster_type:
-            cluster_positions = frozenset().union(*(g[0] for g in cluster_groups))
-            ctx, score = self._landing_eval.evaluate_and_score(
-                cluster_positions, context.board, booster_type,
-            )
-            booster_landing = ctx.landing_position
-
-            if self._next_step_needs_arming_cluster(signature, progress):
-                utility_scores, reserve_zone = self._compute_spatial_scores(
-                    cluster_positions, booster_landing, booster_type,
-                    self._config.board.min_cluster_size, settle_result,
-                )
-                seeds = self._seed_planner.plan_arm_seeds(
-                    booster_landing, settle_result, variance, self._rng,
-                    exclusions=exclusions,
-                    utility_scores=utility_scores,
-                )
-                return seeds, reserve_zone, None
-
-        seeds = self._seed_planner.plan_generic_seeds(
-            settle_result, progress, signature, variance, self._rng,
-            exclusions=exclusions,
-        )
-        return seeds, None, None
-
-    def _compute_spatial_scores(
-        self,
-        cluster_positions: frozenset[Position],
-        booster_landing: Position,
-        booster_type: str,
-        next_cluster_size: int,
-        settle_result,
-    ) -> tuple[dict[Position, float] | None, frozenset[Position] | None]:
-        """Compute utility scores and reserve zone using spatial intelligence.
-
-        Returns (utility_scores, reserve_zone). Both are None when spatial
-        intelligence is disabled.
-        """
-        if self._spatial is None:
-            return None, None
-
-        demand = DemandSpec(
-            centroid=booster_landing,
-            cluster_size=next_cluster_size,
-            booster_type=booster_type,
-        )
-        influence = self._spatial.influence_map.compute(demand)
-        reserve_zone = self._spatial.influence_map.reserve_zone(influence)
-
-        scoring_ctx = ScoringContext(
-            influence=influence,
-            gravity_field=self._spatial.gravity_field,
-            demand=demand,
-            cluster_positions=cluster_positions,
-            board_config=self._config.board,
-            booster_landing=booster_landing,
-        )
-        candidates = list(settle_result.empty_positions)
-        utility_scores = self._spatial.utility_scorer.score_candidates(
-            candidates, scoring_ctx,
-        )
-        return utility_scores, reserve_zone
-
-    def _next_step_needs_arming_cluster(
-        self,
-        signature: ArchetypeSignature,
-        progress: ProgressTracker,
-    ) -> bool:
-        """Check if the next step needs to arm a dormant booster.
-
-        Arc-based: peek at the next phase's arms field.
-        Legacy: index into cascade_steps[next_step].must_arm_booster.
-        """
-        # Arc-based path
-        next_phase = progress.peek_next_phase()
-        if next_phase is not None:
-            return next_phase.arms is not None
-
-        # Legacy path
-        next_step = progress.steps_completed + 1
-        if signature.cascade_steps and next_step < len(signature.cascade_steps):
-            step_spec = signature.cascade_steps[next_step]
-            return step_spec.must_arm_booster is not None
-        return False
 
     def _all_sizes_spawn_wilds(self, size_ranges: tuple[Range, ...]) -> bool:
         """True when every size in every range maps to a Wild spawn."""
@@ -334,14 +272,10 @@ class InitialClusterStrategy:
     ) -> list:
         """Select WFC propagators for noise fill around the cluster(s).
 
-        NoClusterPropagator prevents WFC from extending placed clusters
-        or forming new accidental clusters. One ClusterBoundaryPropagator
-        per cluster group forbids each cluster's symbol at adjacent cells —
-        prevents same-symbol survivors from bordering the refill zone
-        after explosion + gravity.
-        MaxComponentPropagator caps fill components below near-miss size.
-        When near-miss groups are present, NearMissAwareDeadPropagator
-        replaces it — same component cap plus isolation at group borders.
+        NoClusterPropagator prevents WFC from extending placed clusters.
+        ClusterBoundaryPropagator per cluster group forbids the cluster symbol
+        at adjacent cells. MaxComponentPropagator/NearMissAwareDeadPropagator
+        caps fill components below near-miss size.
         """
         from ...board_filler.propagators import MaxComponentPropagator
 
@@ -349,17 +283,11 @@ class InitialClusterStrategy:
             NoSpecialSymbolPropagator(self._config.symbols),
             NoClusterPropagator(self._config.board.min_cluster_size),
         ]
-        # Isolate each cluster's boundary — WFC cannot place the cluster symbol
-        # adjacent to cluster positions, preventing merge on the next cascade step
         if cluster_groups:
             for positions, symbol in cluster_groups:
                 propagators.append(ClusterBoundaryPropagator(
                     positions, symbol, self._config.board,
                 ))
-        # Cap WFC-placed components below near-miss size. NM groups are pinned
-        # as constrained cells before WFC runs, so the cap only affects
-        # WFC-placed cells — NearMissAwareDeadPropagator adds isolation at
-        # group borders to prevent WFC from merging symbols into NM groups.
         nm_fill_cap = self._config.board.min_cluster_size - 2
         if near_miss_groups:
             propagators.append(NearMissAwareDeadPropagator(

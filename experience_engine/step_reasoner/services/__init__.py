@@ -4,12 +4,14 @@ ForwardSimulator: gravity reasoning wrapper (hypothetical boards, explosion simu
 ClusterBuilder: cluster parameter selection and connected-position finding
 SeedPlanner: strategic future-step cell placement via backward gravity reasoning
 BoosterLandingEvaluator: post-gravity landing prediction and scoring
+BridgePathTracer: deterministic BFS path tracing from wild to refill zone
 GravityFieldService: per-cell gravity flow vectors for alignment scoring
 InfluenceMap: Gaussian demand field for future-step spatial reservation
 UtilityScorer: multi-objective position scorer with pluggable factors
 StepSpatialContext: bundle of the three spatial intelligence services
 """
 
+from .bridge_path_tracer import BridgePathTracer
 from .cluster_builder import ClusterBuilder
 from .forward_simulator import ForwardSimulator
 from .gravity_field import GravityFieldService
@@ -21,6 +23,7 @@ from .utility_scorer import UtilityScorer
 
 __all__ = [
     "BoosterLandingEvaluator",
+    "BridgePathTracer",
     "ClusterBuilder",
     "ForwardSimulator",
     "GravityFieldService",

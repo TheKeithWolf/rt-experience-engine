@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from ..config.schema import BoardConfig, GravityConfig
 from ..primitives.board import Board, Position, orthogonal_neighbors
-from ..primitives.gravity import GravityDAG, SettleResult, settle
+from ..primitives.gravity import GravityDAG, SettleResult, build_gravity_mappings, settle
 
 
 class PostGravityAdjacency:
@@ -63,57 +63,21 @@ class PostGravityAdjacency:
     ) -> dict[Position, list[Position]]:
         """Build the virtual adjacency graph from settle result.
 
-        Algorithm:
-        1. Build pre_to_post mapping by tracking each cell through all
-           gravity move passes (chained: A→B pass1, B→C pass2 ⇒ A maps to C)
-        2. Exploded cells are removed — they don't map to post-gravity positions
-        3. Build reverse post_to_pre mapping
-        4. For each pre-gravity cell, find its post-gravity position, compute
-           orthogonal neighbors in post-gravity space, map back to pre-gravity
+        Uses build_gravity_mappings() for pre↔post position tracking, then
+        maps orthogonal neighbors through the post-gravity coordinate space
+        back to pre-gravity coordinates for WFC constraint propagation.
         """
-        all_positions = [
-            Position(reel, row)
-            for reel in range(board_config.num_reels)
-            for row in range(board_config.num_rows)
-        ]
+        pre_to_post, post_to_pre = build_gravity_mappings(
+            self._settle_result.move_steps, board_config,
+            excluded=planned_explosion,
+        )
 
-        # Step 1: Track each cell's position through all gravity passes
-        # Start: every cell maps to itself
-        pre_to_post: dict[Position, Position] = {
-            pos: pos for pos in all_positions
-            if pos not in planned_explosion
-        }
-
-        # Process move passes — each pass contains (source, dest) tuples
-        # A cell that moved in pass 1 to position B, then B moves to C in
-        # pass 2, means the cell's final position is C
-        for pass_moves in self._settle_result.move_steps:
-            # Build source→dest for this pass
-            move_map: dict[Position, Position] = {}
-            for source, dest in pass_moves:
-                move_map[source] = dest
-
-            # Update pre_to_post: if a cell's current post position was moved,
-            # follow the chain to the new position
-            for pre_pos in pre_to_post:
-                current_post = pre_to_post[pre_pos]
-                if current_post in move_map:
-                    pre_to_post[pre_pos] = move_map[current_post]
-
-        # Step 2: Build reverse mapping (post → pre)
-        post_to_pre: dict[Position, list[Position]] = {}
-        for pre_pos, post_pos in pre_to_post.items():
-            if post_pos not in post_to_pre:
-                post_to_pre[post_pos] = []
-            post_to_pre[post_pos].append(pre_pos)
-
-        # Step 3: For each pre-gravity cell, find post-gravity neighbors
+        # For each pre-gravity cell, find post-gravity neighbors
         # and map them back to pre-gravity coordinates
         virtual_adj: dict[Position, list[Position]] = {}
         for pre_pos, post_pos in pre_to_post.items():
             neighbors_pre: list[Position] = []
             for post_neighbor in orthogonal_neighbors(post_pos, board_config):
-                # Map post-gravity neighbor back to pre-gravity positions
                 pre_neighbors = post_to_pre.get(post_neighbor, [])
                 for pre_n in pre_neighbors:
                     if pre_n != pre_pos:

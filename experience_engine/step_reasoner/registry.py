@@ -2,7 +2,7 @@
 
 StrategyRegistry provides register/get/available operations with duplicate
 detection. build_default_registry is the factory that constructs shared
-services once and registers all 8 strategies.
+services once and registers all 9 strategies.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ def build_default_registry(
     payout_evaluator: PayoutEstimator,
     rng: random.Random | None = None,
 ) -> StrategyRegistry:
-    """Construct the default registry with all 8 strategies.
+    """Construct the default registry with all 9 strategies.
 
     Shared services (ForwardSimulator, ClusterBuilder, SeedPlanner) are
     constructed once here and injected into all strategies that need them.
@@ -88,6 +88,7 @@ def build_default_registry(
     from .strategies.cascade_cluster import CascadeClusterStrategy
     from .strategies.initial_cluster import InitialClusterStrategy
     from .strategies.initial_dead import InitialDeadStrategy
+    from .strategies.initial_wild_bridge import InitialWildBridgeStrategy
     from .strategies.terminal_dead import TerminalDeadStrategy
     from .strategies.terminal_near_miss import TerminalNearMissStrategy
     from .strategies.wild_bridge import WildBridgeStrategy
@@ -119,6 +120,11 @@ def build_default_registry(
     landing_eval = BoosterLandingEvaluator(
         forward_sim, booster_rules, config.board, landing_criteria,
     )
+
+    # Bridge path tracer — deterministic path from wild landing to refill zone.
+    # Used exclusively by InitialWildBridgeStrategy.
+    from .services.bridge_path_tracer import BridgePathTracer
+    bridge_path_tracer = BridgePathTracer(config.board)
 
     # Spatial intelligence — constructed once when config section is present.
     # Gives strategies foresight about where future steps need space.
@@ -158,6 +164,13 @@ def build_default_registry(
         config, forward_sim, cluster_builder, seed_planner,
         spawn_evaluator, near_miss_planner, landing_eval, rng,
         spatial=spatial,
+    ))
+    # Initial wild bridge — step 0 for arcs where the next phase is a wild bridge.
+    # Uses BridgePathTracer for deterministic path tracing instead of probabilistic seeding.
+    registry.register("initial_wild_bridge", InitialWildBridgeStrategy(
+        config, forward_sim, cluster_builder, seed_planner,
+        spawn_evaluator, near_miss_planner, landing_eval,
+        bridge_path_tracer, rng, spatial=spatial,
     ))
 
     # Cascade strategy — general mid-cascade

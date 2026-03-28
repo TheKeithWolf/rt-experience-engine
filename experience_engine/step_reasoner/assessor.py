@@ -50,6 +50,8 @@ class StepAssessment:
     booster_needs_arming_soon: bool
     payout_running_low: bool
     payout_running_high: bool
+    # Next phase requires wild bridge — drives InitialWildBridgeStrategy dispatch
+    next_phase_is_wild_bridge: bool
 
 
 class StepAssessor:
@@ -132,6 +134,13 @@ class StepAssessor:
             signature, payout_remaining,
         )
 
+        # Peek at next phase to detect wild bridge setup requirement —
+        # drives InitialWildBridgeStrategy selection at step 0
+        next_phase = progress.peek_next_phase()
+        next_phase_is_wild_bridge = (
+            next_phase is not None and next_phase.wild_behavior == "bridge"
+        )
+
         return StepAssessment(
             steps_remaining=steps_remaining,
             is_first_step=is_first_step,
@@ -153,6 +162,7 @@ class StepAssessor:
             booster_needs_arming_soon=booster_needs_arming_soon,
             payout_running_low=payout_low,
             payout_running_high=payout_high,
+            next_phase_is_wild_bridge=next_phase_is_wild_bridge,
         )
 
     def _infer_needs_wild_bridge(
