@@ -112,32 +112,74 @@ def _write_debug_report(
 # Board rendering — pure ASCII to avoid encoding issues
 # ---------------------------------------------------------------------------
 
+def _display_name(
+    sym: Symbol,
+    pos: Position,
+    tracker: BoosterTracker | None,
+) -> str:
+    """Resolve display name — enriches boosters with orientation (R → RH/RV).
+
+    Only enriches when the board symbol matches the tracked booster type,
+    preventing stale tracker entries from decorating unrelated symbols.
+    """
+    if tracker is not None:
+        entry = tracker.get_at(pos)
+        if entry is not None and entry.orientation and entry.booster_type is sym:
+            return f"{sym.name}{entry.orientation}"
+    return sym.name
+
+
+# Derived from longest symbol name (e.g. SLB) — controls all grid geometry
+_NAME_WIDTH = max(len(s.name) for s in Symbol)
+
+# Cell decoration: (left_char, right_char) per highlight type
+_CELL_STYLE: dict[str, tuple[str, str]] = {
+    "cluster":   ("*", "*"),
+    "strategic": ("[", "]"),
+    "default":   (" ", " "),
+}
+
+
+def _format_cell(name: str, style: str) -> str:
+    """Format a cell with the given highlight style, derived from _NAME_WIDTH."""
+    left, right = _CELL_STYLE[style]
+    return f"{left}{name:>{_NAME_WIDTH}}{right}"
+
+
 def render_board(
     board: Board,
     cluster_positions: frozenset[Position] | None = None,
     strategic_positions: frozenset[Position] | None = None,
     label: str = "",
+    booster_tracker: BoosterTracker | None = None,
 ) -> str:
-    """Render a 7x7 board as an ASCII grid with highlighted positions.
+    """Render a board as an ASCII grid with highlighted positions.
 
     cluster_positions shown with *asterisks*, strategic with [brackets],
-    empty cells as ' .. '. Standard symbols shown as their name (L1, H2, etc).
+    empty cells as ' .. '. Booster symbols enriched with orientation from
+    the tracker (R → RH/RV) when available.
     """
     cluster_positions = cluster_positions or frozenset()
     strategic_positions = strategic_positions or frozenset()
     num_reels = board.num_reels
     num_rows = board.num_rows
 
+    # Geometry derived from _NAME_WIDTH — single source of truth
+    cell_width = _NAME_WIDTH + 2  # +2 for left/right decoration chars
+    border = "-" * cell_width + "+"
+    empty_cell = _format_cell("..", "default")
+
     lines: list[str] = []
     if label:
         lines.append(f"  {label}")
 
-    # Header row with reel indices
-    header = "     " + "  ".join(f"R{r}" for r in range(num_reels))
+    # Header row with reel indices — spacing derived from cell width
+    gap = " " * (cell_width - 2)
+    header = " " * (cell_width + 1) + gap.join(f"R{r}" for r in range(num_reels))
     lines.append(header)
 
     # Top border
-    lines.append("  +" + "----+" * num_reels)
+    lines.append("  +" + border * num_reels)
 
     for row in range(num_rows):
         cells: list[str] = []
@@ -146,21 +188,25 @@ def render_board(
             sym = board.get(pos)
 
             if sym is None:
-                cell = " .. "
-            elif pos in cluster_positions:
-                cell = f"*{sym.name:>2}*"
-            elif pos in strategic_positions:
-                cell = f"[{sym.name:>2}]"
-            else:
-                cell = f" {sym.name:>2} "
+                cells.append(empty_cell)
+                continue
 
-            cells.append(cell)
+            name = _display_name(sym, pos, booster_tracker)
+
+            # Style lookup — cluster wins over strategic
+            if pos in cluster_positions:
+                style = "cluster"
+            elif pos in strategic_positions:
+                style = "strategic"
+            else:
+                style = "default"
+            cells.append(_format_cell(name, style))
 
         row_str = f"{row} |" + "|".join(cells) + "|"
         lines.append(row_str)
 
         # Row separator or bottom border
-        lines.append("  +" + "----+" * num_reels)
+        lines.append("  +" + border * num_reels)
 
     return "\n".join(lines)
 
@@ -270,7 +316,8 @@ def diagnostic_attempt(
             empty_count = len(board.empty_positions())
             print(f"  Available cells for cluster: {empty_count}")
             # Show the board with empty cells visible
-            print(render_board(board, label=f"Board entering step {step_idx}:"))
+            print(render_board(board, label=f"Board entering step {step_idx}:",
+                              booster_tracker=booster_tracker))
 
         # Board context -- what the reasoner sees
         context = BoardContext.from_board(
@@ -367,6 +414,7 @@ def diagnostic_attempt(
                 cluster_positions=frozenset(intent.constrained_cells.keys()),
                 strategic_positions=frozenset(intent.strategic_cells.keys()),
                 label="Board before WFC (pinned cells shown):",
+                booster_tracker=booster_tracker,
             ))
             return False, f"Step {step_idx} WFC: {exc}", step_idx
 
@@ -376,6 +424,7 @@ def diagnostic_attempt(
         print(render_board(
             filled, cluster_positions=cluster_pos, strategic_positions=strat_pos,
             label=f"Filled board (step {step_idx}):",
+            booster_tracker=booster_tracker,
         ))
 
         # Detect clusters on filled board for diagnostics
@@ -532,7 +581,8 @@ def diagnostic_attempt(
                     progress.boosters_fired.get(fr.booster_type, 0) + 1
                 )
 
-            print(render_board(board, label="Board after booster fire + gravity:"))
+            print(render_board(board, label="Board after booster fire + gravity:",
+                              booster_tracker=booster_tracker))
 
             # Refill empty cells
             standard_names = tuple(config.symbols.standard)

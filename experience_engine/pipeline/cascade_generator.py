@@ -10,6 +10,7 @@ All thresholds from MasterConfig — zero hardcoded values.
 
 from __future__ import annotations
 
+import dataclasses
 import random
 from typing import TYPE_CHECKING
 
@@ -235,11 +236,15 @@ class CascadeInstanceGenerator:
             board = transition_result.board
 
         # Post-terminal booster phase: fire armed boosters, refill, re-cascade
+        post_fire_recs: tuple[BoosterFireRecord, ...] = ()
+        post_fire_grav: GravityRecord | None = None
         if phase_executor is not None and booster_tracker.get_armed():
-            board, raw_steps = self._run_post_terminal_booster_phase(
-                board, booster_tracker, grid_mults, phase_executor,
-                progress, sig, hints, rng,
-                raw_steps, step_results, max_steps,
+            board, raw_steps, post_fire_recs, post_fire_grav = (
+                self._run_post_terminal_booster_phase(
+                    board, booster_tracker, grid_mults, phase_executor,
+                    progress, sig, hints, rng,
+                    raw_steps, step_results, max_steps,
+                )
             )
 
         # Phase 2: Build CascadeStepRecords with actual refill symbols.
@@ -269,6 +274,17 @@ class CascadeInstanceGenerator:
                 booster_fire_records=fire_recs,
                 booster_gravity_record=booster_grav,
             ))
+
+        # Merge post-terminal booster fire records into the last step record.
+        # These fires happen after the terminal dead board, so they attach to
+        # the terminal step — the step that caused the cascade to end.
+        if post_fire_recs and cascade_step_records:
+            last_rec = cascade_step_records[-1]
+            cascade_step_records[-1] = dataclasses.replace(
+                last_rec,
+                booster_fire_records=last_rec.booster_fire_records + post_fire_recs,
+                booster_gravity_record=post_fire_grav or last_rec.booster_gravity_record,
+            )
 
         # FINAL VALIDATION: check full instance against archetype constraints
         # Use the last filled board (terminal step) as final_board
@@ -308,7 +324,7 @@ class CascadeInstanceGenerator:
         raw_steps: list[tuple],
         step_results: list[StepResult],
         max_steps: int,
-    ) -> tuple[Board, list[tuple]]:
+    ) -> tuple[Board, list[tuple], tuple[BoosterFireRecord, ...], GravityRecord | None]:
         """Fire armed boosters post-terminal, refill, re-cascade if clusters emerge.
 
         Loop:
@@ -320,9 +336,15 @@ class CascadeInstanceGenerator:
 
         Shares the max_steps ceiling with the cascade loop to prevent runaway loops
         where boosters keep creating clusters that arm more boosters.
+
+        Returns fire records separately so they can be merged into the last
+        CascadeStepRecord after Phase 2 building — avoids dependency on
+        transition_data which is None for terminal steps.
         """
         standard_symbol_names = tuple(self._config.symbols.standard)
         steps_used = len(raw_steps)
+        all_fire_records: list[BoosterFireRecord] = []
+        all_booster_grav: GravityRecord | None = None
 
         while booster_tracker.get_armed() and steps_used < max_steps:
             # 1. Fire armed boosters → clear affected → gravity settle
@@ -337,18 +359,9 @@ class CascadeInstanceGenerator:
                     progress.boosters_fired.get(fire_rec.booster_type, 0) + 1
                 )
 
-            # Attach fire records to the last raw_step's transition data
-            # so they appear in the CascadeStepRecord for event stream replay
-            if raw_steps:
-                last_sr, last_bb, last_ba, last_gm, last_td = raw_steps[-1]
-                if last_td is not None:
-                    gr_base, empty_positions, spawns, _, _ = last_td
-                    raw_steps[-1] = (
-                        last_sr, last_bb, last_ba, last_gm,
-                        (gr_base, empty_positions, spawns,
-                         fire_result.booster_fire_records,
-                         fire_result.booster_gravity_record),
-                    )
+            # Accumulate fire records for caller to merge into CascadeStepRecord
+            all_fire_records.extend(fire_result.booster_fire_records)
+            all_booster_grav = fire_result.booster_gravity_record
 
             # 2. Refill empty cells with random standard symbols
             for reel in range(self._config.board.num_reels):
@@ -428,7 +441,7 @@ class CascadeInstanceGenerator:
 
             # After re-cascade, check if new armed boosters appeared — while loop continues
 
-        return board, raw_steps
+        return board, raw_steps, tuple(all_fire_records), all_booster_grav
 
     # ------------------------------------------------------------------
     # Step record builder

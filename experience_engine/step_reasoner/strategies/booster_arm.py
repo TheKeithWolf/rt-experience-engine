@@ -78,10 +78,19 @@ class BoosterArmStrategy:
         # Boundary analysis for merge-aware placement
         boundary = self._cluster_builder.analyze_boundary(context)
 
-        # Select cluster parameters with merge awareness — clamp to available space
+        # Clamp size to available space and spawn-safe ceiling so the arm
+        # cluster doesn't trigger an unbudgeted booster spawn
+        step_sizes = progress.current_step_size_ranges()
+        size_range = step_sizes[0] if step_sizes else None
+        max_size = len(context.empty_cells)
+        spawn_ceiling = self._cluster_builder.spawn_safe_ceiling(progress)
+        if spawn_ceiling is not None:
+            max_size = min(max_size, spawn_ceiling)
+
         cluster_size = self._cluster_builder.select_size(
             progress, signature, variance, self._rng,
-            max_available=len(context.empty_cells),
+            size_range=size_range,
+            max_available=max_size,
         )
         cluster_symbol = self._cluster_builder.select_symbol(
             progress, signature, variance, self._rng,

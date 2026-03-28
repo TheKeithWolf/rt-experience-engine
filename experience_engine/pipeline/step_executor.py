@@ -96,8 +96,10 @@ class StepExecutor:
             strategic = dict(list(strategic.items())[:max_strategic])
 
         for pos, sym in strategic.items():
-            # Constrained cells are cluster cores — strategic seeds must not overwrite them
-            if pos in pinned:
+            # Strategic seeds model post-explosion board state but execute on the
+            # pre-explosion board — skip pinned cells and positions that already hold
+            # symbols (wilds, boosters) to prevent overwriting them (BP-EXEC-GUARD)
+            if pos in pinned or filled.get(pos) is not None:
                 continue
             filled.set(pos, sym)
             pinned.add(pos)

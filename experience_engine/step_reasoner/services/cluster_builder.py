@@ -151,6 +151,20 @@ class ClusterBuilder:
         ]
         return rng.choices(candidates, weights=weights, k=1)[0]
 
+    def spawn_safe_ceiling(self, progress: ProgressTracker) -> int | None:
+        """Largest cluster size that won't trigger an overbudget spawn.
+
+        Returns None if all spawn types are within budget (no cap needed).
+        Complements the per-size check in _is_valid_merge (line 526-528) by
+        providing an upper bound strategies can pass as max_available.
+        """
+        ceiling: int | None = None
+        for threshold in self._spawn_eval.all_thresholds():
+            if not progress.can_still_spawn(threshold.booster):
+                candidate = threshold.min_size - 1
+                ceiling = min(ceiling, candidate) if ceiling is not None else candidate
+        return ceiling
+
     # -- Symbol selection ---------------------------------------------------
 
     def select_symbol(
