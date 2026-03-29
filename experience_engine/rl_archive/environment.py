@@ -255,6 +255,7 @@ class CascadeEnvironment:
                     (s.booster_type, s.position.reel, s.position.row, s.orientation)
                     for s in step_result.spawns
                 ),
+                booster_arm_types=(),
                 booster_fire_records=(),
                 gravity_record=None,
                 booster_gravity_record=None,

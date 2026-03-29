@@ -7,17 +7,18 @@ and output writing.
 
 from __future__ import annotations
 
+import dataclasses
 import random
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from ..primitives.board import Board, Position
 from ..primitives.symbols import Symbol
 from ..spatial_solver.data_types import ClusterAssignment, SpatialStep
 
 if TYPE_CHECKING:
-    from ..step_reasoner.results import SpawnRecord
+    from ..step_reasoner.results import SpawnRecord, StepResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +88,9 @@ class CascadeStepRecord:
     # Populated from TransitionResult.spawns (post-collision-resolution).
     # Parallel to booster_spawn_types; carries position + orientation data event_stream needs.
     booster_spawn_positions: tuple[tuple[str, int, int, str | None], ...] = ()
+    # Booster types armed at this step (e.g., ("R",)) — populated from
+    # BoosterTracker.arm_adjacent() results during transition.
+    booster_arm_types: tuple[str, ...] = ()
     # Booster fires that occurred during this step's booster phase
     booster_fire_records: tuple[BoosterFireRecord, ...] = ()
     # Gravity settle that preceded this step — None for step 0 (initial board)
@@ -157,6 +161,67 @@ class TransitionResult:
     booster_fire_records: tuple[BoosterFireRecord, ...] = ()
     # Post-booster gravity settle — None if no boosters fired
     booster_gravity_record: GravityRecord | None = None
+    # Booster types armed during this transition (DORMANT -> ARMED)
+    booster_arm_types: tuple[str, ...] = ()
+
+
+class TransitionData(NamedTuple):
+    """Structured container for per-step transition data in the cascade loop.
+
+    Replaces a positional tuple that is packed in 3 locations and unpacked in 2
+    across cascade_generator.py and debug_archetype.py.  Named fields prevent
+    silent positional misalignment when fields are added.
+    """
+
+    gravity_record: GravityRecord
+    empty_positions: tuple                          # from board.empty_positions()
+    spawns: tuple[SpawnRecord, ...]
+    fire_records: tuple[BoosterFireRecord, ...]
+    booster_gravity_record: GravityRecord | None
+    arm_types: tuple[str, ...] = ()
+
+
+class CascadeStepOutcome(NamedTuple):
+    """Result of a single reason→execute→validate→advance→transition cycle.
+
+    Returned by CascadeInstanceGenerator._execute_cascade_step() so the
+    main cascade loop and post-terminal re-cascade loop share a single
+    implementation. Callers handle appending to step_results/raw_steps
+    and breaking on terminal.
+    """
+
+    step_result: StepResult
+    board_before: Board
+    filled: Board
+    transition_data: TransitionData | None
+    is_terminal: bool
+    # transition_result.board when non-terminal; filled when terminal
+    next_board: Board
+
+
+def merge_post_terminal_fires(
+    records: list[CascadeStepRecord],
+    fire_recs: tuple[BoosterFireRecord, ...],
+    gravity_rec: GravityRecord | None,
+) -> list[CascadeStepRecord]:
+    """Merge post-terminal booster fire records into the last step record.
+
+    Post-terminal fires happen after the cascade dies but before final
+    validation.  They attach to the terminal step because that step caused
+    the cascade to end.
+
+    Returns the records list (mutated in place for efficiency).
+    """
+    if not fire_recs or not records:
+        return records
+
+    last = records[-1]
+    records[-1] = dataclasses.replace(
+        last,
+        booster_fire_records=last.booster_fire_records + fire_recs,
+        booster_gravity_record=gravity_rec or last.booster_gravity_record,
+    )
+    return records
 
 
 # ---------------------------------------------------------------------------

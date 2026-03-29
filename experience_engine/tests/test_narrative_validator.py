@@ -92,6 +92,7 @@ class _FakeStepRecord:
     clusters: tuple[ClusterAssignment, ...] = ()
     step_payout: float = 0.0
     booster_spawn_types: tuple[str, ...] = ()
+    booster_arm_types: tuple[str, ...] = ()
     booster_fire_records: tuple[_FakeFireRecord, ...] = ()
     # Fields the validator doesn't inspect but CascadeStepRecord has
     board_before: object = None
@@ -107,6 +108,7 @@ def _step(
     clusters: tuple[ClusterAssignment, ...] = (),
     step_payout: float = 1.0,
     spawn_types: tuple[str, ...] = (),
+    arm_types: tuple[str, ...] = (),
     fires: tuple[_FakeFireRecord, ...] = (),
 ) -> _FakeStepRecord:
     return _FakeStepRecord(
@@ -114,6 +116,7 @@ def _step(
         clusters=clusters,
         step_payout=step_payout,
         booster_spawn_types=spawn_types,
+        booster_arm_types=arm_types,
         booster_fire_records=fires,
     )
 
@@ -463,3 +466,63 @@ class TestNRA038:
         """Every key used by test arcs must exist in ALLOWED_TRANSITION_KEYS."""
         used_keys = {"always", "no_clusters", "no_bridges", "booster_fired"}
         assert used_keys.issubset(ALLOWED_TRANSITION_KEYS)
+
+
+# ---------------------------------------------------------------------------
+# NRA-039: Phase arm check — step with matching booster_arm_types passes
+# ---------------------------------------------------------------------------
+
+class TestNRA039:
+    def test_arm_passes(self, validator: NarrativeArcValidator):
+        arc = _arc(
+            _phase(id="p", arms=("R",)),
+            payout=RangeFloat(0.0, 100.0),
+        )
+        steps = (_step(
+            clusters=(_cluster(),),
+            step_payout=1.0,
+            arm_types=("R",),
+        ),)
+        derived = derive_constraints(arc)
+        errors = validator.validate(steps, arc, derived)
+        assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# NRA-040: Phase arm check — step missing required arm type fails
+# ---------------------------------------------------------------------------
+
+class TestNRA040:
+    def test_missing_arm_fails(self, validator: NarrativeArcValidator):
+        arc = _arc(
+            _phase(id="p", arms=("R",)),
+            payout=RangeFloat(0.0, 100.0),
+        )
+        steps = (_step(clusters=(_cluster(),), step_payout=1.0, arm_types=()),)
+        derived = derive_constraints(arc)
+        errors = validator.validate(steps, arc, derived)
+        assert len(errors) > 0
+
+
+# ---------------------------------------------------------------------------
+# NRA-041: Phase arm check uses booster_arm_types, not booster_spawn_types
+# (regression — old code checked spawn_types as proxy for arms)
+# ---------------------------------------------------------------------------
+
+class TestNRA041:
+    def test_arm_independent_of_spawn(self, validator: NarrativeArcValidator):
+        """Phase requiring arm=("R",) passes with arm_types set, even without spawns."""
+        arc = _arc(
+            _phase(id="p", arms=("R",)),
+            payout=RangeFloat(0.0, 100.0),
+        )
+        # arm_types populated but spawn_types empty — old code would fail here
+        steps = (_step(
+            clusters=(_cluster(),),
+            step_payout=1.0,
+            spawn_types=(),
+            arm_types=("R",),
+        ),)
+        derived = derive_constraints(arc)
+        errors = validator.validate(steps, arc, derived)
+        assert errors == []

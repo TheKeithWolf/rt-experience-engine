@@ -472,8 +472,8 @@ def test_wild_enable_rocket_cascade_steps(full_registry: ArchetypeRegistry) -> N
     """wild_enable_rocket has 3 arc phases and fires 1 rocket."""
     sig = full_registry.get("wild_enable_rocket")
 
-    # Cascade depth requires min 3 for the full W→R→fire arc
-    assert sig.required_cascade_depth == Range(3, 4)
+    # Cascade depth = 3: spawn_wild + bridge_rocket + arm_rocket (fire_rocket is terminal)
+    assert sig.required_cascade_depth == Range(3, 3)
 
     # Rocket must fire — derived from arc phase fires=("R",)
     assert sig.required_booster_fires == {"R": Range(1, 1)}
@@ -557,7 +557,7 @@ def test_wb_041_no_double_wild_spawn(tmp_path) -> None:
             events = book.get("events", [])
             wild_spawns = sum(
                 1 for e in events
-                if e.get("type") == "boosterSpawn" and e.get("boosterType") == "W"
+                if e.get("type") == "wildSpawn"
             )
             # Each bridge arc should spawn at most 1 wild
             assert wild_spawns <= 1, (
@@ -610,7 +610,7 @@ def test_wb_043_wild_enable_rocket_spawns_r(tmp_path) -> None:
             # Bridge phase should produce R spawns
             r_spawns = sum(
                 1 for e in events
-                if e.get("type") == "boosterSpawn" and e.get("boosterType") == "R"
+                if e.get("type") == "rocketSpawn"
             )
             # Every successful wild_enable_rocket should have at least 1 R spawn
             assert r_spawns >= 1, (

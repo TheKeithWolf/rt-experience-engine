@@ -154,6 +154,8 @@ def test_transition_and_arm_arms_rocket(
     # Rocket should be ARMED but NOT fired — fires are deferred to post-terminal phase
     assert result.booster_fire_records == ()
     assert result.booster_gravity_record is None
+    # Arm types recorded on the TransitionResult for downstream step records
+    assert result.booster_arm_types == ("R",)
 
     # Verify the rocket is armed in the tracker
     from ..boosters.state_machine import BoosterState

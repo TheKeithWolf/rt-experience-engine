@@ -188,7 +188,7 @@ class StepTransitionSimulator:
             for sr in spawn_records
             if sr.booster_type != Symbol.W.name
         )
-        booster_tracker.arm_adjacent(
+        armed_instances = booster_tracker.arm_adjacent(
             frozenset(all_cluster_positions),
             exclude_positions=freshly_spawned_positions,
         )
@@ -198,6 +198,7 @@ class StepTransitionSimulator:
             board=result_board,
             spawns=tuple(spawn_records),
             gravity_record=gravity_record,
+            booster_arm_types=tuple(b.booster_type.name for b in armed_instances),
         )
 
     # ------------------------------------------------------------------

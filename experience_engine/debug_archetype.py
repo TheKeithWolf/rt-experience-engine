@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+
 import io
 import os
 import random
@@ -25,14 +26,19 @@ from .board_filler.wfc_solver import FillFailed
 from .boosters.tracker import BoosterTracker
 from .config.loader import load_config
 from .pipeline.cascade_generator import CascadeInstanceGenerator
-from .pipeline.data_types import GeneratedInstance
-from .pipeline.step_validator import StepValidationFailed, StepValidator
-from .pipeline.step_executor import StepExecutor
-from .pipeline.simulator import StepTransitionSimulator
+from .pipeline.data_types import (
+    BoosterFireRecord,
+    CascadeStepRecord,
+    GeneratedInstance,
+    GravityRecord,
+    TransitionData,
+    merge_post_terminal_fires,
+)
+from .pipeline.step_validator import StepValidationFailed
 from .primitives.board import Board, Position
 from .primitives.cluster_detection import detect_clusters
 from .primitives.grid_multipliers import GridMultiplierGrid
-from .primitives.symbols import Symbol, SymbolTier, symbol_from_name, tier_of
+from .primitives.symbols import Symbol, tier_of
 from .step_reasoner.context import BoardContext
 from .step_reasoner.progress import ProgressTracker
 from .step_reasoner.results import StepResult
@@ -262,10 +268,10 @@ def diagnostic_attempt(
     gen: CascadeInstanceGenerator,
     registry: ArchetypeRegistry,
     attempt_num: int,
-) -> tuple[bool, str, int]:
+) -> tuple[bool, str, int, GeneratedInstance | None]:
     """Run one generation attempt with step-by-step diagnostic output.
 
-    Returns (success, failure_reason, step_failed_at).
+    Returns (success, failure_reason, step_failed_at, instance).
     """
     config = gen._config
     board = Board.empty(config.board)
@@ -281,8 +287,10 @@ def diagnostic_attempt(
     )
 
     step_results: list[StepResult] = []
-    # Track board snapshots per step for building CascadeStepRecords
-    step_boards: list[tuple[Board, Board]] = []
+    # Collect the same raw_steps tuples as cascade_generator.py Phase 1.
+    # Each entry: (step_result, board_before, filled, grid_mults, transition_data)
+    # transition_data: (gravity_record, empty_positions, spawns, fire_recs, booster_grav) | None
+    raw_steps: list[tuple] = []
     max_steps = sig.required_cascade_depth.max_val + 1
 
     print(f"\n{'='*70}")
@@ -353,7 +361,7 @@ def diagnostic_attempt(
             intent = gen._reasoner.reason(context, progress, sig, hints)
         except (ValueError, FillFailed) as exc:
             print(f"\n  >> FAIL at reasoning: {exc}")
-            return False, f"Step {step_idx} reasoning: {exc}", step_idx
+            return False, f"Step {step_idx} reasoning: {exc}", step_idx, None
 
         print(f"\n  Intent:")
         print(f"    step_type: {intent.step_type.value}")
@@ -416,7 +424,7 @@ def diagnostic_attempt(
                 label="Board before WFC (pinned cells shown):",
                 booster_tracker=booster_tracker,
             ))
-            return False, f"Step {step_idx} WFC: {exc}", step_idx
+            return False, f"Step {step_idx} WFC: {exc}", step_idx, None
 
         # Show the filled board
         cluster_pos = frozenset(intent.constrained_cells.keys())
@@ -454,7 +462,7 @@ def diagnostic_attempt(
             )
         except StepValidationFailed as exc:
             print(f"\n  >> FAIL at step validation: {exc}")
-            return False, f"Step {step_idx} validation: {exc}", step_idx
+            return False, f"Step {step_idx} validation: {exc}", step_idx, None
 
         # Show validation result
         payout_this_step = step_result.step_payout / config.centipayout.multiplier
@@ -467,8 +475,9 @@ def diagnostic_attempt(
         print(f"    spawns: {[s.booster_type for s in step_result.spawns]}")
 
         step_results.append(step_result)
-        step_boards.append((board_before, filled))
         progress.update(step_result)
+        # Pre-transition wild sync — matches cascade_generator.py
+        progress.sync_active_wilds(filled, config.board)
 
         # Phase advancement — pre-transition context from filled board
         fill_context = BoardContext.from_board(
@@ -504,6 +513,7 @@ def diagnostic_attempt(
             print(f"    is_satisfied: (exceeded bounds)")
 
         # Transition to next step (unless terminal)
+        transition_data = None
         if not intent.is_terminal:
             try:
                 # Route to booster-aware transition when the archetype fires boosters
@@ -518,7 +528,17 @@ def diagnostic_attempt(
                     )
             except Exception as exc:
                 print(f"\n  >> FAIL at transition: {exc}")
-                return False, f"Step {step_idx} transition: {exc}", step_idx
+                return False, f"Step {step_idx} transition: {exc}", step_idx, None
+
+            # Collect transition data identically to cascade_generator.py Phase 1
+            transition_data = TransitionData(
+                gravity_record=transition_result.gravity_record,
+                empty_positions=transition_result.board.empty_positions(),
+                spawns=transition_result.spawns,
+                fire_records=transition_result.booster_fire_records,
+                booster_gravity_record=transition_result.booster_gravity_record,
+                arm_types=transition_result.booster_arm_types,
+            )
 
             board = transition_result.board
             # Board is truth — sync wild positions after gravity + consumption
@@ -548,57 +568,42 @@ def diagnostic_attempt(
             print(render_booster_tracker_state(booster_tracker, fresh_positions))
 
             print(render_empty_cells(board))
-        else:
+
+        # Append unconditionally — terminal steps have transition_data=None
+        raw_steps.append((step_result, board_before, filled, grid_mults, transition_data))
+
+        if intent.is_terminal:
             print(f"\n  Terminal step -- cascade ends here")
             break
 
-    # Post-terminal booster phase — fire armed boosters after cascade exhaustion
+    # Post-terminal booster phase — delegate to real pipeline (DRY).
+    # Diagnostic output uses the returned fire records.
+    post_fire_recs: tuple[BoosterFireRecord, ...] = ()
+    post_fire_grav: GravityRecord | None = None
+
     if phase_executor is not None and booster_tracker.get_armed():
         print(f"\n  {'='*60}")
         print(f"  POST-TERMINAL BOOSTER PHASE")
         print(f"  {'='*60}")
 
-        booster_cycle = 0
-        while booster_tracker.get_armed():
-            booster_cycle += 1
-            armed = booster_tracker.get_armed()
-            print(f"\n  Booster fire cycle {booster_cycle} ({len(armed)} armed boosters):")
-
-            fire_result = gen._simulator.execute_terminal_booster_phase(
+        board, raw_steps, post_fire_recs, post_fire_grav = (
+            gen._run_post_terminal_booster_phase(
                 board, booster_tracker, grid_mults, phase_executor,
+                progress, sig, hints, rng,
+                raw_steps, step_results, max_steps,
             )
-            board = fire_result.board
+        )
 
-            for fr in fire_result.booster_fire_records:
-                orient = f" orientation={fr.orientation}" if fr.orientation else ""
-                print(f"    FIRE: {fr.booster_type} at ({fr.position_reel},{fr.position_row}){orient}")
-                print(f"      Cleared: {fr.affected_count} cells, chains: {fr.chain_target_count}")
-                if fr.target_symbols:
-                    print(f"      Targets: {fr.target_symbols}")
+        # Diagnostic display of fire records
+        for fr in post_fire_recs:
+            orient = f" orientation={fr.orientation}" if fr.orientation else ""
+            print(f"    FIRE: {fr.booster_type} at ({fr.position_reel},{fr.position_row}){orient}")
+            print(f"      Cleared: {fr.affected_count} cells, chains: {fr.chain_target_count}")
+            if fr.target_symbols:
+                print(f"      Targets: {fr.target_symbols}")
 
-                # Track fires in progress for validation
-                progress.boosters_fired[fr.booster_type] = (
-                    progress.boosters_fired.get(fr.booster_type, 0) + 1
-                )
-
-            print(render_board(board, label="Board after booster fire + gravity:",
-                              booster_tracker=booster_tracker))
-
-            # Refill empty cells
-            standard_names = tuple(config.symbols.standard)
-            for reel in range(config.board.num_reels):
-                for row in range(config.board.num_rows):
-                    pos = Position(reel, row)
-                    if board.get(pos) is None:
-                        board.set(pos, symbol_from_name(rng.choice(standard_names)))
-
-            # Detect clusters on refilled board
-            clusters = detect_clusters(board, config)
-            if clusters:
-                print(f"\n  Refill produced {len(clusters)} cluster(s) — would re-cascade")
-            else:
-                print(f"\n  Refill produced no clusters — board is truly terminal")
-            break  # Debug runner shows one cycle; real pipeline loops
+        print(render_board(board, label="Board after post-terminal booster phase:",
+                          booster_tracker=booster_tracker))
 
     # Instance-level validation — uses the same InstanceValidator as the real
     # pipeline (run.py → PopulationController) so SUCCESS here guarantees the
@@ -607,11 +612,41 @@ def diagnostic_attempt(
     print(f"  INSTANCE VALIDATION (full — matches batch pipeline)")
     print(f"  {'-'*60}")
 
-    # Reuse CascadeInstanceGenerator._build_step_record() (DRY — cascade_generator.py:237)
-    cascade_step_records = tuple(
-        gen._build_step_record(sr, bb, ba, grid_mults)
-        for sr, (bb, ba) in zip(step_results, step_boards)
-    )
+    # Phase 2: Build CascadeStepRecords with actual refill symbols.
+    # Identical to cascade_generator.py — Step N's gravity refill reads from
+    # step N+1's filled board.
+    cascade_step_records: list[CascadeStepRecord] = []
+    for i, (sr, bb, ba, gm, td) in enumerate(raw_steps):
+        gravity_record = None
+        spawns = ()
+        fire_recs: tuple[BoosterFireRecord, ...] = ()
+        booster_grav: GravityRecord | None = None
+        arm_types: tuple[str, ...] = ()
+        if td is not None:
+            gr_base, empty_positions, spawns, fire_recs, booster_grav, arm_types = td
+            next_filled = raw_steps[i + 1][2]
+            refill_entries = tuple(
+                (pos.reel, pos.row, next_filled.get(pos).name)
+                for pos in empty_positions
+            )
+            gravity_record = GravityRecord(
+                exploded_positions=gr_base.exploded_positions,
+                move_steps=gr_base.move_steps,
+                refill_entries=refill_entries,
+            )
+        cascade_step_records.append(gen._build_step_record(
+            sr, bb, ba, gm,
+            gravity_record=gravity_record,
+            transition_spawns=spawns,
+            booster_fire_records=fire_recs,
+            booster_gravity_record=booster_grav,
+            booster_arm_types=arm_types,
+        ))
+
+    # Merge post-terminal booster fire records into the last step record.
+    # These fires happen after the terminal dead board, so they attach to
+    # the terminal step — matches cascade_generator.py.
+    merge_post_terminal_fires(cascade_step_records, post_fire_recs, post_fire_grav)
 
     total_centipayout = progress.cumulative_payout
     total_payout = total_centipayout / config.centipayout.multiplier
@@ -628,7 +663,7 @@ def diagnostic_attempt(
         payout=total_payout,
         centipayout=total_centipayout,
         win_level=0,
-        cascade_steps=cascade_step_records,
+        cascade_steps=tuple(cascade_step_records),
     )
 
     # Full validation — identical checks to InstanceValidator.validate() in the batch pipeline
@@ -648,11 +683,11 @@ def diagnostic_attempt(
 
     if metrics.is_valid:
         print(f"\n  ** SUCCESS -- valid {sig.id} instance! **")
-        return True, "", -1
+        return True, "", -1, instance
 
     for err in metrics.validation_errors:
         print(f"  >> FAIL: {err}")
-    return False, "; ".join(metrics.validation_errors), -1
+    return False, "; ".join(metrics.validation_errors), -1, None
 
 
 # ---------------------------------------------------------------------------
@@ -803,7 +838,7 @@ def _run_diagnostic_inner(
         instance_rng = random.Random(seed + attempt * 10000)
 
         try:
-            success, reason, step = diagnostic_attempt(
+            success, reason, step, _instance = diagnostic_attempt(
                 sig, sim_id=0, hints=hints, rng=instance_rng,
                 gen=cascade_gen, registry=registry, attempt_num=attempt,
             )

@@ -200,15 +200,11 @@ class NarrativeArcValidator:
                 if required not in step_spawn_set:
                     return False
 
-        # Arm check — step must include arm events for required types
+        # Arm check — uses dedicated arm tracking field
         if phase.arms is not None:
-            # Arms are tracked as spawns that transition to armed state;
-            # in the step record, armed boosters appear in booster_fire_records
-            # with chain_triggered=False, or in spawn_types if arming == spawning.
-            # For now, arm matching checks spawn types (arming produces a dormant booster).
-            step_spawn_set = set(step_rec.booster_spawn_types)
+            step_arm_set = set(step_rec.booster_arm_types)
             for required in phase.arms:
-                if required not in step_spawn_set:
+                if required not in step_arm_set:
                     return False
 
         # Fire check — step must include fire events for required types
