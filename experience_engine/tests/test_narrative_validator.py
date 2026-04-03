@@ -82,7 +82,7 @@ class _FakeFireRecord:
     affected_count: int = 7
     chain_target_count: int = 0
     target_symbols: tuple[str, ...] = ()
-    affected_positions_list: tuple[tuple[int, int], ...] = ()
+    affected_positions_list: tuple[tuple[int, int, str], ...] = ()
 
 
 @dataclass(frozen=True)

@@ -20,8 +20,9 @@ from typing import TextIO
 from ..config.schema import MasterConfig
 from ..output.book_record import BookRecord
 from ..output.event_types import (
-    BOOSTER_PHASE,
-    EVENT_TYPE_TO_SPAWN_SYMBOL,
+    BOOSTER_ARM_INFO,
+    BOOSTER_FIRE_INFO,
+    BOOSTER_SPAWN_INFO,
     FINAL_WIN,
     FREE_SPIN_END,
     FREE_SPIN_TRIGGER,
@@ -29,17 +30,11 @@ from ..output.event_types import (
     REVEAL,
     SET_TOTAL_WIN,
     SET_WIN,
-    SPAWN_EVENT_TYPE,
+    UPDATE_BOARD_MULTIPLIERS,
     UPDATE_FREE_SPIN,
-    UPDATE_GRID,
     UPDATE_TUMBLE_WIN,
     WINCAP,
     WIN_INFO,
-    WILD_SPAWN,
-    ROCKET_SPAWN,
-    BOMB_SPAWN,
-    LIGHTBALL_SPAWN,
-    SUPERLIGHTBALL_SPAWN,
 )
 
 # Width of each cell in the board display — 4 chars for symbol name
@@ -60,25 +55,22 @@ class EventTracer:
     def __init__(self, config: MasterConfig) -> None:
         self._config = config
         self._lines: list[str] = []
-        # Mutable board/grid state — cached from REVEAL/UPDATE_GRID for downstream renderers
+        # Mutable board/grid state — cached from REVEAL for downstream renderers
         self._board_state: list[list[dict]] = []
         self._grid_state: list[list[int]] = []
         # Dict dispatch: event type → render method (py-developer pattern)
         self._renderers: dict[str, Callable[[dict], None]] = {
             REVEAL: self._render_reveal,
-            UPDATE_GRID: self._render_update_grid,
             WIN_INFO: self._render_win_info,
             UPDATE_TUMBLE_WIN: self._render_update_tumble_win,
+            UPDATE_BOARD_MULTIPLIERS: self._render_update_board_multipliers,
             SET_WIN: self._render_set_win,
             SET_TOTAL_WIN: self._render_set_total_win,
             FINAL_WIN: self._render_final_win,
-            WILD_SPAWN: self._render_spawn,
-            ROCKET_SPAWN: self._render_spawn,
-            BOMB_SPAWN: self._render_spawn,
-            LIGHTBALL_SPAWN: self._render_spawn,
-            SUPERLIGHTBALL_SPAWN: self._render_spawn,
+            BOOSTER_SPAWN_INFO: self._render_booster_spawn_info,
+            BOOSTER_ARM_INFO: self._render_booster_arm_info,
+            BOOSTER_FIRE_INFO: self._render_booster_fire_info,
             GRAVITY_SETTLE: self._render_gravity_settle,
-            BOOSTER_PHASE: self._render_booster_phase,
             FREE_SPIN_TRIGGER: self._render_free_spin_trigger,
             UPDATE_FREE_SPIN: self._render_update_free_spin,
             FREE_SPIN_END: self._render_free_spin_end,
@@ -130,10 +122,9 @@ class EventTracer:
     # ------------------------------------------------------------------
 
     def _render_reveal(self, event: dict) -> None:
-        """Render initial board display."""
+        """Render initial board display. Initializes grid state from boardMultipliers."""
         idx = event.get("index", "?")
         game_type = event.get("gameType", "basegame")
-        anticipation = event.get("anticipation", [])
 
         self._lines.append(f"--- REVEAL [{idx}] ({game_type}) ---")
         board_grid = event.get("board", [])
@@ -141,28 +132,32 @@ class EventTracer:
         self._board_state = copy.deepcopy(board_grid)
         self._lines.extend(self._format_board(board_grid))
 
-        if any(a > 0 for a in anticipation):
-            self._lines.append(f"  anticipation: {anticipation}")
+        # Initialize grid state from reveal's boardMultipliers
+        board_mults = event.get("boardMultipliers", [])
+        if board_mults:
+            self._grid_state = copy.deepcopy(board_mults)
+
         self._lines.append("")
 
-    def _render_update_grid(self, event: dict) -> None:
-        """Render grid multiplier state."""
+    def _render_update_board_multipliers(self, event: dict) -> None:
+        """Render sparse board multiplier delta. Applies changes to cached grid state."""
         idx = event.get("index", "?")
-        grid = event.get("gridMultipliers", [])
-        # Cache grid — WIN_INFO reads this for side-by-side touched-vs-prior rendering
-        self._grid_state = copy.deepcopy(grid)
+        changes = event.get("boardMultipliers", [])
 
-        # Skip rendering if all zeros (less noise)
-        all_zero = all(
-            val == 0
-            for reel_vals in grid
-            for val in reel_vals
-        )
-        if all_zero:
+        if not changes:
             return
 
-        self._lines.append(f"--- GRID MULTIPLIERS [{idx}] ---")
-        self._lines.extend(self._format_grid_mults(grid))
+        # Apply sparse delta to cached grid state
+        for entry in changes:
+            mult = entry.get("multiplier", 0)
+            pos = entry.get("position", {})
+            reel = pos.get("reel", 0)
+            row = pos.get("row", 0)
+            if reel < len(self._grid_state) and row < len(self._grid_state[reel]):
+                self._grid_state[reel][row] = mult
+
+        self._lines.append(f"--- BOARD MULTIPLIERS [{idx}] ({len(changes)} changed) ---")
+        self._lines.extend(self._format_grid_mults(self._grid_state))
         self._lines.append("")
 
     def _render_win_info(self, event: dict) -> None:
@@ -173,35 +168,32 @@ class EventTracer:
 
         self._lines.append(f"--- WIN INFO [{idx}] | totalWin: {total_win} ---")
         for i, win in enumerate(wins):
-            symbol = win.get("symbol", "?")
             size = win.get("clusterSize", 0)
-            payout = win.get("win", 0)
-            meta = win.get("meta", {})
-            cluster_mult = meta.get("clusterMult", 1)
-            base_payout = meta.get("winWithoutMult", 0)
-            overlay = meta.get("overlay", {})
-            wild_positions = meta.get("wildPositions", [])
+            base_payout = win.get("basePayout", 0)
+            cluster_payout = win.get("clusterPayout", 0)
+            cluster_mult = win.get("clusterMultiplier", 1)
+            overlay = win.get("overlay", {})
+
+            # Derive symbol from first cell in cluster
+            cluster_data = win.get("cluster", {})
+            cells = cluster_data.get("cells", [])
+            symbol = cells[0].get("symbol", "?") if cells else "?"
 
             self._lines.append(
                 f"  cluster {i}: {symbol} x{size} "
-                f"= {base_payout} * {cluster_mult} = {payout}"
+                f"= {base_payout} * {cluster_mult} = {cluster_payout}"
             )
             self._lines.append(
                 f"    overlay: ({overlay.get('reel', '?')}, {overlay.get('row', '?')})"
             )
-            if wild_positions:
-                wild_str = ", ".join(
-                    f"({wp.get('reel', '?')},{wp.get('row', '?')})"
-                    for wp in wild_positions
-                )
-                self._lines.append(f"    wilds: {wild_str}")
 
-        # Side-by-side board + grid view (spec section 4)
-        # Collect ALL winner positions across all clusters for the combined view
+        # Side-by-side board + grid view
+        # Collect ALL winner positions from cluster cells
         all_winners: set[tuple[int, int]] = set()
         for win in wins:
-            for p in win.get("positions", []):
-                all_winners.add((p["reel"], p["row"]))
+            cluster_data = win.get("cluster", {})
+            for cell in cluster_data.get("cells", []):
+                all_winners.add((cell.get("reel", 0), cell.get("row", 0)))
 
         if self._board_state and all_winners:
             board_lines = self._format_board(self._board_state, winners=all_winners)
@@ -226,52 +218,63 @@ class EventTracer:
         amount = event.get("amount", 0)
         self._lines.append(f"  TUMBLE WIN [{idx}]: {amount}")
 
-    def _render_spawn(self, event: dict) -> None:
-        """Render booster spawn event."""
+    def _render_booster_spawn_info(self, event: dict) -> None:
+        """Render booster spawn event — single event with all spawned boosters."""
         idx = event.get("index", "?")
-        event_type = event.get("type", "?")
-        positions = event.get("positions", [])
-        clusters = event.get("clusters", [])
+        boosters = event.get("boosters", [])
 
-        self._lines.append(f"--- {event_type.upper()} [{idx}] ---")
-        for pos in positions:
-            orient = pos.get("orientation", "")
-            orient_str = f" ({orient})" if orient else ""
+        self._lines.append(f"--- BOOSTER SPAWN [{idx}] ---")
+        for b in boosters:
+            symbol = b.get("symbol", "?")
+            pos = b.get("position", {})
             self._lines.append(
-                f"  at ({pos.get('reel', '?')}, {pos.get('row', '?')}){orient_str}"
-            )
-        for cl in clusters:
-            self._lines.append(
-                f"  from: {cl.get('symbol', '?')} x{cl.get('size', 0)} "
-                f"centroid ({cl.get('centroid', {}).get('reel', '?')}, "
-                f"{cl.get('centroid', {}).get('row', '?')})"
+                f"  {symbol} at ({pos.get('reel', '?')}, {pos.get('row', '?')})"
             )
 
-        # Place spawned symbol on cached board so downstream gravity sees it.
-        # Spawn events fire BEFORE gravitySettle — board must be current.
-        sym_name = EVENT_TYPE_TO_SPAWN_SYMBOL.get(event_type, "")
-        if sym_name and self._board_state:
-            for pos in positions:
+            # Place spawned symbol on cached board so downstream gravity sees it
+            if self._board_state:
                 reel = pos.get("reel", 0)
                 row = pos.get("row", 0)
                 if reel < len(self._board_state) and row < len(self._board_state[reel]):
-                    # Orientation suffix (e.g. "H"/"V") produces "RH"/"RV" — generic for any oriented booster
-                    orient = pos.get("orientation", "")
-                    display_name = f"{sym_name}{orient}" if orient else sym_name
-                    self._board_state[reel][row] = {"name": display_name}
-                    # Track freshly spawned positions — only these survive explosion
+                    self._board_state[reel][row] = {"name": symbol}
                     self._spawn_positions.add((reel, row))
 
         self._lines.append("")
 
+    def _render_booster_arm_info(self, event: dict) -> None:
+        """Render booster arm event — boosters that transitioned to ARMED."""
+        idx = event.get("index", "?")
+        boosters = event.get("boosters", [])
+
+        self._lines.append(f"--- BOOSTER ARM [{idx}] ---")
+        for b in boosters:
+            symbol = b.get("symbol", "?")
+            pos = b.get("position", {})
+            self._lines.append(
+                f"  {symbol} ARMED at ({pos.get('reel', '?')}, {pos.get('row', '?')})"
+            )
+        self._lines.append("")
+
+    def _render_booster_fire_info(self, event: dict) -> None:
+        """Render booster fire event — per-booster cleared cells with symbols."""
+        idx = event.get("index", "?")
+        boosters = event.get("boosters", [])
+
+        self._lines.append(f"--- BOOSTER FIRE [{idx}] ---")
+        for b in boosters:
+            symbol = b.get("symbol", "?")
+            cleared = b.get("clearedCells", [])
+            self._lines.append(f"  FIRE: {symbol} cleared {len(cleared)} cells")
+
+        self._lines.append("")
+
     def _render_gravity_settle(self, event: dict) -> None:
-        """Render gravity cascade: explode → gravity passes → refill → settle.
+        """Render gravity cascade: gravity passes → refill → settle.
 
         Tracks board state through each sub-step to render intermediate grids.
         Updates _board_state to the settled result for subsequent cascade steps.
         """
         idx = event.get("index", "?")
-        exploding = event.get("explodingSymbols", [])
         move_steps = event.get("moveSteps", [])
         new_symbols = event.get("newSymbols", [])
 
@@ -280,37 +283,13 @@ class EventTracer:
         # Work on a mutable copy — _board_state updates only at SETTLE
         board = copy.deepcopy(self._board_state) if self._board_state else []
 
-        # Step 1: EXPLODE — clear winning positions, render vacancies as [  ]
-        if exploding:
-            if board:
-                for e in exploding:
-                    reel, row = e.get("reel", 0), e.get("row", 0)
-                    if reel < len(board) and row < len(board[reel]):
-                        # Only protect positions where a booster was freshly spawned
-                        # this step — existing wilds/boosters that participated in a
-                        # cluster are consumed and must be cleared
-                        if (reel, row) not in self._spawn_positions:
-                            board[reel][row] = {"name": ""}
-                self._lines.append(
-                    f"  Step 1: EXPLODE ({len(exploding)} symbols removed)"
-                )
-                self._lines.extend(self._format_board(board))
-                self._lines.append("")
-                # Fresh spawns have been accounted for — clear before gravity passes
-                self._spawn_positions.clear()
-            else:
-                expl_str = ", ".join(
-                    f"({e.get('reel', '?')},{e.get('row', '?')})" for e in exploding
-                )
-                self._lines.append(f"  EXPLODE: {expl_str}")
-
-        # Step 2.N: GRAVITY — move symbols, render board with moved positions highlighted
+        # Gravity passes — move symbols, render board with moved positions highlighted
         for pass_idx, pass_moves in enumerate(move_steps):
             if not pass_moves:
                 continue
             self._lines.append(
-                f"  Step 2.{pass_idx + 1}: GRAVITY "
-                f"({len(pass_moves)} move(s) in pass {pass_idx + 1})"
+                f"  Pass {pass_idx + 1}: GRAVITY "
+                f"({len(pass_moves)} move(s))"
             )
 
             # Text description with direction arrows and symbol names
@@ -367,74 +346,30 @@ class EventTracer:
                 )
                 self._lines.append("")
 
-        # Step 3: REFILL — fill new symbols into vacancies at top of each reel
+        # REFILL — fill new symbols into vacancies
         refill_count = sum(len(reel) for reel in new_symbols)
         if refill_count > 0:
             self._lines.append(
-                f"  Step 3: REFILL ({refill_count} new symbol(s) from reel strip)"
+                f"  REFILL ({refill_count} new symbol(s) from reel strip)"
             )
             for reel_entries in new_symbols:
                 for entry in reel_entries:
-                    reel = entry.get("reel", 0)
-                    row = entry.get("row", 0)
-                    name = entry.get("name", "?")
+                    pos = entry.get("position", {})
+                    reel = pos.get("reel", 0)
+                    row = pos.get("row", 0)
+                    name = entry.get("symbol", "?")
                     self._lines.append(f"    {name} → (R{reel},row{row})")
                     # Apply refill to working board
                     if board and reel < len(board) and row < len(board[reel]):
                         board[reel][row] = {"name": name}
             self._lines.append("")
 
-        # Step 4: SETTLE — render final board, update cached state for next cascade step
+        # SETTLE — render final board, update cached state for next cascade step
         if board:
-            self._lines.append("  Step 4: SETTLE")
+            self._lines.append("  SETTLE")
             self._lines.extend(self._format_board(board))
             # Transfer ownership — this becomes the board for the next cascade step
             self._board_state = board
-        self._lines.append("")
-
-    def _render_booster_phase(self, event: dict) -> None:
-        """Render booster phase — fired boosters and cleared cells."""
-        idx = event.get("index", "?")
-        fired = event.get("firedBoosters", [])
-        cleared = event.get("clearedCells", [])
-
-        self._lines.append(f"--- BOOSTER PHASE [{idx}] ---")
-        for b in fired:
-            btype = b.get("type", "?")
-            reel = b.get("reel", "?")
-            row = b.get("row", "?")
-            extra = ""
-            if btype == "rocket":
-                extra = f" orientation={b.get('orientation', '?')}"
-            elif btype == "lightball":
-                extra = f" target={b.get('targetSymbol', '?')}"
-            elif btype == "superlightball":
-                targets = b.get("targetSymbols", [])
-                extra = f" targets={targets}"
-            self._lines.append(f"  FIRE: {btype} at ({reel},{row}){extra}")
-
-        if cleared:
-            self._lines.append(f"  CLEARED: {len(cleared)} cells")
-
-        # Post-booster gravity if present
-        move_steps = event.get("moveSteps", [])
-        new_symbols = event.get("newSymbols", [])
-        if move_steps:
-            for pass_idx, pass_moves in enumerate(move_steps):
-                if not pass_moves:
-                    continue
-                self._lines.append(f"  POST-BOOSTER GRAVITY PASS {pass_idx + 1}:")
-                for move in pass_moves:
-                    from_cell = move.get("fromCell", {})
-                    to_cell = move.get("toCell", {})
-                    self._lines.append(
-                        f"    ({from_cell.get('reel', 0)},{from_cell.get('row', 0)}) → "
-                        f"({to_cell.get('reel', 0)},{to_cell.get('row', 0)})"
-                    )
-
-        refill_count = sum(len(reel) for reel in new_symbols) if new_symbols else 0
-        if refill_count > 0:
-            self._lines.append(f"  REFILL: {refill_count} symbols")
         self._lines.append("")
 
     def _render_set_win(self, event: dict) -> None:

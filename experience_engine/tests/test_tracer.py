@@ -1,8 +1,9 @@
 """Tests for EventTracer — board/grid state tracking and visual rendering.
 
 Verifies the tracer correctly renders:
-- Side-by-side board+grid view in WIN_INFO (spec section 4)
-- Board grids at each gravity cascade sub-step (spec section 7)
+- Side-by-side board+grid view in WIN_INFO
+- Board grids at each gravity cascade sub-step
+- New event types: boosterSpawnInfo, boosterArmInfo, boosterFireInfo
 """
 
 from __future__ import annotations
@@ -12,10 +13,12 @@ import pytest
 from ..config.schema import MasterConfig
 from ..output.book_record import BookRecord
 from ..output.event_types import (
+    BOOSTER_ARM_INFO,
+    BOOSTER_FIRE_INFO,
+    BOOSTER_SPAWN_INFO,
     GRAVITY_SETTLE,
     REVEAL,
-    SPAWN_EVENT_TYPE,
-    UPDATE_GRID,
+    UPDATE_BOARD_MULTIPLIERS,
     WIN_INFO,
 )
 from ..tracer.tracer import EventTracer
@@ -35,21 +38,33 @@ def _make_zero_grid(num_reels: int, num_rows: int) -> list[list[int]]:
     return [[0] * num_rows for _ in range(num_reels)]
 
 
-def _make_reveal_event(board_grid: list[list[dict]], idx: int = 0) -> dict:
-    return {
+def _make_reveal_event(
+    board_grid: list[list[dict]],
+    board_mults: list[list[int]] | None = None,
+    idx: int = 0,
+) -> dict:
+    event: dict = {
         "index": idx,
         "type": REVEAL,
         "board": board_grid,
         "gameType": "basegame",
-        "anticipation": [0] * len(board_grid),
     }
+    if board_mults is not None:
+        event["boardMultipliers"] = board_mults
+    else:
+        # Default: all zeros matching board dimensions
+        event["boardMultipliers"] = _make_zero_grid(len(board_grid), len(board_grid[0]))
+    return event
 
 
-def _make_update_grid_event(grid: list[list[int]], idx: int = 1) -> dict:
+def _make_update_board_multipliers_event(
+    changes: list[dict],
+    idx: int = 1,
+) -> dict:
     return {
         "index": idx,
-        "type": UPDATE_GRID,
-        "gridMultipliers": grid,
+        "type": UPDATE_BOARD_MULTIPLIERS,
+        "boardMultipliers": changes,
     }
 
 
@@ -67,7 +82,6 @@ def _make_win_info_event(
 
 
 def _make_gravity_settle_event(
-    exploding: list[dict],
     move_steps: list[list[dict]],
     new_symbols: list[list[dict]],
     idx: int = 5,
@@ -75,7 +89,6 @@ def _make_gravity_settle_event(
     return {
         "index": idx,
         "type": GRAVITY_SETTLE,
-        "explodingSymbols": exploding,
         "moveSteps": move_steps,
         "newSymbols": new_symbols,
     }
@@ -133,15 +146,35 @@ class TestStateCaching:
         assert tracer._board_state[0][0]["name"] == "H1"
         assert tracer._board_state[2][2]["name"] == "L1"
 
-    def test_update_grid_caches_grid_state(
+    def test_reveal_caches_grid_state_from_board_multipliers(
         self, tracer: EventTracer, default_config: MasterConfig,
     ) -> None:
-        """UPDATE_GRID event should populate _grid_state."""
+        """REVEAL event should populate _grid_state from boardMultipliers."""
+        board_grid = _make_board_grid(SMALL_SYMBOLS)
         grid = [[0, 0, 1], [0, 1, 0], [1, 0, 0]]
-        events = [_make_update_grid_event(grid)]
+        events = [_make_reveal_event(board_grid, board_mults=grid)]
         _trace_events(tracer, events)
 
         assert tracer._grid_state == [[0, 0, 1], [0, 1, 0], [1, 0, 0]]
+
+    def test_update_board_multipliers_applies_sparse_delta(
+        self, tracer: EventTracer, default_config: MasterConfig,
+    ) -> None:
+        """updateBoardMultipliers applies sparse changes to cached grid state."""
+        board_grid = _make_board_grid(SMALL_SYMBOLS)
+        initial_grid = _make_zero_grid(3, 3)
+        events = [
+            _make_reveal_event(board_grid, board_mults=initial_grid),
+            _make_update_board_multipliers_event([
+                {"multiplier": 1, "position": {"reel": 0, "row": 2}},
+                {"multiplier": 1, "position": {"reel": 1, "row": 1}},
+            ]),
+        ]
+        _trace_events(tracer, events)
+
+        assert tracer._grid_state[0][2] == 1
+        assert tracer._grid_state[1][1] == 1
+        assert tracer._grid_state[0][0] == 0  # unchanged
 
     def test_trace_resets_state(
         self, tracer: EventTracer, default_config: MasterConfig,
@@ -172,28 +205,27 @@ class TestWinInfoSideBySide:
         grid = _make_zero_grid(3, 3)
 
         wins = [{
-            "symbol": "H1",
+            "basePayout": 50,
+            "clusterPayout": 50,
+            "clusterMultiplier": 1,
             "clusterSize": 2,
-            "win": 50,
-            "positions": [{"reel": 0, "row": 0}, {"reel": 2, "row": 1}],
-            "meta": {
-                "clusterMult": 1,
-                "winWithoutMult": 50,
-                "overlay": {"reel": 0, "row": 0},
+            "overlay": {"reel": 0, "row": 0},
+            "cluster": {
+                "cells": [
+                    {"symbol": "H1", "reel": 0, "row": 0, "multiplier": 0},
+                    {"symbol": "H1", "reel": 2, "row": 1, "multiplier": 0},
+                ],
             },
         }]
 
         events = [
-            _make_reveal_event(board_grid),
-            _make_update_grid_event(grid),
+            _make_reveal_event(board_grid, board_mults=grid),
             _make_win_info_event(wins, total_win=50),
         ]
         output = _trace_events(tracer, events)
 
         # Board side should have winners highlighted
         assert "*H1*" in output
-        # Non-winner symbols should appear without asterisks
-        assert "| H2|" in output or "H2" in output
 
     def test_win_info_renders_grid_with_touched_markers(
         self, tracer: EventTracer,
@@ -204,22 +236,21 @@ class TestWinInfoSideBySide:
         grid = [[0, 0, 0], [0, 2, 0], [1, 0, 0]]
 
         # Winner at (2, 0) — should show [1] since grid has value 1 there
-        # Position (1, 1) has grid value 2 but is NOT a winner — should show plain 2
         wins = [{
-            "symbol": "H4",
+            "basePayout": 10,
+            "clusterPayout": 10,
+            "clusterMultiplier": 1,
             "clusterSize": 1,
-            "win": 10,
-            "positions": [{"reel": 2, "row": 0}],
-            "meta": {
-                "clusterMult": 1,
-                "winWithoutMult": 10,
-                "overlay": {"reel": 2, "row": 0},
+            "overlay": {"reel": 2, "row": 0},
+            "cluster": {
+                "cells": [
+                    {"symbol": "H4", "reel": 2, "row": 0, "multiplier": 1},
+                ],
             },
         }]
 
         events = [
-            _make_reveal_event(board_grid),
-            _make_update_grid_event(grid),
+            _make_reveal_event(board_grid, board_mults=grid),
             _make_win_info_event(wins, total_win=10),
         ]
         output = _trace_events(tracer, events)
@@ -237,27 +268,30 @@ class TestWinInfoSideBySide:
         grid = _make_zero_grid(3, 3)
 
         wins = [{
-            "symbol": "H1",
+            "basePayout": 10,
+            "clusterPayout": 10,
+            "clusterMultiplier": 1,
             "clusterSize": 1,
-            "win": 10,
-            "positions": [{"reel": 0, "row": 0}],
-            "meta": {"clusterMult": 1, "winWithoutMult": 10, "overlay": {"reel": 0, "row": 0}},
+            "overlay": {"reel": 0, "row": 0},
+            "cluster": {
+                "cells": [
+                    {"symbol": "H1", "reel": 0, "row": 0, "multiplier": 0},
+                ],
+            },
         }]
 
         events = [
-            _make_reveal_event(board_grid),
-            _make_update_grid_event(grid),
+            _make_reveal_event(board_grid, board_mults=grid),
             _make_win_info_event(wins, total_win=10),
         ]
         output = _trace_events(tracer, events)
 
         assert "Board with winners [*]:" in output
-        # Grid header only shows when grid state is present
         assert "Grid multipliers touched [x]:" in output
 
 
 # ---------------------------------------------------------------------------
-# GRAVITY SETTLE board grids
+# GRAVITY SETTLE board grids (no explodingSymbols)
 # ---------------------------------------------------------------------------
 
 class TestGravitySettle:
@@ -265,7 +299,6 @@ class TestGravitySettle:
     def _setup_board_and_gravity(
         self,
         tracer: EventTracer,
-        exploding: list[dict],
         move_steps: list[list[dict]],
         new_symbols: list[list[dict]],
     ) -> str:
@@ -273,96 +306,79 @@ class TestGravitySettle:
         board_grid = _make_board_grid(SMALL_SYMBOLS)
         events = [
             _make_reveal_event(board_grid),
-            _make_gravity_settle_event(exploding, move_steps, new_symbols),
+            _make_gravity_settle_event(move_steps, new_symbols),
         ]
         return _trace_events(tracer, events)
 
-    def test_explode_shows_vacancies(self, tracer: EventTracer) -> None:
-        """EXPLODE step should render [  ] at removed positions."""
-        exploding = [{"reel": 0, "row": 0}, {"reel": 0, "row": 1}]
-        output = self._setup_board_and_gravity(tracer, exploding, [], [[]])
-
-        assert "Step 1: EXPLODE (2 symbols removed)" in output
-        assert "[  ]" in output
-
     def test_gravity_pass_shows_moved_symbols(self, tracer: EventTracer) -> None:
-        """GRAVITY pass should render *XX* at move destinations."""
-        exploding = [{"reel": 0, "row": 2}]
+        """GRAVITY pass should render board with moved positions highlighted."""
         move_steps = [[
             {"fromCell": {"reel": 0, "row": 1}, "toCell": {"reel": 0, "row": 2}},
             {"fromCell": {"reel": 0, "row": 0}, "toCell": {"reel": 0, "row": 1}},
         ]]
-        output = self._setup_board_and_gravity(tracer, exploding, move_steps, [[]])
+        output = self._setup_board_and_gravity(tracer, move_steps, [[]])
 
-        assert "Step 2.1: GRAVITY (2 move(s) in pass 1)" in output
+        assert "Pass 1: GRAVITY (2 move(s))" in output
         # Direction arrow for straight down
         assert "↓" in output
-        # Moved symbols should be highlighted
-        assert "*" in output
 
     def test_gravity_pass_includes_symbol_names(self, tracer: EventTracer) -> None:
         """GRAVITY move lines should include the symbol name being moved."""
-        exploding = [{"reel": 0, "row": 2}]
         move_steps = [[
             {"fromCell": {"reel": 0, "row": 1}, "toCell": {"reel": 0, "row": 2}},
         ]]
-        output = self._setup_board_and_gravity(tracer, exploding, move_steps, [[]])
+        output = self._setup_board_and_gravity(tracer, move_steps, [[]])
 
-        # H2 is at (reel=0, row=1) in SMALL_SYMBOLS — after explode at (0,2),
-        # it should still be at (0,1) and appear in the move text
+        # H2 is at (reel=0, row=1) in SMALL_SYMBOLS
         assert "H2" in output
 
     def test_refill_renders_new_symbols(self, tracer: EventTracer) -> None:
         """REFILL step should list new symbols with spec format."""
-        exploding = [{"reel": 0, "row": 0}]
-        new_symbols = [[{"name": "L4", "reel": 0, "row": 0}]]
-        output = self._setup_board_and_gravity(tracer, exploding, [], new_symbols)
+        new_symbols = [[{"symbol": "L4", "position": {"reel": 0, "row": 0}}]]
+        output = self._setup_board_and_gravity(tracer, [], new_symbols)
 
-        assert "Step 3: REFILL (1 new symbol(s) from reel strip)" in output
+        assert "REFILL (1 new symbol(s) from reel strip)" in output
         assert "L4" in output
         assert "(R0,row0)" in output
 
     def test_settle_renders_final_board(self, tracer: EventTracer) -> None:
         """SETTLE step should render the complete settled board."""
-        exploding = [{"reel": 0, "row": 0}]
-        new_symbols = [[{"name": "L4", "reel": 0, "row": 0}]]
-        output = self._setup_board_and_gravity(tracer, exploding, [], new_symbols)
+        new_symbols = [[{"symbol": "L4", "position": {"reel": 0, "row": 0}}]]
+        output = self._setup_board_and_gravity(tracer, [], new_symbols)
 
-        assert "Step 4: SETTLE" in output
-        # L4 should appear in the settled board (refilled at position 0,0)
-        # The board render should show all symbols
+        assert "SETTLE" in output
         lines = output.split("\n")
-        settle_idx = next(i for i, l in enumerate(lines) if "Step 4: SETTLE" in l)
-        # Board starts on the next line (header), then rows follow
+        settle_idx = next(
+            i for i, l in enumerate(lines) if l.strip() == "SETTLE"
+        )
+        # Board header (column labels) follows the SETTLE line
         assert "R0" in lines[settle_idx + 1]
 
     def test_settle_updates_board_state(self, tracer: EventTracer) -> None:
         """After GRAVITY_SETTLE, _board_state should reflect the settled board."""
         board_grid = _make_board_grid(SMALL_SYMBOLS)
-        exploding = [{"reel": 0, "row": 0}]
-        new_symbols = [[{"name": "L4", "reel": 0, "row": 0}]]
+        new_symbols = [[{"symbol": "L4", "position": {"reel": 0, "row": 0}}]]
         events = [
             _make_reveal_event(board_grid),
-            _make_gravity_settle_event(exploding, [], new_symbols),
+            _make_gravity_settle_event([], new_symbols),
         ]
         _trace_events(tracer, events)
 
-        # Position (0, 0) was exploded and refilled with L4
+        # Position (0, 0) was refilled with L4
         assert tracer._board_state[0][0]["name"] == "L4"
 
     def test_multi_pass_gravity(self, tracer: EventTracer) -> None:
         """Multiple gravity passes should each render a labeled step."""
-        exploding = [{"reel": 0, "row": 2}]
         pass1 = [
             {"fromCell": {"reel": 0, "row": 1}, "toCell": {"reel": 0, "row": 2}},
         ]
         pass2 = [
             {"fromCell": {"reel": 0, "row": 0}, "toCell": {"reel": 0, "row": 1}},
         ]
-        output = self._setup_board_and_gravity(tracer, exploding, [pass1, pass2], [[]])
+        output = self._setup_board_and_gravity(tracer, [pass1, pass2], [[]])
 
-        assert "Step 2.1: GRAVITY" in output
-        assert "Step 2.2: GRAVITY" in output
+        assert "Pass 1: GRAVITY" in output
+        assert "Pass 2: GRAVITY" in output
 
 
 # ---------------------------------------------------------------------------
@@ -416,68 +432,92 @@ class TestFormatGridMults:
 
 
 # ---------------------------------------------------------------------------
-# Spawn board-state sync (tracer-booster-fix)
+# Booster spawn/arm/fire board-state sync
 # ---------------------------------------------------------------------------
 
-def _make_spawn_event(
-    event_type: str,
-    positions: list[dict],
-    clusters: list[dict] | None = None,
-) -> dict:
-    return {
-        "type": event_type,
-        "index": 99,
-        "positions": positions,
-        "clusters": clusters or [],
-    }
 
+class TestBoosterSpawnBoardStateSync:
 
-class TestSpawnBoardStateSync:
-
-    def test_wild_spawn_updates_board_state(self, tracer: EventTracer) -> None:
-        """WILDSPAWN at (1,2) should write W into _board_state[1][2]."""
+    def test_spawn_updates_board_state(self, tracer: EventTracer) -> None:
+        """boosterSpawnInfo at (1,2) should write symbol into _board_state[1][2]."""
         board_grid = _make_board_grid(SMALL_SYMBOLS)
         events = [
             _make_reveal_event(board_grid),
-            _make_spawn_event("wildSpawn", [{"reel": 1, "row": 2}]),
+            {
+                "type": BOOSTER_SPAWN_INFO,
+                "index": 1,
+                "boosters": [
+                    {"symbol": "W", "position": {"reel": 1, "row": 2}},
+                ],
+            },
         ]
         _trace_events(tracer, events)
 
         assert tracer._board_state[1][2]["name"] == "W"
 
-    def test_spawn_symbol_visible_in_settled_board(self, tracer: EventTracer) -> None:
-        """Spawned W should survive through GRAVITY_SETTLE into the Step 4 SETTLE board."""
-        board_grid = _make_board_grid(SMALL_SYMBOLS)
-        # Explode a different cell so (1,2) is untouched by gravity
-        exploding = [{"reel": 0, "row": 0}]
-        new_symbols = [[{"name": "L4", "reel": 0, "row": 0}]]
-        events = [
-            _make_reveal_event(board_grid),
-            _make_spawn_event("wildSpawn", [{"reel": 1, "row": 2}]),
-            _make_gravity_settle_event(exploding, [], new_symbols),
-        ]
-        output = _trace_events(tracer, events)
-
-        # W should appear in the Step 4 SETTLE board section
-        lines = output.split("\n")
-        settle_idx = next(i for i, l in enumerate(lines) if "Step 4: SETTLE" in l)
-        settle_section = "\n".join(lines[settle_idx:])
-        assert "W" in settle_section
-
-    @pytest.mark.parametrize(
-        "sym_name,event_type",
-        list(SPAWN_EVENT_TYPE.items()),
-        ids=lambda val: val if isinstance(val, str) and not val[0].isupper() else "",
-    )
-    def test_all_spawn_types_update_board(
-        self, tracer: EventTracer, sym_name: str, event_type: str,
-    ) -> None:
-        """Every spawn type in SPAWN_EVENT_TYPE should update _board_state."""
+    def test_spawn_multiple_types(self, tracer: EventTracer) -> None:
+        """boosterSpawnInfo with multiple boosters updates all positions."""
         board_grid = _make_board_grid(SMALL_SYMBOLS)
         events = [
             _make_reveal_event(board_grid),
-            _make_spawn_event(event_type, [{"reel": 2, "row": 0}]),
+            {
+                "type": BOOSTER_SPAWN_INFO,
+                "index": 1,
+                "boosters": [
+                    {"symbol": "W", "position": {"reel": 0, "row": 0}},
+                    {"symbol": "R", "position": {"reel": 2, "row": 1}},
+                ],
+            },
         ]
         _trace_events(tracer, events)
 
-        assert tracer._board_state[2][0]["name"] == sym_name
+        assert tracer._board_state[0][0]["name"] == "W"
+        assert tracer._board_state[2][1]["name"] == "R"
+
+
+class TestBoosterArmRendering:
+
+    def test_arm_info_renders(self, tracer: EventTracer) -> None:
+        """boosterArmInfo should render BOOSTER ARM section."""
+        board_grid = _make_board_grid(SMALL_SYMBOLS)
+        events = [
+            _make_reveal_event(board_grid),
+            {
+                "type": BOOSTER_ARM_INFO,
+                "index": 1,
+                "boosters": [
+                    {"symbol": "R", "position": {"reel": 3, "row": 2}},
+                ],
+            },
+        ]
+        output = _trace_events(tracer, events)
+
+        assert "BOOSTER ARM" in output
+        assert "R ARMED" in output
+
+
+class TestBoosterFireRendering:
+
+    def test_fire_info_renders(self, tracer: EventTracer) -> None:
+        """boosterFireInfo should render BOOSTER FIRE section."""
+        board_grid = _make_board_grid(SMALL_SYMBOLS)
+        events = [
+            _make_reveal_event(board_grid),
+            {
+                "type": BOOSTER_FIRE_INFO,
+                "index": 1,
+                "boosters": [
+                    {
+                        "symbol": "R",
+                        "clearedCells": [
+                            {"symbol": "L2", "position": {"reel": 0, "row": 0}},
+                            {"symbol": "L2", "position": {"reel": 0, "row": 1}},
+                        ],
+                    },
+                ],
+            },
+        ]
+        output = _trace_events(tracer, events)
+
+        assert "BOOSTER FIRE" in output
+        assert "R cleared 2 cells" in output

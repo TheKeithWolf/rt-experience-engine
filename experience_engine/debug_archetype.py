@@ -538,6 +538,7 @@ def diagnostic_attempt(
                 fire_records=transition_result.booster_fire_records,
                 booster_gravity_record=transition_result.booster_gravity_record,
                 arm_types=transition_result.booster_arm_types,
+                arm_records=transition_result.booster_arm_records,
             )
 
             board = transition_result.board
@@ -622,8 +623,15 @@ def diagnostic_attempt(
         fire_recs: tuple[BoosterFireRecord, ...] = ()
         booster_grav: GravityRecord | None = None
         arm_types: tuple[str, ...] = ()
+        arm_records: tuple = ()
         if td is not None:
-            gr_base, empty_positions, spawns, fire_recs, booster_grav, arm_types = td
+            gr_base = td.gravity_record
+            empty_positions = td.empty_positions
+            spawns = td.spawns
+            fire_recs = td.fire_records
+            booster_grav = td.booster_gravity_record
+            arm_types = td.arm_types
+            arm_records = td.arm_records
             next_filled = raw_steps[i + 1][2]
             refill_entries = tuple(
                 (pos.reel, pos.row, next_filled.get(pos).name)
@@ -641,6 +649,7 @@ def diagnostic_attempt(
             booster_fire_records=fire_recs,
             booster_gravity_record=booster_grav,
             booster_arm_types=arm_types,
+            booster_arm_records=arm_records,
         ))
 
     # Merge post-terminal booster fire records into the last step record.

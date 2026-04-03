@@ -105,17 +105,17 @@ class ForwardSimulator:
 
 def _trace_position(
     pos: Position,
-    move_steps: tuple[tuple[tuple[Position, Position], ...], ...],
+    move_steps: tuple[tuple[tuple[str, Position, Position], ...], ...],
 ) -> Position:
     """Walk through gravity move passes to find where a position ends up.
 
-    Each pass is a tuple of (source, destination) moves. If our tracked
-    position appears as a source, it moved — update to the destination
+    Each pass is a tuple of (symbol_name, source, destination) moves. If our
+    tracked position appears as a source, it moved — update to the destination
     and continue tracing through subsequent passes.
     """
     current = pos
     for pass_moves in move_steps:
-        for src, dst in pass_moves:
+        for _sym, src, dst in pass_moves:
             if src == current:
                 current = dst
                 # Only one move per position per pass — stop scanning this pass

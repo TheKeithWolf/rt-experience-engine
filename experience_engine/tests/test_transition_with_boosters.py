@@ -382,3 +382,68 @@ def test_terminal_booster_phase_chain_propagation(
     assert len(result.booster_fire_records) == 2
     fired_types = {rec.booster_type for rec in result.booster_fire_records}
     assert fired_types == {"R", "B"}
+
+
+# ---------------------------------------------------------------------------
+# TEST: arm adjacency uses pre-gravity positions (A1 spec fix)
+# ---------------------------------------------------------------------------
+
+def test_arm_uses_pre_gravity_positions(
+    simulator: StepTransitionSimulator,
+    default_config: MasterConfig,
+) -> None:
+    """Dormant booster adjacent pre-gravity but not post-gravity still gets armed.
+
+    Spec: arm adjacency is checked BEFORE gravity (step 8 precedes step 9).
+    A dormant rocket next to a cluster cell should be armed even if gravity
+    would move it away from that position afterward.
+    """
+    board = Board.empty(default_config.board)
+
+    # Fill board with L2 background
+    for reel in range(7):
+        for row in range(7):
+            board.set(Position(reel, row), Symbol.L2)
+
+    # Place a 5-cell cluster at bottom of column 2 (rows 2-6)
+    # After explosion + gravity, column 2 shifts significantly
+    cluster_positions = frozenset(Position(2, row) for row in range(2, 7))
+    for pos in cluster_positions:
+        board.set(pos, Symbol.L1)
+
+    # Place dormant rocket at (3, 6) — adjacent to cluster cell (2, 6) pre-gravity.
+    # After cluster explodes and gravity settles, the rocket may shift position,
+    # but arm adjacency should have already been checked pre-gravity.
+    rocket_pos = Position(3, 6)
+    tracker = BoosterTracker(default_config.board)
+    tracker.add(Symbol.R, rocket_pos, orientation="V")
+
+    grid_mults = GridMultiplierGrid(default_config.grid_multiplier, default_config.board)
+    phase_executor = _make_phase_executor(tracker, default_config)
+
+    step_result = StepResult(
+        step_index=1,
+        clusters=(
+            ClusterRecord(
+                symbol=Symbol.L1, size=5, positions=cluster_positions,
+                step_index=1, payout=50,
+            ),
+        ),
+        spawns=(),
+        fires=(),
+        symbol_tier=None,
+        step_payout=50,
+    )
+
+    result = simulator.transition_and_arm(
+        board, step_result, tracker, grid_mults, phase_executor,
+    )
+
+    # Rocket was adjacent to cluster position (2,6) pre-gravity → should be armed
+    assert result.booster_arm_types == ("R",)
+
+    from ..boosters.state_machine import BoosterState
+    all_boosters = tracker.all_boosters()
+    rockets = [b for b in all_boosters if b.booster_type is Symbol.R]
+    assert len(rockets) == 1
+    assert rockets[0].state is BoosterState.ARMED

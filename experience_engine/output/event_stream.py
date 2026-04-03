@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from ..config.schema import MasterConfig
 from ..pipeline.data_types import (
+    BoosterArmRecord,
     BoosterFireRecord,
     CascadeStepRecord,
     GeneratedInstance,
@@ -21,7 +22,9 @@ from ..primitives.paytable import Paytable
 from ..primitives.symbols import Symbol, is_booster, is_scatter, is_wild
 from ..spatial_solver.data_types import ClusterAssignment
 from .event_types import (
-    BOOSTER_PHASE,
+    BOOSTER_ARM_INFO,
+    BOOSTER_FIRE_INFO,
+    BOOSTER_SPAWN_INFO,
     FINAL_WIN,
     FREE_SPIN_END,
     FREE_SPIN_TRIGGER,
@@ -29,13 +32,11 @@ from .event_types import (
     REVEAL,
     SET_TOTAL_WIN,
     SET_WIN,
-    SPAWN_EVENT_TYPE,
+    UPDATE_BOARD_MULTIPLIERS,
     UPDATE_FREE_SPIN,
-    UPDATE_GRID,
     UPDATE_TUMBLE_WIN,
     WINCAP,
     WIN_INFO,
-    compute_anticipation,
 )
 
 
@@ -84,41 +85,32 @@ class EventStreamGenerator:
     # ------------------------------------------------------------------
 
     def _generate_dead(self, instance: GeneratedInstance) -> list[dict]:
-        """Dead spin: reveal → updateGrid → setTotalWin(0) → finalWin."""
+        """Dead spin: reveal(boardMultipliers) → setTotalWin(0) → finalWin(0)."""
         events: list[dict] = []
         events.append(self._make_reveal(
-            instance.board, "basegame", instance.spatial_step.scatter_positions,
-        ))
-        events.append(self._make_update_grid(
-            self._initial_grid_snapshot(),
+            instance.board, "basegame", self._initial_grid_snapshot(),
         ))
         events.append(self._make_set_total_win(0))
         events.append(self._make_final_win(0))
         return events
 
     def _generate_static(self, instance: GeneratedInstance) -> list[dict]:
-        """Static win: reveal → updateGrid → winInfo → updateTumbleWin → updateGrid → gravitySettle → setWin → setTotalWin → finalWin."""
+        """Static win: reveal → winInfo → updateTumbleWin → updateBoardMultipliers → gravitySettle → setWin → setTotalWin → finalWin."""
         events: list[dict] = []
-        events.append(self._make_reveal(
-            instance.board, "basegame", instance.spatial_step.scatter_positions,
-        ))
-
-        # Running grid state — starts at initial zeros
         grid_state = self._initial_grid_snapshot()
-        events.append(self._make_update_grid(grid_state))
+
+        events.append(self._make_reveal(instance.board, "basegame", grid_state))
 
         # Win info from spatial_step clusters — evaluated against current grid state
         clusters = instance.spatial_step.clusters
-        events.append(self._make_win_info(
-            clusters, grid_state, instance.board,
-        ))
+        events.append(self._make_win_info(clusters, grid_state, instance.board))
 
         self._cumulative_centipayout = instance.centipayout
         events.append(self._make_update_tumble_win(self._cumulative_centipayout))
 
-        # Clusters updated grid multipliers — capture new running state
-        grid_state = self._increment_grid_snapshot(grid_state, clusters)
-        events.append(self._make_update_grid(grid_state))
+        # Clusters updated grid multipliers — emit sparse delta
+        new_grid = self._increment_grid_snapshot(grid_state, clusters)
+        events.append(self._make_update_board_multipliers(grid_state, new_grid))
 
         # Gravity settle — cluster positions explode, remaining symbols fall
         if instance.gravity_record is not None:
@@ -130,16 +122,17 @@ class EventStreamGenerator:
         return events
 
     def _generate_cascade(self, instance: GeneratedInstance) -> list[dict]:
-        """Cascade win: reveal → updateGrid → per-step events → setWin → setTotalWin → finalWin.
+        """Cascade win — per-step events followed by spin resolution.
 
-        Handles basegame cascades, wincap (halts on cap), and freegame trigger
-        sequences. Freegame instances emit freeSpinTrigger after basegame reveal.
+        Per-step emission order (spec steps 3-14):
+        winInfo → updateTumbleWin → updateBoardMultipliers → [wincap] →
+        [boosterSpawnInfo] → [boosterArmInfo] → gravitySettle →
+        [boosterFireInfo] → [gravitySettle (post-fire)]
         """
         events: list[dict] = []
         steps = instance.cascade_steps
         assert steps is not None
 
-        game_type = "basegame"
         is_freegame = instance.criteria == "freegame"
         is_wincap = instance.criteria == "wincap"
         wincap_centipayout = self._paytable.to_centipayout(
@@ -147,36 +140,36 @@ class EventStreamGenerator:
         )
         wincap_hit = False
 
-        # Reveal shows the filled initial board — board_after has symbols placed
-        # by the executor, board_before at step 0 is empty (pre-fill snapshot).
-        events.append(self._make_reveal(
-            steps[0].board_after, game_type,
-            instance.spatial_step.scatter_positions,
-        ))
         # Running grid state — starts at initial zeros before any wins
         grid_state = self._initial_grid_snapshot()
-        events.append(self._make_update_grid(grid_state))
+
+        # Reveal shows the filled initial board (step 0's board_after)
+        events.append(self._make_reveal(
+            steps[0].board_after, "basegame", grid_state,
+        ))
 
         for step in steps:
-            # Win info for this step's clusters — evaluated against current grid state
-            if step.clusters:
-                events.append(self._make_win_info(
-                    step.clusters, grid_state,
-                    step.board_before,
-                ))
+            if not step.clusters:
+                continue  # Dead step — no events
 
-                # Running cumulative centipayout
-                step_centipayout = self._paytable.to_centipayout(step.step_payout)
-                self._cumulative_centipayout += step_centipayout
-                events.append(self._make_update_tumble_win(
-                    self._cumulative_centipayout,
-                ))
+            # winInfo (spec step 3)
+            events.append(self._make_win_info(
+                step.clusters, grid_state, step.board_before,
+            ))
 
-                # Clusters updated grid multipliers — capture new running state
-                grid_state = self._increment_grid_snapshot(grid_state, step.clusters)
-                events.append(self._make_update_grid(grid_state))
+            # Accumulate payout (spec step 4)
+            step_centipayout = self._paytable.to_centipayout(step.step_payout)
+            self._cumulative_centipayout += step_centipayout
+            events.append(self._make_update_tumble_win(
+                self._cumulative_centipayout,
+            ))
 
-            # Wincap check — halt cascade if cumulative crosses the cap
+            # updateBoardMultipliers (spec step 5) — sparse delta from snapshot
+            new_grid = step.grid_multipliers_snapshot
+            events.append(self._make_update_board_multipliers(grid_state, new_grid))
+            grid_state = new_grid
+
+            # Wincap check (spec step 6) — halt cascade if cap crossed
             if (is_wincap and self._config.wincap.halt_cascade
                     and self._cumulative_centipayout >= wincap_centipayout):
                 self._cumulative_centipayout = wincap_centipayout
@@ -184,51 +177,80 @@ class EventStreamGenerator:
                 wincap_hit = True
                 break
 
-            # Spawn events — emitted BEFORE gravitySettle per EventStream spec
-            if step.booster_spawn_types:
-                events.extend(self._make_spawn_events(step))
+            # boosterSpawnInfo (spec step 7)
+            if step.booster_spawn_positions:
+                events.append(self._make_booster_spawn_info(step))
 
-            # Gravity settle — only for steps 1+ that have gravity data
+            # boosterArmInfo (spec step 8)
+            if step.booster_arm_records:
+                events.append(self._make_booster_arm_info(step.booster_arm_records))
+
+            # gravitySettle — cluster explosion (spec step 9)
             if step.gravity_record is not None:
                 events.append(self._make_gravity_settle(step.gravity_record))
 
-            # Booster phase — if boosters fired this step
+            # boosterFireInfo — fires on terminal board (spec step 12)
             if step.booster_fire_records:
-                events.append(self._make_booster_phase(
-                    step.booster_fire_records, step.booster_gravity_record,
-                ))
+                events.append(self._make_booster_fire_info(step.booster_fire_records))
 
-        # Final payout events
+                # Post-fire gravitySettle (spec step 13)
+                if step.booster_gravity_record is not None:
+                    events.append(self._make_gravity_settle(
+                        step.booster_gravity_record,
+                    ))
+
+        # --- Spin resolution (spec steps 15-28) ---
         final_centipayout = (
             wincap_centipayout if wincap_hit else instance.centipayout
         )
 
-        # Freegame trigger — basegame scatter count triggers freespins
         if is_freegame:
-            scatter_count = len(instance.spatial_step.scatter_positions)
-            # awards is tuple of (scatter_count, freespins) pairs
-            awards_lookup = dict(self._config.freespin.awards)
-            total_fs = awards_lookup.get(
-                scatter_count,
-                # Fallback to max award if exact count not in config
-                max(fs for _, fs in self._config.freespin.awards)
-                if self._config.freespin.awards else 0,
-            )
-            events.append(self._make_set_total_win(0))
-            events.append(self._make_free_spin_trigger(
-                instance.spatial_step.scatter_positions, total_fs,
-            ))
-            # Freespin spins would be generated here in production —
-            # for now the instance carries the total freegame payout
-            events.append(self._make_free_spin_end(
+            self._emit_freegame_tail(events, instance, final_centipayout)
+        else:
+            events.append(self._make_set_win(
                 final_centipayout, instance.win_level,
             ))
-        else:
-            events.append(self._make_set_win(final_centipayout, instance.win_level))
             events.append(self._make_set_total_win(final_centipayout))
 
         events.append(self._make_final_win(final_centipayout))
         return events
+
+    def _emit_freegame_tail(
+        self,
+        events: list[dict],
+        instance: GeneratedInstance,
+        final_centipayout: int,
+    ) -> None:
+        """Emit basegame setWin + setTotalWin, then freeSpinTrigger/End.
+
+        Spec steps 15 → 17 → 19 → 27 → 28.
+        """
+        # Basegame portion — the cascade may have produced wins before scatter trigger
+        basegame_centipayout = self._cumulative_centipayout
+        if basegame_centipayout > 0:
+            basegame_payout = sum(s.step_payout for s in instance.cascade_steps)
+            basegame_win_level = self._paytable.get_win_level(basegame_payout)
+            events.append(self._make_set_win(basegame_centipayout, basegame_win_level))
+        events.append(self._make_set_total_win(basegame_centipayout))
+
+        # freeSpinTrigger
+        scatter_count = len(instance.spatial_step.scatter_positions)
+        awards_lookup = dict(self._config.freespin.awards)
+        total_fs = awards_lookup.get(
+            scatter_count,
+            # Fallback to max award if exact count not in config
+            max(fs for _, fs in self._config.freespin.awards)
+            if self._config.freespin.awards else 0,
+        )
+        events.append(self._make_free_spin_trigger(
+            instance.spatial_step.scatter_positions, total_fs,
+        ))
+
+        # Freespin loop — stub. Per-spin events reuse the cascade step loop
+        # when the freespin loop is implemented.
+        events.append(self._make_free_spin_end(
+            final_centipayout, instance.win_level,
+        ))
 
     # ------------------------------------------------------------------
     # Individual event builders
@@ -238,29 +260,15 @@ class EventStreamGenerator:
         self,
         board: Board,
         game_type: str,
-        scatter_positions: frozenset[Position],
+        grid_snapshot: tuple[int, ...],
     ) -> dict:
-        """Build reveal event — initial board display with anticipation array."""
-        scatter_reels = sorted({pos.reel for pos in scatter_positions})
-        anticipation = compute_anticipation(
-            scatter_reels,
-            self._config.board.num_reels,
-            self._config.anticipation.trigger_threshold,
-        )
+        """Build reveal event — initial board display with board multipliers."""
         return {
             "index": self._next_index(),
             "type": REVEAL,
             "board": self._board_to_grid(board),
             "gameType": game_type,
-            "anticipation": anticipation,
-        }
-
-    def _make_update_grid(self, grid_snapshot: tuple[int, ...]) -> dict:
-        """Build updateGrid event — position multiplier matrix."""
-        return {
-            "index": self._next_index(),
-            "type": UPDATE_GRID,
-            "gridMultipliers": self._snapshot_to_matrix(grid_snapshot),
+            "boardMultipliers": self._snapshot_to_matrix(grid_snapshot),
         }
 
     def _make_win_info(
@@ -269,10 +277,10 @@ class EventStreamGenerator:
         grid_snapshot: tuple[int, ...],
         board: Board,
     ) -> dict:
-        """Build winInfo event — per-cluster breakdown with meta.
+        """Build winInfo event — per-cluster breakdown matching spec shape.
 
-        Matches the SDK's win_data structure: totalWin + per-cluster wins with
-        symbol, clusterSize, win (centipayout), positions, and meta dict.
+        Each win entry: basePayout, clusterPayout, clusterMultiplier, clusterSize,
+        overlay, and cluster.cells[] with per-cell symbol/position/multiplier.
         """
         num_rows = self._config.board.num_rows
         wins: list[dict] = []
@@ -293,28 +301,35 @@ class EventStreamGenerator:
 
             cluster_payout = base_payout * mult_sum
             cluster_centipayout = self._paytable.to_centipayout(cluster_payout)
+            base_centipayout = self._paytable.to_centipayout(base_payout)
             total_centipayout += cluster_centipayout
 
             # Centroid — visual center for win amount overlay
             centroid = self._compute_centroid(cluster.positions)
 
-            # Wild positions for diagnostics and frontend highlighting
-            wild_pos_list = self._positions_to_json(cluster.wild_positions)
+            # Per-cell breakdown — all cells use the cluster's owning symbol
+            # (wilds substitute for the cluster symbol)
+            cells = [
+                {
+                    "symbol": cluster.symbol.name,
+                    "reel": pos.reel,
+                    "row": pos.row,
+                    "multiplier": (
+                        grid_snapshot[pos.reel * num_rows + pos.row]
+                        if (pos.reel * num_rows + pos.row) < len(grid_snapshot)
+                        else 0
+                    ),
+                }
+                for pos in sorted(all_positions, key=lambda p: (p.reel, p.row))
+            ]
 
             wins.append({
-                "symbol": cluster.symbol.name,
+                "basePayout": base_centipayout,
+                "clusterPayout": cluster_centipayout,
+                "clusterMultiplier": mult_sum,
                 "clusterSize": cluster.size,
-                "win": cluster_centipayout,
-                "positions": self._positions_to_json(
-                    cluster.positions | cluster.wild_positions,
-                ),
-                "meta": {
-                    "globalMult": 1,
-                    "clusterMult": mult_sum,
-                    "winWithoutMult": self._paytable.to_centipayout(base_payout),
-                    "overlay": centroid,
-                    "wildPositions": wild_pos_list,
-                },
+                "overlay": centroid,
+                "cluster": {"cells": cells},
             })
 
         return {
@@ -324,6 +339,114 @@ class EventStreamGenerator:
             "wins": wins,
         }
 
+    def _make_update_board_multipliers(
+        self,
+        prev_snapshot: tuple[int, ...],
+        curr_snapshot: tuple[int, ...],
+    ) -> dict:
+        """Build updateBoardMultipliers event — sparse delta of changed positions."""
+        num_rows = self._config.board.num_rows
+        changed: list[dict] = []
+        for flat_idx, (old, new) in enumerate(zip(prev_snapshot, curr_snapshot)):
+            if old != new:
+                reel, row = divmod(flat_idx, num_rows)
+                changed.append({
+                    "multiplier": new,
+                    "position": {"reel": reel, "row": row},
+                })
+        return {
+            "index": self._next_index(),
+            "type": UPDATE_BOARD_MULTIPLIERS,
+            "boardMultipliers": changed,
+        }
+
+    def _make_booster_spawn_info(self, step: CascadeStepRecord) -> dict:
+        """Build boosterSpawnInfo event — flat list of spawned boosters."""
+        boosters = [
+            {
+                "symbol": btype,
+                "position": {"reel": reel, "row": row},
+            }
+            for btype, reel, row, _orient in step.booster_spawn_positions
+        ]
+        return {
+            "index": self._next_index(),
+            "type": BOOSTER_SPAWN_INFO,
+            "boosters": boosters,
+        }
+
+    def _make_booster_arm_info(
+        self, arm_records: tuple[BoosterArmRecord, ...],
+    ) -> dict:
+        """Build boosterArmInfo event — boosters that transitioned to ARMED."""
+        boosters = [
+            {
+                "symbol": rec.booster_type,
+                "position": {"reel": rec.position_reel, "row": rec.position_row},
+            }
+            for rec in arm_records
+        ]
+        return {
+            "index": self._next_index(),
+            "type": BOOSTER_ARM_INFO,
+            "boosters": boosters,
+        }
+
+    def _make_booster_fire_info(
+        self, fire_records: tuple[BoosterFireRecord, ...],
+    ) -> dict:
+        """Build boosterFireInfo event — per-booster clearedCells with symbol."""
+        boosters: list[dict] = []
+        for record in fire_records:
+            boosters.append({
+                "symbol": record.booster_type,
+                "clearedCells": [
+                    {
+                        "symbol": sym_name,
+                        "position": {"reel": r, "row": c},
+                    }
+                    for r, c, sym_name in record.affected_positions_list
+                ],
+            })
+        return {
+            "index": self._next_index(),
+            "type": BOOSTER_FIRE_INFO,
+            "boosters": boosters,
+        }
+
+    def _make_gravity_settle(self, gravity_record: GravityRecord) -> dict:
+        """Build gravitySettle event from captured gravity data.
+
+        Contains per-pass movement data and refill symbols. No explodingSymbols.
+        """
+        # Format per-pass move steps: each move is {symbol, fromCell, toCell}
+        move_steps: list[list[dict]] = []
+        for pass_moves in gravity_record.move_steps:
+            pass_list: list[dict] = []
+            for sym, (src_r, src_c), (dst_r, dst_c) in pass_moves:
+                pass_list.append({
+                    "symbol": sym,
+                    "fromCell": {"reel": src_r, "row": src_c},
+                    "toCell": {"reel": dst_r, "row": dst_c},
+                })
+            move_steps.append(pass_list)
+
+        # Format refill symbols — spec shape: {symbol, position: {reel, row}}
+        num_reels = self._config.board.num_reels
+        new_symbols: list[list[dict]] = [[] for _ in range(num_reels)]
+        for reel, row, sym_name in gravity_record.refill_entries:
+            new_symbols[reel].append({
+                "symbol": sym_name,
+                "position": {"reel": reel, "row": row},
+            })
+
+        return {
+            "index": self._next_index(),
+            "type": GRAVITY_SETTLE,
+            "moveSteps": move_steps,
+            "newSymbols": new_symbols,
+        }
+
     def _make_update_tumble_win(self, cumulative_centipayout: int) -> dict:
         """Build updateTumbleWin event — running cascade accumulation."""
         return {
@@ -331,159 +454,6 @@ class EventStreamGenerator:
             "type": UPDATE_TUMBLE_WIN,
             "amount": cumulative_centipayout,
         }
-
-    def _make_spawn_events(self, step: CascadeStepRecord) -> list[dict]:
-        """Build spawn events for boosters created this step.
-
-        Groups spawn types and emits one event per booster type that spawned.
-        Uses SPAWN_EVENT_TYPE dict dispatch to map symbol name → event type.
-        Positions come from TransitionResult.spawns (post-collision-resolution).
-        """
-        from collections import defaultdict
-
-        events: list[dict] = []
-
-        # Build type → list[position_dict] index from resolved spawn data.
-        # Multiple spawns of the same type (e.g. two wilds) group naturally.
-        positions_by_type: dict[str, list[dict]] = defaultdict(list)
-        for btype, reel, row, orient in step.booster_spawn_positions:
-            pos_dict: dict[str, object] = {"reel": reel, "row": row}
-            if orient is not None:
-                pos_dict["orientation"] = orient
-            positions_by_type[btype].append(pos_dict)
-
-        for spawn_type in step.booster_spawn_types:
-            event_type = SPAWN_EVENT_TYPE.get(spawn_type)
-            if event_type is None:
-                continue
-
-            spawn_clusters: list[dict] = []
-            for cluster in step.clusters:
-                centroid = self._compute_centroid(cluster.positions)
-                spawn_clusters.append({
-                    "symbol": cluster.symbol.name,
-                    "size": cluster.size,
-                    "centroid": centroid,
-                })
-
-            event: dict = {
-                "index": self._next_index(),
-                "type": event_type,
-                "positions": positions_by_type.get(spawn_type, []),
-                "clusters": spawn_clusters,
-            }
-            events.append(event)
-        return events
-
-    def _make_gravity_settle(self, gravity_record: GravityRecord) -> dict:
-        """Build gravitySettle event from captured gravity data.
-
-        Contains exploding positions, per-pass movement data, and refill symbols.
-        """
-        # Format exploding positions as {reel, row} dicts
-        exploding = [
-            {"reel": r, "row": c} for r, c in gravity_record.exploded_positions
-        ]
-
-        # Format per-pass move steps: each move is {fromCell, toCell} with direction
-        move_steps: list[list[dict]] = []
-        for pass_moves in gravity_record.move_steps:
-            pass_list: list[dict] = []
-            for (src_r, src_c), (dst_r, dst_c) in pass_moves:
-                pass_list.append({
-                    "fromCell": {"reel": src_r, "row": src_c},
-                    "toCell": {"reel": dst_r, "row": dst_c},
-                })
-            move_steps.append(pass_list)
-
-        # Format refill symbols grouped by reel
-        num_reels = self._config.board.num_reels
-        new_symbols: list[list[dict]] = [[] for _ in range(num_reels)]
-        for reel, row, sym_name in gravity_record.refill_entries:
-            new_symbols[reel].append({
-                "name": sym_name,
-                "reel": reel,
-                "row": row,
-            })
-
-        return {
-            "index": self._next_index(),
-            "type": GRAVITY_SETTLE,
-            "explodingSymbols": exploding,
-            "moveSteps": move_steps,
-            "newSymbols": new_symbols,
-        }
-
-    def _make_booster_phase(
-        self,
-        fire_records: tuple[BoosterFireRecord, ...],
-        booster_gravity: GravityRecord | None,
-    ) -> dict:
-        """Build boosterPhase event — fired boosters + post-fire gravity."""
-        fired: list[dict] = []
-        all_cleared: list[dict] = []
-
-        for record in fire_records:
-            entry: dict = {
-                "type": record.booster_type.lower(),
-                "reel": record.position_reel,
-                "row": record.position_row,
-            }
-            # Type-specific fields matching EventStream spec
-            if record.booster_type == "R" and record.orientation is not None:
-                entry["orientation"] = record.orientation
-            elif record.booster_type == "LB" and record.target_symbols:
-                entry["targetSymbol"] = record.target_symbols[0]
-            elif record.booster_type == "SLB" and record.target_symbols:
-                entry["targetSymbols"] = list(record.target_symbols)
-
-            fired.append(entry)
-
-            # Collect cleared cells from all fires
-            for r, c in record.affected_positions_list:
-                all_cleared.append({"reel": r, "row": c})
-
-        # Deduplicate and sort cleared cells
-        seen: set[tuple[int, int]] = set()
-        unique_cleared: list[dict] = []
-        for cell in sorted(all_cleared, key=lambda p: (p["reel"], p["row"])):
-            key = (cell["reel"], cell["row"])
-            if key not in seen:
-                seen.add(key)
-                unique_cleared.append(cell)
-
-        event: dict = {
-            "index": self._next_index(),
-            "type": BOOSTER_PHASE,
-            "firedBoosters": fired,
-            "clearedCells": unique_cleared,
-        }
-
-        # Post-booster gravity if available
-        if booster_gravity is not None:
-            move_steps: list[list[dict]] = []
-            for pass_moves in booster_gravity.move_steps:
-                pass_list: list[dict] = []
-                for (src_r, src_c), (dst_r, dst_c) in pass_moves:
-                    pass_list.append({
-                        "fromCell": {"reel": src_r, "row": src_c},
-                        "toCell": {"reel": dst_r, "row": dst_c},
-                    })
-                move_steps.append(pass_list)
-
-            num_reels = self._config.board.num_reels
-            new_symbols: list[list[dict]] = [[] for _ in range(num_reels)]
-            for reel, row, sym_name in booster_gravity.refill_entries:
-                new_symbols[reel].append({
-                    "name": sym_name,
-                    "reel": reel,
-                    "row": row,
-                })
-
-            event["moveSteps"] = move_steps
-            event["newSymbols"] = new_symbols
-
-        return event
 
     def _make_set_win(self, centipayout: int, win_level: int) -> dict:
         """Build setWin event — final spin payout with celebration level."""

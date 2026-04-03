@@ -31,6 +31,9 @@ class BoosterFireResult:
     chain_targets: tuple[Position, ...]
     # Symbols targeted by LB (1 symbol) or SLB (2 symbols) — empty for R/B
     target_symbols: tuple[str, ...] = ()
+    # Position → symbol name captured before clearing — event stream needs
+    # symbol identity for boosterFireInfo.clearedCells
+    affected_symbols: tuple[tuple[Position, str], ...] = ()
 
 
 # Type alias for the fire dispatch function signature

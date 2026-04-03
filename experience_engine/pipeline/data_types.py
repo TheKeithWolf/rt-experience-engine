@@ -39,8 +39,19 @@ class BoosterFireRecord:
     chain_target_count: int     # number of boosters hit for potential chaining
     # Symbols targeted by LB (1 symbol) or SLB (2 symbols) — empty for R/B
     target_symbols: tuple[str, ...] = ()
-    # Actual board positions cleared — needed by event stream for clearedCells in boosterPhase
-    affected_positions_list: tuple[tuple[int, int], ...] = ()
+    # Cleared positions with symbol identity — event stream needs symbol for
+    # boosterFireInfo.clearedCells[].symbol. Each entry: (reel, row, symbol_name).
+    affected_positions_list: tuple[tuple[int, int, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class BoosterArmRecord:
+    """Snapshot of one booster arm event for event stream replay."""
+
+    booster_type: str
+    position_reel: int
+    position_row: int
+    orientation: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,8 +64,8 @@ class GravityRecord:
 
     # Positions removed (clusters exploded) that triggered this gravity settle
     exploded_positions: tuple[tuple[int, int], ...]
-    # Per-pass movement data: each pass is a tuple of (source, dest) position pairs
-    move_steps: tuple[tuple[tuple[tuple[int, int], tuple[int, int]], ...], ...]
+    # Per-pass movement data: each move is (symbol_name, (reel, row), (reel, row))
+    move_steps: tuple[tuple[tuple[str, tuple[int, int], tuple[int, int]], ...], ...]
     # New symbols placed at empty positions after gravity + WFC refill
     # Each entry: (reel, row, symbol_name) — frontend needs symbol + position for animation
     refill_entries: tuple[tuple[int, int, str], ...]
@@ -91,6 +102,9 @@ class CascadeStepRecord:
     # Booster types armed at this step (e.g., ("R",)) — populated from
     # BoosterTracker.arm_adjacent() results during transition.
     booster_arm_types: tuple[str, ...] = ()
+    # Full arm records with position/orientation — event stream needs these
+    # for boosterArmInfo events. Populated alongside booster_arm_types.
+    booster_arm_records: tuple[BoosterArmRecord, ...] = ()
     # Booster fires that occurred during this step's booster phase
     booster_fire_records: tuple[BoosterFireRecord, ...] = ()
     # Gravity settle that preceded this step — None for step 0 (initial board)
@@ -163,6 +177,8 @@ class TransitionResult:
     booster_gravity_record: GravityRecord | None = None
     # Booster types armed during this transition (DORMANT -> ARMED)
     booster_arm_types: tuple[str, ...] = ()
+    # Full arm records with position/orientation for event stream
+    booster_arm_records: tuple[BoosterArmRecord, ...] = ()
 
 
 class TransitionData(NamedTuple):
@@ -179,6 +195,7 @@ class TransitionData(NamedTuple):
     fire_records: tuple[BoosterFireRecord, ...]
     booster_gravity_record: GravityRecord | None
     arm_types: tuple[str, ...] = ()
+    arm_records: tuple[BoosterArmRecord, ...] = ()
 
 
 class CascadeStepOutcome(NamedTuple):
@@ -245,12 +262,12 @@ def build_gravity_record(
         )
     )
 
-    # Convert move_steps: tuple of passes, each pass is tuple of (src, dst) Position pairs
-    move_tuples: list[tuple[tuple[tuple[int, int], tuple[int, int]], ...]] = []
+    # Convert move_steps: tuple of passes, each move is (symbol, src, dst) with Position→tuple
+    move_tuples: list[tuple[tuple[str, tuple[int, int], tuple[int, int]], ...]] = []
     for pass_moves in settle_result.move_steps:  # type: ignore[attr-defined]
         pass_tuples = tuple(
-            ((src.reel, src.row), (dst.reel, dst.row))
-            for src, dst in pass_moves
+            (sym, (src.reel, src.row), (dst.reel, dst.row))
+            for sym, src, dst in pass_moves
         )
         move_tuples.append(pass_tuples)
 
@@ -297,7 +314,10 @@ def fire_result_to_record(result: object) -> BoosterFireRecord:
         chain_target_count=len(result.chain_targets),  # type: ignore[attr-defined]
         target_symbols=result.target_symbols,  # type: ignore[attr-defined]
         affected_positions_list=tuple(
-            (p.reel, p.row)
-            for p in sorted(result.affected_positions, key=lambda p: (p.reel, p.row))  # type: ignore[attr-defined]
+            (pos.reel, pos.row, name)
+            for pos, name in sorted(
+                result.affected_symbols,  # type: ignore[attr-defined]
+                key=lambda pair: (pair[0].reel, pair[0].row),
+            )
         ),
     )

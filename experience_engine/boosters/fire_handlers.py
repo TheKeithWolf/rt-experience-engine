@@ -36,6 +36,7 @@ def fire_rocket(
 
     affected: set[Position] = set()
     chain_targets: list[Position] = []
+    symbol_captures: list[tuple[Position, str]] = []
 
     for pos in path:
         # Rocket's own position is consumed, not "cleared"
@@ -51,6 +52,7 @@ def fire_rocket(
             continue
 
         affected.add(pos)
+        symbol_captures.append((pos, sym.name))
 
         # Boosters in the path can be chain-triggered by the executor
         if is_booster(sym):
@@ -60,6 +62,7 @@ def fire_rocket(
         booster=booster,
         affected_positions=frozenset(affected),
         chain_targets=tuple(chain_targets),
+        affected_symbols=tuple(symbol_captures),
     )
 
 
@@ -79,6 +82,7 @@ def fire_bomb(
 
     affected: set[Position] = set()
     chain_targets: list[Position] = []
+    symbol_captures: list[tuple[Position, str]] = []
 
     for pos in blast:
         # Bomb's own position is consumed, not "cleared"
@@ -94,6 +98,7 @@ def fire_bomb(
             continue
 
         affected.add(pos)
+        symbol_captures.append((pos, sym.name))
 
         # Boosters in the blast zone can be chain-triggered
         if is_booster(sym):
@@ -103,6 +108,7 @@ def fire_bomb(
         booster=booster,
         affected_positions=frozenset(affected),
         chain_targets=tuple(chain_targets),
+        affected_symbols=tuple(symbol_captures),
     )
 
 
@@ -124,11 +130,13 @@ def fire_lightball(
 
     # Collect every position containing the target symbol
     affected: set[Position] = set()
+    symbol_captures: list[tuple[Position, str]] = []
     for reel in range(board.num_reels):
         for row in range(board.num_rows):
             pos = Position(reel, row)
             if board.get(pos) is target_sym:
                 affected.add(pos)
+                symbol_captures.append((pos, target_sym.name))
 
     return BoosterFireResult(
         booster=booster,
@@ -136,6 +144,7 @@ def fire_lightball(
         # LB cannot initiate chains (not in config.boosters.chain_initiators)
         chain_targets=(),
         target_symbols=(target_sym.name,),
+        affected_symbols=tuple(symbol_captures),
     )
 
 
@@ -158,12 +167,14 @@ def fire_superlightball(
     # Collect every position containing either target symbol
     target_set = frozenset(targets)
     affected: set[Position] = set()
+    symbol_captures: list[tuple[Position, str]] = []
     for reel in range(board.num_reels):
         for row in range(board.num_rows):
             pos = Position(reel, row)
             sym = board.get(pos)
             if sym in target_set:
                 affected.add(pos)
+                symbol_captures.append((pos, sym.name))
 
     return BoosterFireResult(
         booster=booster,
@@ -171,4 +182,5 @@ def fire_superlightball(
         # SLB cannot initiate chains (not in config.boosters.chain_initiators)
         chain_targets=(),
         target_symbols=tuple(s.name for s in targets),
+        affected_symbols=tuple(symbol_captures),
     )

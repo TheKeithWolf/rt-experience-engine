@@ -28,6 +28,7 @@ from ..primitives.symbols import Symbol, symbol_from_name
 from ..step_reasoner.progress import ClusterRecord
 from ..step_reasoner.results import SpawnRecord, StepResult
 from .data_types import (
+    BoosterArmRecord,
     BoosterFireRecord,
     GravityRecord,
     TransitionResult,
@@ -166,25 +167,12 @@ class StepTransitionSimulator:
         booster_spawn_positions = {sr.position for sr in spawn_records}
         gravity_exploded = frozenset(all_cluster_positions - booster_spawn_positions)
 
-        # 4. First gravity settle (cluster explosion)
-        settle_result = settle(
-            self._gravity_dag, result_board, gravity_exploded, self._config.gravity,
-        )
-        result_board = settle_result.board
-
-        # 5. Update booster positions after cluster-gravity
-        position_map = _build_position_map(settle_result.move_steps)
-        booster_tracker.update_positions_after_gravity(position_map)
-
-        # Build cluster gravity record
-        gravity_record = build_gravity_record(all_cluster_positions, settle_result)
-
-        # 6. Arm dormant boosters adjacent to the exploding cluster positions
-        # Exclude freshly-spawned non-wild boosters — a booster at its source
-        # cluster's centroid is inherently adjacent and would fire immediately.
-        # Remap through gravity position_map since boosters may have fallen.
+        # 4. Arm dormant boosters adjacent to the exploding cluster positions
+        # Spec: arm adjacency is checked BEFORE gravity (step 8 precedes step 9).
+        # Freshly-spawned non-wild boosters are excluded — they sit at the source
+        # cluster's centroid and are inherently adjacent.
         freshly_spawned_positions = frozenset(
-            position_map.get(sr.position, sr.position)
+            sr.position
             for sr in spawn_records
             if sr.booster_type != Symbol.W.name
         )
@@ -193,12 +181,37 @@ class StepTransitionSimulator:
             exclude_positions=freshly_spawned_positions,
         )
 
+        # 5. Gravity settle (cluster explosion)
+        settle_result = settle(
+            self._gravity_dag, result_board, gravity_exploded, self._config.gravity,
+        )
+        result_board = settle_result.board
+
+        # 6. Update booster positions after cluster-gravity
+        position_map = _build_position_map(settle_result.move_steps)
+        booster_tracker.update_positions_after_gravity(position_map)
+
+        # Build cluster gravity record
+        gravity_record = build_gravity_record(all_cluster_positions, settle_result)
+
+        # Build arm records for event stream replay
+        arm_records = tuple(
+            BoosterArmRecord(
+                booster_type=b.booster_type.name,
+                position_reel=b.position.reel,
+                position_row=b.position.row,
+                orientation=b.orientation,
+            )
+            for b in armed_instances
+        )
+
         # Armed boosters sit until the post-terminal booster phase fires them
         return TransitionResult(
             board=result_board,
             spawns=tuple(spawn_records),
             gravity_record=gravity_record,
             booster_arm_types=tuple(b.booster_type.name for b in armed_instances),
+            booster_arm_records=arm_records,
         )
 
     # ------------------------------------------------------------------
@@ -356,7 +369,7 @@ class StepTransitionSimulator:
 
 
 def _build_position_map(
-    move_steps: tuple[tuple[tuple[Position, Position], ...], ...],
+    move_steps: tuple[tuple[tuple[str, Position, Position], ...], ...],
 ) -> dict[Position, Position]:
     """Build a cumulative position map from gravity move passes.
 
@@ -366,7 +379,7 @@ def _build_position_map(
     # Collect all unique source positions from the first pass they appear
     tracked: dict[Position, Position] = {}
     for pass_moves in move_steps:
-        for src, dst in pass_moves:
+        for _sym, src, dst in pass_moves:
             if src not in tracked:
                 tracked[src] = dst
             elif tracked[src] == src:
@@ -377,13 +390,13 @@ def _build_position_map(
     result: dict[Position, Position] = {}
     all_sources: set[Position] = set()
     for pass_moves in move_steps:
-        for src, _ in pass_moves:
+        for _sym, src, _dst in pass_moves:
             all_sources.add(src)
 
     for original_src in all_sources:
         current = original_src
         for pass_moves in move_steps:
-            for src, dst in pass_moves:
+            for _sym, src, dst in pass_moves:
                 if src == current:
                     current = dst
                     break

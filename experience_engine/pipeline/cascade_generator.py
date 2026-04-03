@@ -29,6 +29,7 @@ from ..step_reasoner.reasoner import StepReasoner
 from ..step_reasoner.results import StepResult
 from ..variance.hints import VarianceHints
 from .data_types import (
+    BoosterArmRecord,
     BoosterFireRecord,
     CascadeStepOutcome,
     CascadeStepRecord,
@@ -204,8 +205,15 @@ class CascadeInstanceGenerator:
             fire_recs: tuple[BoosterFireRecord, ...] = ()
             booster_grav: GravityRecord | None = None
             arm_types: tuple[str, ...] = ()
+            arm_records: tuple[BoosterArmRecord, ...] = ()
             if td is not None:
-                gr_base, empty_positions, spawns, fire_recs, booster_grav, arm_types = td
+                gr_base = td.gravity_record
+                empty_positions = td.empty_positions
+                spawns = td.spawns
+                fire_recs = td.fire_records
+                booster_grav = td.booster_gravity_record
+                arm_types = td.arm_types
+                arm_records = td.arm_records
                 next_filled = raw_steps[i + 1][2]
                 refill_entries = tuple(
                     (pos.reel, pos.row, next_filled.get(pos).name)
@@ -223,6 +231,7 @@ class CascadeInstanceGenerator:
                 booster_fire_records=fire_recs,
                 booster_gravity_record=booster_grav,
                 booster_arm_types=arm_types,
+                booster_arm_records=arm_records,
             ))
 
         # Merge post-terminal booster fire records into the last step record.
@@ -418,6 +427,7 @@ class CascadeInstanceGenerator:
                 fire_records=transition_result.booster_fire_records,
                 booster_gravity_record=transition_result.booster_gravity_record,
                 arm_types=transition_result.booster_arm_types,
+                arm_records=transition_result.booster_arm_records,
             )
 
             # Board is truth — sync wild positions after gravity + consumption
@@ -450,6 +460,7 @@ class CascadeInstanceGenerator:
         booster_fire_records: tuple[BoosterFireRecord, ...] = (),
         booster_gravity_record: GravityRecord | None = None,
         booster_arm_types: tuple[str, ...] = (),
+        booster_arm_records: tuple[BoosterArmRecord, ...] = (),
     ) -> CascadeStepRecord:
         """Convert a StepResult + board snapshots into a CascadeStepRecord.
 
@@ -490,6 +501,7 @@ class CascadeInstanceGenerator:
                 for s in transition_spawns
             ),
             booster_arm_types=booster_arm_types,
+            booster_arm_records=booster_arm_records,
             booster_fire_records=booster_fire_records,
             gravity_record=gravity_record,
             booster_gravity_record=booster_gravity_record,

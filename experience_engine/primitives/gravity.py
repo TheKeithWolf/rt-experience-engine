@@ -29,8 +29,8 @@ class SettleResult:
     """Result of a gravity settle operation."""
 
     board: Board
-    # Moves grouped by pass — each move is (source, destination)
-    move_steps: tuple[tuple[tuple[Position, Position], ...], ...]
+    # Moves grouped by pass — each move is (symbol_name, source, destination)
+    move_steps: tuple[tuple[tuple[str, Position, Position], ...], ...]
     # Positions needing refill after settle (empty cells at top of columns)
     empty_positions: tuple[Position, ...]
 
@@ -129,9 +129,10 @@ def settle(
                             continue
 
                     # This donor can donate — execute the move
+                    sym_name = board.get(donor_pos).name
                     board.set(pos, board.get(donor_pos))
                     board.set(donor_pos, None)
-                    pass_moves.append((donor_pos, pos))
+                    pass_moves.append((sym_name, donor_pos, pos))
                     donated_this_pass.add(donor_pos)
                     break  # This empty cell is now filled
 
@@ -156,7 +157,7 @@ def settle(
 
 
 def build_gravity_mappings(
-    move_steps: tuple[tuple[tuple[Position, Position], ...], ...],
+    move_steps: tuple[tuple[tuple[str, Position, Position], ...], ...],
     board_config: BoardConfig,
     excluded: frozenset[Position] = frozenset(),
 ) -> tuple[dict[Position, Position], dict[Position, list[Position]]]:
@@ -188,7 +189,7 @@ def build_gravity_mappings(
     # pass 2 means A's final position is C
     for pass_moves in move_steps:
         move_map: dict[Position, Position] = {}
-        for source, dest in pass_moves:
+        for _sym, source, dest in pass_moves:
             move_map[source] = dest
 
         for pre_pos in pre_to_post:

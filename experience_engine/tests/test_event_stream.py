@@ -1,7 +1,7 @@
-"""Tests for Phase 13: Event Stream Generation + Visual Tracer.
+"""Tests for Event Stream Generation + Visual Tracer.
 
 All fixtures use hand-constructed GeneratedInstance objects — no solver or
-clingo dependency. Covers TEST-P13-001 through TEST-P13-017.
+clingo dependency.
 """
 
 from __future__ import annotations
@@ -14,7 +14,9 @@ from ..config.schema import MasterConfig
 from ..output.book_record import BookRecord, book_record_from_instance
 from ..output.event_stream import EventStreamGenerator
 from ..output.event_types import (
-    BOOSTER_PHASE,
+    BOOSTER_ARM_INFO,
+    BOOSTER_FIRE_INFO,
+    BOOSTER_SPAWN_INFO,
     FINAL_WIN,
     FREE_SPIN_END,
     FREE_SPIN_TRIGGER,
@@ -22,15 +24,13 @@ from ..output.event_types import (
     REVEAL,
     SET_TOTAL_WIN,
     SET_WIN,
-    SPAWN_EVENT_TYPE,
-    UPDATE_GRID,
+    UPDATE_BOARD_MULTIPLIERS,
     UPDATE_TUMBLE_WIN,
     WINCAP,
-    WILD_SPAWN,
     WIN_INFO,
-    compute_anticipation,
 )
 from ..pipeline.data_types import (
+    BoosterArmRecord,
     BoosterFireRecord,
     CascadeStepRecord,
     GeneratedInstance,
@@ -196,8 +196,8 @@ def _make_cascade_instance(config: MasterConfig) -> GeneratedInstance:
             (p.reel, p.row) for p in sorted(cluster0_positions, key=lambda p: (p.reel, p.row))
         ),
         move_steps=(
-            # One pass: one symbol falls straight down
-            (((0, 4), (0, 3)),),
+            # One pass: L2 symbol at (0,4) falls straight down to (0,3)
+            (("L2", (0, 4), (0, 3)),),
         ),
         refill_entries=(
             (0, 0, "L3"), (0, 1, "L3"), (0, 2, "L3"),
@@ -338,13 +338,13 @@ def _make_trigger_instance(config: MasterConfig) -> GeneratedInstance:
 
 
 # ---------------------------------------------------------------------------
-# TEST-P13-001: reveal has correct board, gameType, anticipation
+# TEST: reveal has correct board, gameType, boardMultipliers
 # ---------------------------------------------------------------------------
 
 
 class TestRevealEvent:
     def test_reveal_fields(self, default_config: MasterConfig) -> None:
-        """Reveal event contains board grid, gameType, and anticipation array."""
+        """Reveal event contains board grid, gameType, and boardMultipliers."""
         instance = _make_dead_instance(default_config)
         gen = EventStreamGenerator(default_config, _make_paytable(default_config))
         events = gen.generate(instance)
@@ -356,12 +356,13 @@ class TestRevealEvent:
         assert isinstance(reveal["board"], list)
         assert len(reveal["board"]) == default_config.board.num_reels
         assert len(reveal["board"][0]) == default_config.board.num_rows
-        assert isinstance(reveal["anticipation"], list)
-        assert len(reveal["anticipation"]) == default_config.board.num_reels
+        # boardMultipliers embedded in reveal (no separate updateGrid)
+        assert isinstance(reveal["boardMultipliers"], list)
+        assert len(reveal["boardMultipliers"]) == default_config.board.num_reels
 
 
 # ---------------------------------------------------------------------------
-# TEST-P13-002: indices are sequential starting at 0
+# TEST: indices are sequential starting at 0
 # ---------------------------------------------------------------------------
 
 
@@ -379,7 +380,7 @@ class TestEventIndices:
 
 
 # ---------------------------------------------------------------------------
-# TEST-P13-003: spawn events before gravitySettle
+# TEST: spawn events before gravitySettle
 # ---------------------------------------------------------------------------
 
 
@@ -399,13 +400,13 @@ class TestSpawnBeforeGravity:
 
 
 # ---------------------------------------------------------------------------
-# TEST-P13-004: winInfo.meta.overlay = centroid position
+# TEST: winInfo uses spec shape (basePayout, clusterPayout, cluster.cells)
 # ---------------------------------------------------------------------------
 
 
-class TestWinInfoMeta:
+class TestWinInfoSpec:
     def test_wininfo_overlay_centroid(self, default_config: MasterConfig) -> None:
-        """winInfo meta.overlay matches the cluster centroid."""
+        """winInfo overlay matches the cluster centroid."""
         instance = _make_static_instance(default_config)
         gen = EventStreamGenerator(default_config, _make_paytable(default_config))
         events = gen.generate(instance)
@@ -415,16 +416,14 @@ class TestWinInfoMeta:
 
         for win_event in win_info_events:
             for win in win_event["wins"]:
-                meta = win["meta"]
-                overlay = meta["overlay"]
-                # Overlay should be a valid board position
+                overlay = win["overlay"]
                 assert "reel" in overlay
                 assert "row" in overlay
                 assert 0 <= overlay["reel"] < default_config.board.num_reels
                 assert 0 <= overlay["row"] < default_config.board.num_rows
 
-    def test_wininfo_cluster_mult(self, default_config: MasterConfig) -> None:
-        """winInfo meta.clusterMult matches grid multiplier sum at cluster positions."""
+    def test_wininfo_spec_fields(self, default_config: MasterConfig) -> None:
+        """winInfo wins[] entries have basePayout, clusterPayout, clusterMultiplier, cluster.cells."""
         instance = _make_static_instance(default_config)
         gen = EventStreamGenerator(default_config, _make_paytable(default_config))
         events = gen.generate(instance)
@@ -432,13 +431,48 @@ class TestWinInfoMeta:
         win_info_events = [e for e in events if e["type"] == WIN_INFO]
         for win_event in win_info_events:
             for win in win_event["wins"]:
-                meta = win["meta"]
+                assert "basePayout" in win
+                assert "clusterPayout" in win
+                assert "clusterMultiplier" in win
+                assert "clusterSize" in win
+                assert "overlay" in win
+                assert "cluster" in win
+                assert "cells" in win["cluster"]
+                # No legacy fields
+                assert "meta" not in win
+                assert "symbol" not in win
+                assert "positions" not in win
+
+    def test_wininfo_cluster_cells(self, default_config: MasterConfig) -> None:
+        """Each cell in cluster.cells has symbol, reel, row, multiplier."""
+        instance = _make_static_instance(default_config)
+        gen = EventStreamGenerator(default_config, _make_paytable(default_config))
+        events = gen.generate(instance)
+
+        win_info_events = [e for e in events if e["type"] == WIN_INFO]
+        for win_event in win_info_events:
+            for win in win_event["wins"]:
+                for cell in win["cluster"]["cells"]:
+                    assert "symbol" in cell
+                    assert "reel" in cell
+                    assert "row" in cell
+                    assert "multiplier" in cell
+
+    def test_wininfo_cluster_mult(self, default_config: MasterConfig) -> None:
+        """winInfo clusterMultiplier is at least minimum_contribution."""
+        instance = _make_static_instance(default_config)
+        gen = EventStreamGenerator(default_config, _make_paytable(default_config))
+        events = gen.generate(instance)
+
+        win_info_events = [e for e in events if e["type"] == WIN_INFO]
+        for win_event in win_info_events:
+            for win in win_event["wins"]:
                 # Initial grid is all zeros — minimum_contribution ensures mult >= 1
-                assert meta["clusterMult"] >= default_config.grid_multiplier.minimum_contribution
+                assert win["clusterMultiplier"] >= default_config.grid_multiplier.minimum_contribution
 
 
 # ---------------------------------------------------------------------------
-# TEST-P13-006: centipayout conversion matches formula
+# TEST: centipayout conversion matches formula
 # ---------------------------------------------------------------------------
 
 
@@ -455,7 +489,7 @@ class TestCentipayoutConversion:
 
 
 # ---------------------------------------------------------------------------
-# TEST-P13-007: win level matches payout range
+# TEST: win level matches payout range
 # ---------------------------------------------------------------------------
 
 
@@ -472,34 +506,34 @@ class TestWinLevelMapping:
 
 
 # ---------------------------------------------------------------------------
-# TEST-P13-008: dead spin sequence
+# TEST: dead spin sequence — exactly [reveal, setTotalWin, finalWin]
 # ---------------------------------------------------------------------------
 
 
 class TestDeadSpin:
     def test_dead_spin_events(self, default_config: MasterConfig) -> None:
-        """Dead spin: exactly 4 events in correct order."""
+        """Dead spin: exactly 3 events — reveal, setTotalWin(0), finalWin(0)."""
         instance = _make_dead_instance(default_config)
         gen = EventStreamGenerator(default_config, _make_paytable(default_config))
         events = gen.generate(instance)
 
-        assert len(events) == 4
+        assert len(events) == 3
         assert events[0]["type"] == REVEAL
-        assert events[1]["type"] == UPDATE_GRID
-        assert events[2]["type"] == SET_TOTAL_WIN
+        assert "boardMultipliers" in events[0]
+        assert events[1]["type"] == SET_TOTAL_WIN
+        assert events[1]["amount"] == 0
+        assert events[2]["type"] == FINAL_WIN
         assert events[2]["amount"] == 0
-        assert events[3]["type"] == FINAL_WIN
-        assert events[3]["amount"] == 0
 
 
 # ---------------------------------------------------------------------------
-# TEST-P13-009: cascade gravitySettle has correct structure
+# TEST: cascade gravitySettle has correct structure (no explodingSymbols)
 # ---------------------------------------------------------------------------
 
 
 class TestCascadeGravitySettle:
     def test_cascade_gravity_settle(self, default_config: MasterConfig) -> None:
-        """gravitySettle event has explodingSymbols, moveSteps, and newSymbols."""
+        """gravitySettle event has moveSteps and newSymbols, no explodingSymbols."""
         instance = _make_cascade_instance(default_config)
         gen = EventStreamGenerator(default_config, _make_paytable(default_config))
         events = gen.generate(instance)
@@ -508,18 +542,48 @@ class TestCascadeGravitySettle:
         assert len(gravity_events) >= 1
 
         grav = gravity_events[0]
-        assert "explodingSymbols" in grav
+        assert "explodingSymbols" not in grav
         assert "moveSteps" in grav
         assert "newSymbols" in grav
-        assert isinstance(grav["explodingSymbols"], list)
         assert isinstance(grav["moveSteps"], list)
         assert isinstance(grav["newSymbols"], list)
         # newSymbols should have one list per reel
         assert len(grav["newSymbols"]) == default_config.board.num_reels
 
+    def test_gravity_settle_move_steps_shape(self, default_config: MasterConfig) -> None:
+        """moveSteps entries use {symbol, fromCell: {reel, row}, toCell: {reel, row}} shape."""
+        instance = _make_cascade_instance(default_config)
+        gen = EventStreamGenerator(default_config, _make_paytable(default_config))
+        events = gen.generate(instance)
+
+        gravity_events = [e for e in events if e["type"] == GRAVITY_SETTLE]
+        grav = gravity_events[0]
+        for pass_list in grav["moveSteps"]:
+            for move in pass_list:
+                assert "symbol" in move
+                assert "fromCell" in move
+                assert "toCell" in move
+                assert "reel" in move["fromCell"]
+                assert "row" in move["fromCell"]
+
+    def test_gravity_settle_new_symbols_shape(self, default_config: MasterConfig) -> None:
+        """newSymbols entries use {symbol, position: {reel, row}} shape."""
+        instance = _make_cascade_instance(default_config)
+        gen = EventStreamGenerator(default_config, _make_paytable(default_config))
+        events = gen.generate(instance)
+
+        gravity_events = [e for e in events if e["type"] == GRAVITY_SETTLE]
+        grav = gravity_events[0]
+        for reel_entries in grav["newSymbols"]:
+            for entry in reel_entries:
+                assert "symbol" in entry
+                assert "position" in entry
+                assert "reel" in entry["position"]
+                assert "row" in entry["position"]
+
 
 # ---------------------------------------------------------------------------
-# TEST-P13-018: static gravitySettle emitted between updateTumbleWin and setWin
+# TEST: static gravitySettle emitted between updateTumbleWin and setWin
 # ---------------------------------------------------------------------------
 
 
@@ -553,7 +617,8 @@ def _make_true_static_instance(config: MasterConfig) -> GeneratedInstance:
             (p.reel, p.row) for p in sorted(cluster_positions, key=lambda p: (p.reel, p.row))
         ),
         move_steps=(
-            (((0, 4), (0, 3)),),
+            # L2 symbol at (0,4) falls straight down to (0,3)
+            (("L2", (0, 4), (0, 3)),),
         ),
         refill_entries=(
             (0, 0, "L3"), (0, 1, "L3"), (0, 2, "L3"),
@@ -586,26 +651,25 @@ class TestStaticGravitySettle:
         assert GRAVITY_SETTLE in types
 
     def test_static_gravity_settle_ordering(self, default_config: MasterConfig) -> None:
-        """gravitySettle appears between updateTumbleWin and setWin."""
+        """gravitySettle appears between updateBoardMultipliers and setWin."""
         instance = _make_true_static_instance(default_config)
         gen = EventStreamGenerator(default_config, _make_paytable(default_config))
         events = gen.generate(instance)
 
         types = [e["type"] for e in events]
-        tumble_idx = types.index(UPDATE_TUMBLE_WIN)
+        board_mult_idx = types.index(UPDATE_BOARD_MULTIPLIERS)
         gravity_idx = types.index(GRAVITY_SETTLE)
         set_win_idx = types.index(SET_WIN)
-        assert tumble_idx < gravity_idx < set_win_idx
+        assert board_mult_idx < gravity_idx < set_win_idx
 
     def test_static_gravity_settle_structure(self, default_config: MasterConfig) -> None:
-        """gravitySettle has explodingSymbols, moveSteps, and newSymbols."""
+        """gravitySettle has moveSteps and newSymbols, no explodingSymbols."""
         instance = _make_true_static_instance(default_config)
         gen = EventStreamGenerator(default_config, _make_paytable(default_config))
         events = gen.generate(instance)
 
         grav = [e for e in events if e["type"] == GRAVITY_SETTLE][0]
-        assert isinstance(grav["explodingSymbols"], list)
-        assert len(grav["explodingSymbols"]) == 5  # 5 cluster positions
+        assert "explodingSymbols" not in grav
         assert isinstance(grav["moveSteps"], list)
         assert isinstance(grav["newSymbols"], list)
         assert len(grav["newSymbols"]) == default_config.board.num_reels
@@ -632,125 +696,77 @@ class TestStaticGravitySettle:
 
 
 # ---------------------------------------------------------------------------
-# TEST: updateGrid captures incremented multipliers after cluster evaluation
+# TEST: updateBoardMultipliers emits sparse delta
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateGridMultipliers:
-    """updateGrid events reflect a running grid state — each cluster evaluation
-    increments the grid at winning positions and emits a new snapshot."""
+class TestUpdateBoardMultipliers:
+    """updateBoardMultipliers events emit only changed positions as sparse deltas."""
 
-    def test_static_two_update_grids(self, default_config: MasterConfig) -> None:
-        """Static win produces two updateGrid events: initial zeros then incremented."""
+    def test_static_has_update_board_multipliers(self, default_config: MasterConfig) -> None:
+        """Static win produces exactly one updateBoardMultipliers event."""
         instance = _make_true_static_instance(default_config)
         gen = EventStreamGenerator(default_config, _make_paytable(default_config))
         events = gen.generate(instance)
 
-        grids = [e for e in events if e["type"] == UPDATE_GRID]
-        assert len(grids) == 2
+        ubm = [e for e in events if e["type"] == UPDATE_BOARD_MULTIPLIERS]
+        assert len(ubm) == 1
 
-    def test_static_first_grid_all_zeros(self, default_config: MasterConfig) -> None:
-        """First updateGrid is all zeros — initial state before any wins."""
-        instance = _make_true_static_instance(default_config)
-        gen = EventStreamGenerator(default_config, _make_paytable(default_config))
-        events = gen.generate(instance)
-
-        first_grid = [e for e in events if e["type"] == UPDATE_GRID][0]
-        all_values = [v for row in first_grid["gridMultipliers"] for v in row]
-        assert all(v == 0 for v in all_values)
-
-    def test_static_second_grid_has_nonzero(self, default_config: MasterConfig) -> None:
-        """Second updateGrid has non-zero values at cluster positions."""
-        instance = _make_true_static_instance(default_config)
-        gen = EventStreamGenerator(default_config, _make_paytable(default_config))
-        events = gen.generate(instance)
-
-        second_grid = [e for e in events if e["type"] == UPDATE_GRID][1]
-        all_values = [v for row in second_grid["gridMultipliers"] for v in row]
-        assert any(v != 0 for v in all_values)
-
-    def test_static_incremented_positions_match_cluster(
+    def test_sparse_delta_only_cluster_positions(
         self, default_config: MasterConfig,
     ) -> None:
-        """Non-zero positions in the second updateGrid match the cluster positions."""
+        """updateBoardMultipliers delta contains only cluster positions."""
         instance = _make_true_static_instance(default_config)
         gen = EventStreamGenerator(default_config, _make_paytable(default_config))
         events = gen.generate(instance)
 
-        second_grid = [e for e in events if e["type"] == UPDATE_GRID][1]
-        matrix = second_grid["gridMultipliers"]
+        ubm = [e for e in events if e["type"] == UPDATE_BOARD_MULTIPLIERS][0]
+        changed = ubm["boardMultipliers"]
+        assert isinstance(changed, list)
+        # Each entry has {multiplier, position: {reel, row}}
+        for entry in changed:
+            assert "multiplier" in entry
+            assert "position" in entry
+            assert "reel" in entry["position"]
+            assert "row" in entry["position"]
 
-        # Collect positions with non-zero multipliers
-        nonzero_positions = set()
-        for reel, reel_vals in enumerate(matrix):
-            for row, val in enumerate(reel_vals):
-                if val != 0:
-                    nonzero_positions.add((reel, row))
-
-        # All cluster positions (standard + wild) should have non-zero values
+        # Changed positions should match cluster positions
         cluster = instance.spatial_step.clusters[0]
         expected = {(p.reel, p.row) for p in cluster.positions | cluster.wild_positions}
-        assert nonzero_positions == expected
+        actual = {(e["position"]["reel"], e["position"]["row"]) for e in changed}
+        assert actual == expected
 
-    def test_static_update_grid_ordering(self, default_config: MasterConfig) -> None:
-        """Second updateGrid appears between updateTumbleWin and gravitySettle."""
+    def test_update_board_multipliers_ordering(self, default_config: MasterConfig) -> None:
+        """updateBoardMultipliers appears between updateTumbleWin and gravitySettle."""
         instance = _make_true_static_instance(default_config)
         gen = EventStreamGenerator(default_config, _make_paytable(default_config))
         events = gen.generate(instance)
 
         types = [e["type"] for e in events]
         tumble_idx = types.index(UPDATE_TUMBLE_WIN)
-        # Second updateGrid — find it after updateTumbleWin
-        second_grid_idx = types.index(UPDATE_GRID, tumble_idx + 1)
+        ubm_idx = types.index(UPDATE_BOARD_MULTIPLIERS)
         gravity_idx = types.index(GRAVITY_SETTLE)
-        assert tumble_idx < second_grid_idx < gravity_idx
+        assert tumble_idx < ubm_idx < gravity_idx
 
-    def test_cascade_grid_accumulates(self, default_config: MasterConfig) -> None:
-        """Cascade: each step's updateGrid accumulates increments from all prior clusters."""
+    def test_cascade_accumulates_deltas(self, default_config: MasterConfig) -> None:
+        """Cascade: each step emits updateBoardMultipliers with that step's changes."""
         instance = _make_cascade_instance(default_config)
         gen = EventStreamGenerator(default_config, _make_paytable(default_config))
         events = gen.generate(instance)
 
-        grids = [e for e in events if e["type"] == UPDATE_GRID]
-        # Initial zeros + one per cascade step with clusters
-        assert len(grids) >= 3  # initial + step 0 + step 1
-
-        # First grid: all zeros
-        first_values = [v for row in grids[0]["gridMultipliers"] for v in row]
-        assert all(v == 0 for v in first_values)
-
-        # Second grid (after step 0): step 0 cluster positions incremented
-        second_values = [v for row in grids[1]["gridMultipliers"] for v in row]
-        assert any(v != 0 for v in second_values)
-
-        # Third grid (after step 1): step 0 + step 1 positions incremented
-        third_values = [v for row in grids[2]["gridMultipliers"] for v in row]
-        nonzero_count_third = sum(1 for v in third_values if v != 0)
-        nonzero_count_second = sum(1 for v in second_values if v != 0)
-        # Step 1 has different positions, so more non-zero values than step 0 alone
-        assert nonzero_count_third >= nonzero_count_second
-
-    def test_dead_spin_single_update_grid(self, default_config: MasterConfig) -> None:
-        """Dead spin has exactly one updateGrid (initial zeros only)."""
-        instance = _make_dead_instance(default_config)
-        gen = EventStreamGenerator(default_config, _make_paytable(default_config))
-        events = gen.generate(instance)
-
-        grids = [e for e in events if e["type"] == UPDATE_GRID]
-        assert len(grids) == 1
-        all_values = [v for row in grids[0]["gridMultipliers"] for v in row]
-        assert all(v == 0 for v in all_values)
+        ubm = [e for e in events if e["type"] == UPDATE_BOARD_MULTIPLIERS]
+        # One per cascade step with clusters (step 0 + step 1)
+        assert len(ubm) >= 2
 
 
 # ---------------------------------------------------------------------------
-# TEST-P13-010: boosterPhase event has firedBoosters
+# TEST: boosterFireInfo has per-booster clearedCells with symbol
 # ---------------------------------------------------------------------------
 
 
-class TestBoosterPhase:
-    def test_booster_phase_event(self, default_config: MasterConfig) -> None:
-        """boosterPhase event contains firedBoosters and clearedCells."""
-        # Build a cascade instance with a booster fire
+class TestBoosterFireInfo:
+    def test_booster_fire_info_event(self, default_config: MasterConfig) -> None:
+        """boosterFireInfo event has per-booster clearedCells with {symbol, position}."""
         board = _make_board(default_config, Symbol.L2)
         cluster_positions = frozenset({
             Position(0, 0), Position(0, 1), Position(0, 2),
@@ -780,7 +796,7 @@ class TestBoosterPhase:
             orientation="V",
             affected_count=5,
             chain_target_count=0,
-            affected_positions_list=((0, 0), (0, 1), (0, 2), (0, 4), (0, 5)),
+            affected_positions_list=((0, 0, "L2"), (0, 1, "L2"), (0, 2, "L2"), (0, 4, "L2"), (0, 5, "L2")),
         )
 
         step = CascadeStepRecord(
@@ -815,24 +831,120 @@ class TestBoosterPhase:
         gen = EventStreamGenerator(default_config, paytable)
         events = gen.generate(instance)
 
-        booster_events = [e for e in events if e["type"] == BOOSTER_PHASE]
-        assert len(booster_events) == 1
-        bp = booster_events[0]
-        assert "firedBoosters" in bp
-        assert "clearedCells" in bp
-        assert len(bp["firedBoosters"]) == 1
-        assert bp["firedBoosters"][0]["type"] == "r"
-        assert bp["firedBoosters"][0]["orientation"] == "V"
+        fire_events = [e for e in events if e["type"] == BOOSTER_FIRE_INFO]
+        assert len(fire_events) == 1
+        fi = fire_events[0]
+        assert "boosters" in fi
+        assert len(fi["boosters"]) == 1
+        booster = fi["boosters"][0]
+        assert booster["symbol"] == "R"
+        assert "clearedCells" in booster
+        for cell in booster["clearedCells"]:
+            assert "symbol" in cell
+            assert "position" in cell
+            assert "reel" in cell["position"]
+            assert "row" in cell["position"]
 
 
 # ---------------------------------------------------------------------------
-# TEST-P13-011: freegame sequence
+# TEST: boosterArmInfo emitted when boosters are armed
+# ---------------------------------------------------------------------------
+
+
+class TestBoosterArmInfo:
+    def test_booster_arm_info_event(self, default_config: MasterConfig) -> None:
+        """boosterArmInfo emitted when step has booster_arm_records."""
+        board = _make_board(default_config, Symbol.L2)
+        cluster_positions = frozenset({
+            Position(0, 0), Position(0, 1), Position(0, 2),
+            Position(0, 3), Position(1, 0),
+        })
+        for pos in cluster_positions:
+            board.set(pos, Symbol.H2)
+
+        cluster = ClusterAssignment(
+            symbol=Symbol.H2, positions=cluster_positions,
+            size=5, wild_positions=frozenset(),
+        )
+
+        paytable = _make_paytable(default_config)
+        payout = paytable.get_payout(5, Symbol.H2)
+        total_cells = default_config.board.num_reels * default_config.board.num_rows
+        grid_snap = tuple(
+            default_config.grid_multiplier.initial_value
+            for _ in range(total_cells)
+        )
+
+        arm_record = BoosterArmRecord(
+            booster_type="R",
+            position_reel=3,
+            position_row=2,
+            orientation="H",
+        )
+
+        gravity_record = GravityRecord(
+            exploded_positions=tuple(
+                (p.reel, p.row) for p in sorted(cluster_positions, key=lambda p: (p.reel, p.row))
+            ),
+            move_steps=(),
+            refill_entries=(),
+        )
+
+        step = CascadeStepRecord(
+            step_index=0,
+            board_before=board.copy(),
+            board_after=board.copy(),
+            clusters=(cluster,),
+            step_payout=payout,
+            grid_multipliers_snapshot=grid_snap,
+            booster_arm_records=(arm_record,),
+            gravity_record=gravity_record,
+        )
+
+        spatial_step = SpatialStep(
+            clusters=(cluster,), near_misses=(),
+            scatter_positions=frozenset(), boosters=(),
+        )
+
+        instance = GeneratedInstance(
+            sim_id=20,
+            archetype_id="arm_test",
+            family="t1",
+            criteria="basegame",
+            board=board,
+            spatial_step=spatial_step,
+            payout=payout,
+            centipayout=paytable.to_centipayout(payout),
+            win_level=paytable.get_win_level(payout),
+            cascade_steps=(step,),
+        )
+
+        gen = EventStreamGenerator(default_config, paytable)
+        events = gen.generate(instance)
+
+        arm_events = [e for e in events if e["type"] == BOOSTER_ARM_INFO]
+        assert len(arm_events) == 1
+        ai = arm_events[0]
+        assert "boosters" in ai
+        assert len(ai["boosters"]) == 1
+        assert ai["boosters"][0]["symbol"] == "R"
+        assert ai["boosters"][0]["position"] == {"reel": 3, "row": 2}
+
+        # boosterArmInfo should appear before gravitySettle
+        types = [e["type"] for e in events]
+        arm_idx = types.index(BOOSTER_ARM_INFO)
+        grav_idx = types.index(GRAVITY_SETTLE)
+        assert arm_idx < grav_idx
+
+
+# ---------------------------------------------------------------------------
+# TEST: freegame sequence — basegame setWin emitted before freeSpinTrigger
 # ---------------------------------------------------------------------------
 
 
 class TestFreegameSequence:
     def test_freegame_sequence(self, default_config: MasterConfig) -> None:
-        """Freegame: events include freeSpinTrigger and freeSpinEnd."""
+        """Freegame: events include setTotalWin, freeSpinTrigger and freeSpinEnd."""
         instance = _make_trigger_instance(default_config)
         gen = EventStreamGenerator(default_config, _make_paytable(default_config))
         events = gen.generate(instance)
@@ -854,9 +966,30 @@ class TestFreegameSequence:
         expected_fs = awards_lookup.get(scatter_count, 0)
         assert trigger_event["totalFs"] == expected_fs
 
+    def test_freegame_basegame_set_win(self, default_config: MasterConfig) -> None:
+        """Freegame-triggering spin emits basegame setWin before setTotalWin."""
+        instance = _make_trigger_instance(default_config)
+        gen = EventStreamGenerator(default_config, _make_paytable(default_config))
+        events = gen.generate(instance)
+
+        types = [e["type"] for e in events]
+        # Basegame cascade has wins → setWin should be emitted
+        if instance.centipayout > 0:
+            assert SET_WIN in types
+            set_win_idx = types.index(SET_WIN)
+            total_win_idx = types.index(SET_TOTAL_WIN)
+            trigger_idx = types.index(FREE_SPIN_TRIGGER)
+            # Order: setWin → setTotalWin → freeSpinTrigger
+            assert set_win_idx < total_win_idx < trigger_idx
+
+        # setTotalWin should reflect basegame wins (not 0)
+        total_win_event = [e for e in events if e["type"] == SET_TOTAL_WIN][0]
+        # The basegame cascade produces wins, so setTotalWin > 0
+        assert total_win_event["amount"] > 0
+
 
 # ---------------------------------------------------------------------------
-# TEST-P13-012: wincap halts cascade
+# TEST: wincap halts cascade
 # ---------------------------------------------------------------------------
 
 
@@ -879,7 +1012,7 @@ class TestWincap:
 
 
 # ---------------------------------------------------------------------------
-# TEST-P13-013: finalWin.amount = payoutMultiplier
+# TEST: finalWin.amount = payoutMultiplier
 # ---------------------------------------------------------------------------
 
 
@@ -893,35 +1026,6 @@ class TestFinalWin:
         final = [e for e in events if e["type"] == FINAL_WIN]
         assert len(final) == 1
         assert final[0]["amount"] == instance.centipayout
-
-
-# ---------------------------------------------------------------------------
-# TEST anticipation array from event_types
-# ---------------------------------------------------------------------------
-
-
-class TestAnticipation:
-    def test_anticipation_no_scatters(self) -> None:
-        """No scatters → all zeros."""
-        result = compute_anticipation([], 7, 3)
-        assert result == [0, 0, 0, 0, 0, 0, 0]
-
-    def test_anticipation_below_threshold(self) -> None:
-        """Fewer scatters than threshold → all zeros."""
-        result = compute_anticipation([0, 2], 7, 3)
-        assert result == [0, 0, 0, 0, 0, 0, 0]
-
-    def test_anticipation_at_threshold(self) -> None:
-        """Exactly threshold scatters → anticipation starts on next reel."""
-        # 3 scatters on reels 0, 1, 2 with threshold 3
-        result = compute_anticipation([0, 1, 2], 7, 3)
-        assert result == [0, 0, 0, 1, 2, 3, 4]
-
-    def test_anticipation_above_threshold(self) -> None:
-        """More than threshold scatters — anticipation from the Nth scatter's next reel."""
-        # 4 scatters on reels 0, 2, 4, 6 with threshold 3 → starts after reel 4
-        result = compute_anticipation([0, 2, 4, 6], 7, 3)
-        assert result == [0, 0, 0, 0, 0, 1, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -1005,15 +1109,15 @@ class TestTracer:
 
 
 # ---------------------------------------------------------------------------
-# Spawn position threading — positions populated from CascadeStepRecord
+# Spawn position threading — boosterSpawnInfo from CascadeStepRecord
 # ---------------------------------------------------------------------------
 
 
 class TestSpawnPositions:
-    """Verify _make_spawn_events reads booster_spawn_positions from the step record."""
+    """Verify _make_booster_spawn_info reads booster_spawn_positions from the step record."""
 
     def test_single_spawn_position(self, default_config: MasterConfig) -> None:
-        """Single wild spawn should emit positions with resolved reel/row."""
+        """Single wild spawn should emit boosterSpawnInfo with resolved position."""
         board = _make_board(default_config, Symbol.L2)
         cluster_positions = frozenset({
             Position(0, 0), Position(0, 1), Position(0, 2),
@@ -1048,14 +1152,15 @@ class TestSpawnPositions:
         )
 
         gen = EventStreamGenerator(default_config, paytable)
-        events = gen._make_spawn_events(step)  # noqa: SLF001
+        event = gen._make_booster_spawn_info(step)  # noqa: SLF001
 
-        assert len(events) == 1
-        assert events[0]["type"] == WILD_SPAWN
-        assert events[0]["positions"] == [{"reel": 5, "row": 2}]
+        assert event["type"] == BOOSTER_SPAWN_INFO
+        assert len(event["boosters"]) == 1
+        assert event["boosters"][0]["symbol"] == "W"
+        assert event["boosters"][0]["position"] == {"reel": 5, "row": 2}
 
     def test_multi_spawn_positions(self, default_config: MasterConfig) -> None:
-        """Two wilds should group both positions under each wildSpawn event."""
+        """Two spawns should produce one boosterSpawnInfo with two entries."""
         board = _make_board(default_config, Symbol.L2)
         cluster_positions = frozenset({
             Position(0, 0), Position(0, 1), Position(0, 2),
@@ -1085,16 +1190,12 @@ class TestSpawnPositions:
             clusters=(cluster,),
             step_payout=payout,
             grid_multipliers_snapshot=grid_snap,
-            booster_spawn_types=("W", "W"),
-            booster_spawn_positions=(("W", 3, 1, None), ("W", 5, 2, None)),
+            booster_spawn_types=("W", "R"),
+            booster_spawn_positions=(("W", 3, 1, None), ("R", 5, 2, "H")),
         )
 
         gen = EventStreamGenerator(default_config, paytable)
-        events = gen._make_spawn_events(step)  # noqa: SLF001
+        event = gen._make_booster_spawn_info(step)  # noqa: SLF001
 
-        # Two spawn type entries → two events; positions_by_type groups all W
-        # positions together, so each event carries both positions.
-        assert len(events) == 2
-        for e in events:
-            assert e["type"] == WILD_SPAWN
-            assert len(e["positions"]) == 2
+        assert event["type"] == BOOSTER_SPAWN_INFO
+        assert len(event["boosters"]) == 2
