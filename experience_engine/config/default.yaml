@@ -306,6 +306,19 @@ reasoner:
   # How many gravity-settle steps ahead strategies may chain-simulate (1 = immediate only)
   lookahead_depth: 2
 
+# Refill strategy tuning — controls post-gravity symbol placement behavior
+# for both cluster-seeking (cascade booster phase) and terminal-safe (static cosmetic) refills
+refill:
+  # Per-neighbor weight multiplier for cluster-seeking refill — higher values
+  # more aggressively extend existing formations during post-terminal booster refill
+  adjacency_boost: 3.0
+  # Row-index multiplier biasing cluster formation toward the bottom of the board —
+  # deeper neighbors contribute proportionally more to adjacency scores
+  depth_scale: 0.3
+  # Per-cell retry budget for terminal refill when a candidate would create a cluster —
+  # exhaustion triggers deterministic smallest-component fallback
+  terminal_max_retries: 10
+
 # Gravity-aware WFC tuning — controls spatial weight suppression zones
 # that prevent unintended post-gravity cluster merges during board filling
 gravity_wfc:

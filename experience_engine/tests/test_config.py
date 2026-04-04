@@ -2,6 +2,7 @@
 
 TEST-P1-001 through TEST-P1-005: Phase 1 config tests.
 TEST-R8-001, TEST-R8-002: Step 8 reasoner config tests.
+TEST-REFILL-030 through TEST-REFILL-033: Refill strategy config tests.
 """
 
 from pathlib import Path
@@ -10,7 +11,7 @@ import pytest
 import yaml
 
 from ..config.loader import load_config
-from ..config.schema import ConfigValidationError, MasterConfig
+from ..config.schema import ConfigValidationError, MasterConfig, RefillConfig
 
 DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "config" / "default.yaml"
 
@@ -110,3 +111,41 @@ def test_r8_002_config_rejects_missing_reasoner(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigValidationError, match="reasoner"):
         load_config(config_file)
+
+
+# ---------------------------------------------------------------------------
+# TEST-REFILL-030 through TEST-REFILL-033: Refill strategy config tests
+# ---------------------------------------------------------------------------
+
+def test_refill_030_loads_from_default_yaml(default_config: MasterConfig) -> None:
+    """TEST-REFILL-030: RefillConfig loads from default.yaml with expected values."""
+    assert default_config.refill is not None
+    assert default_config.refill.adjacency_boost == 3.0
+    assert default_config.refill.depth_scale == 0.3
+    assert default_config.refill.terminal_max_retries == 10
+
+
+def test_refill_031_rejects_non_positive_adjacency_boost() -> None:
+    """TEST-REFILL-031: RefillConfig rejects adjacency_boost <= 0."""
+    with pytest.raises(ConfigValidationError, match="adjacency_boost"):
+        RefillConfig(adjacency_boost=0.0, depth_scale=0.3, terminal_max_retries=10)
+    with pytest.raises(ConfigValidationError, match="adjacency_boost"):
+        RefillConfig(adjacency_boost=-1.0, depth_scale=0.3, terminal_max_retries=10)
+
+
+def test_refill_032_rejects_invalid_terminal_max_retries() -> None:
+    """TEST-REFILL-032: RefillConfig rejects terminal_max_retries < 1."""
+    with pytest.raises(ConfigValidationError, match="terminal_max_retries"):
+        RefillConfig(adjacency_boost=3.0, depth_scale=0.3, terminal_max_retries=0)
+
+
+def test_refill_033_missing_section_yields_none(tmp_path: Path) -> None:
+    """TEST-REFILL-033: Missing refill section in YAML yields config.refill is None."""
+    with open(DEFAULT_CONFIG_PATH, "r") as fh:
+        config_data = yaml.safe_load(fh)
+    del config_data["refill"]
+    config_file = tmp_path / "no_refill.yaml"
+    config_file.write_text(yaml.dump(config_data))
+
+    config = load_config(config_file)
+    assert config.refill is None

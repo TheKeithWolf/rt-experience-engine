@@ -8,8 +8,6 @@ and output writing.
 from __future__ import annotations
 
 import dataclasses
-import random
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -253,8 +251,8 @@ def build_gravity_record(
     """Convert a SettleResult into a GravityRecord for event stream replay.
 
     Translates Position objects into (reel, row) tuples for serialization.
-    Callers provide refill_entries via compute_refill_entries() for the
-    frontend gravity settle animation.
+    Callers provide refill_entries via a RefillStrategy for the frontend
+    gravity settle animation.
     """
     exploded_tuples = tuple(
         (pos.reel, pos.row) for pos in sorted(
@@ -277,21 +275,6 @@ def build_gravity_record(
         refill_entries=refill_entries,
     )
 
-
-def compute_refill_entries(
-    empty_positions: Iterable[Position],
-    standard_symbols: tuple[str, ...],
-    rng: random.Random,
-) -> tuple[tuple[int, int, str], ...]:
-    """Generate refill symbols for empty positions after gravity settles.
-
-    Frontend animates these symbols dropping into empty cells.
-    Used by both static (instance_generator) and cascade (cascade_generator) paths.
-    """
-    return tuple(
-        (pos.reel, pos.row, rng.choice(standard_symbols))
-        for pos in empty_positions
-    )
 
 
 # ---------------------------------------------------------------------------

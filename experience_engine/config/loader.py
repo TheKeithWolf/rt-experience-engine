@@ -38,6 +38,7 @@ from .schema import (
     PaytableConfig,
     PaytableEntry,
     PopulationConfig,
+    RefillConfig,
     RLArchiveConfig,
     ReasonerConfig,
     SolverConfig,
@@ -87,6 +88,7 @@ def load_config(path: Path) -> MasterConfig:
         raw.get("spatial_intelligence"),
     )
     rl_archive = _build_rl_archive(raw.get("rl_archive"))
+    refill = _build_refill(raw.get("refill"))
 
     # Cross-field validations
     _validate_spawn_thresholds(boosters.spawn_thresholds)
@@ -112,6 +114,7 @@ def load_config(path: Path) -> MasterConfig:
         gravity_wfc=gravity_wfc,
         spatial_intelligence=spatial_intelligence,
         rl_archive=rl_archive,
+        refill=refill,
     )
 
 
@@ -402,6 +405,28 @@ def _build_gravity_wfc(data: dict[str, Any] | None) -> GravityWfcConfig | None:
         min_symbol_weight=float(
             _require(data, "min_symbol_weight",
                      "gravity_wfc.min_symbol_weight")
+        ),
+    )
+
+
+def _build_refill(data: dict[str, Any] | None) -> RefillConfig | None:
+    """Build RefillConfig from YAML data, or None if section is absent.
+
+    Optional section — configs without refill get None, which preserves
+    backward compatibility with tests that don't exercise refill strategies.
+    """
+    if data is None:
+        return None
+    return RefillConfig(
+        adjacency_boost=float(
+            _require(data, "adjacency_boost", "refill.adjacency_boost")
+        ),
+        depth_scale=float(
+            _require(data, "depth_scale", "refill.depth_scale")
+        ),
+        terminal_max_retries=int(
+            _require(data, "terminal_max_retries",
+                     "refill.terminal_max_retries")
         ),
     )
 

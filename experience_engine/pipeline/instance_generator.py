@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from ..archetypes.registry import ArchetypeRegistry, ArchetypeSignature
 from ..board_filler.propagators import WildBridgePropagator
 from ..board_filler.wfc_solver import FillFailed, WFCBoardFiller
-from ..config.schema import MasterConfig
+from ..config.schema import ConfigValidationError, MasterConfig
 from ..primitives.board import Board, Position
 from ..primitives.cluster_detection import Cluster, detect_clusters
 from ..primitives.gravity import GravityDAG, settle
@@ -34,8 +34,8 @@ from .data_types import (
     GenerationResult,
     GravityRecord,
     build_gravity_record,
-    compute_refill_entries,
 )
+from .refill_strategy import TerminalRefill
 
 if TYPE_CHECKING:
     from ..spatial_solver.data_types import SpatialStep
@@ -50,7 +50,7 @@ class StaticInstanceGenerator:
     cells with the default NoClusterPropagator.
     """
 
-    __slots__ = ("_config", "_registry", "_paytable", "_gravity_dag")
+    __slots__ = ("_config", "_registry", "_paytable", "_gravity_dag", "_terminal_refill")
 
     def __init__(
         self,
@@ -64,6 +64,14 @@ class StaticInstanceGenerator:
             config.paytable, config.centipayout, config.win_levels,
         )
         self._gravity_dag = gravity_dag
+        if config.refill is None:
+            raise ConfigValidationError(
+                "refill", "required for static generation",
+            )
+        self._terminal_refill = TerminalRefill(
+            config.board, tuple(config.symbols.standard),
+            config.board.min_cluster_size, config.refill,
+        )
 
     def generate(
         self,
@@ -351,9 +359,9 @@ class StaticInstanceGenerator:
             self._gravity_dag, board, exploded, self._config.gravity,
         )
 
-        refill_entries = compute_refill_entries(
-            settle_result.empty_positions,
-            self._config.symbols.standard,
-            rng,
+        # Terminal-safe refill — ensures no accidental clusters form in the
+        # cosmetic animation (static wins have no follow-up cascade)
+        refill_entries = self._terminal_refill.fill(
+            settle_result.board, settle_result.empty_positions, rng,
         )
         return build_gravity_record(exploded, settle_result, refill_entries)

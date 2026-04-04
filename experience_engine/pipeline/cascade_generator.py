@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from ..archetypes.registry import ArchetypeRegistry, ArchetypeSignature
 from ..board_filler.wfc_solver import FillFailed
 from ..boosters.tracker import BoosterTracker
-from ..config.schema import MasterConfig
+from ..config.schema import ConfigValidationError, MasterConfig
 from ..primitives.board import Board, Position
 from ..primitives.booster_rules import BoosterRules, place_booster
 from ..primitives.gravity import GravityDAG
@@ -37,9 +37,9 @@ from .data_types import (
     GeneratedInstance,
     GenerationResult,
     TransitionData,
-    compute_refill_entries,
     merge_post_terminal_fires,
 )
+from .refill_strategy import ClusterSeekingRefill
 from .step_executor import StepExecutor
 from .step_validator import StepValidator, StepValidationFailed
 from .simulator import StepTransitionSimulator
@@ -67,7 +67,7 @@ class CascadeInstanceGenerator:
     __slots__ = (
         "_config", "_registry", "_gravity_dag", "_paytable",
         "_booster_rules", "_reasoner", "_executor", "_validator",
-        "_simulator", "_transition_rules",
+        "_simulator", "_transition_rules", "_cluster_refill",
     )
 
     def __init__(
@@ -94,6 +94,13 @@ class CascadeInstanceGenerator:
         self._validator = validator
         self._simulator = simulator
         self._transition_rules = build_transition_rules(config.board, config.symbols)
+        if config.refill is None:
+            raise ConfigValidationError(
+                "refill", "required for cascade generation",
+            )
+        self._cluster_refill = ClusterSeekingRefill(
+            config.board, tuple(config.symbols.standard), config.refill,
+        )
 
     def generate(
         self,
@@ -258,7 +265,6 @@ class CascadeInstanceGenerator:
         CascadeStepRecord after Phase 2 building — avoids dependency on
         transition_data which is None for terminal steps.
         """
-        standard_symbol_names = tuple(self._config.symbols.standard)
         all_fire_records: list[BoosterFireRecord] = []
         all_booster_grav: GravityRecord | None = None
 
@@ -283,9 +289,10 @@ class CascadeInstanceGenerator:
             all_fire_records.extend(fire_result.booster_fire_records)
             all_booster_grav = fire_result.booster_gravity_record
 
-            # 2. Refill empty cells with random standard symbols
-            refill_entries = compute_refill_entries(
-                board.empty_positions(), standard_symbol_names, rng,
+            # 2. Refill empty cells — cluster-seeking bias extends existing
+            # formations to increase re-cascade probability
+            refill_entries = self._cluster_refill.fill(
+                board, board.empty_positions(), rng,
             )
             for reel, row, sym_name in refill_entries:
                 board.set(Position(reel, row), symbol_from_name(sym_name))

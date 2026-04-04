@@ -498,6 +498,44 @@ class ReasonerConfig:
 
 
 # ---------------------------------------------------------------------------
+# Refill Strategies
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class RefillConfig:
+    """Tuning parameters for post-gravity refill strategies.
+
+    adjacency_boost — per-neighbor weight multiplier for cluster-seeking
+    refill.  Higher values more aggressively extend existing formations.
+
+    depth_scale — multiplier applied to a neighbor's row index when
+    computing depth-weighted adjacency score.  Higher values bias cluster
+    formation toward the bottom of the board.
+
+    terminal_max_retries — per-cell retry budget for the terminal refill
+    strategy when a candidate symbol would create a cluster.
+    """
+
+    adjacency_boost: float
+    depth_scale: float
+    terminal_max_retries: int
+
+    def __post_init__(self) -> None:
+        if self.adjacency_boost <= 0.0:
+            raise ConfigValidationError(
+                "refill.adjacency_boost", "must be > 0.0"
+            )
+        if self.depth_scale < 0.0:
+            raise ConfigValidationError(
+                "refill.depth_scale", "must be >= 0.0"
+            )
+        if self.terminal_max_retries < 1:
+            raise ConfigValidationError(
+                "refill.terminal_max_retries", "must be >= 1"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Gravity-Aware WFC
 # ---------------------------------------------------------------------------
 
@@ -975,3 +1013,5 @@ class MasterConfig:
     spatial_intelligence: SpatialIntelligenceConfig | None = None
     # RL archive — optional MAP-Elites archive system for deep cascade generation
     rl_archive: RLArchiveConfig | None = None
+    # Refill strategy tuning — optional to preserve backward compatibility
+    refill: RefillConfig | None = None
