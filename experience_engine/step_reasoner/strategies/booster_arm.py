@@ -96,7 +96,7 @@ class BoosterArmStrategy:
             progress, signature, variance, self._rng,
             boundary=boundary, planned_size=cluster_size,
         )
-        cluster_tier = SymbolTier.LOW if cluster_symbol.value <= 4 else SymbolTier.HIGH
+        cluster_tier = SymbolTier.ANY# SymbolTier.LOW if cluster_symbol.value <= 4 else SymbolTier.HIGH
 
         # Grow cluster adjacent to the booster — AVOID merge to keep exact size for correct booster trigger
         from ..services.merge_policy import MergePolicy

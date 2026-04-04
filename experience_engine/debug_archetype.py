@@ -28,7 +28,6 @@ from .config.loader import load_config
 from .pipeline.cascade_generator import CascadeInstanceGenerator
 from .pipeline.data_types import (
     BoosterFireRecord,
-    CascadeStepRecord,
     GeneratedInstance,
     GravityRecord,
     TransitionData,
@@ -553,7 +552,7 @@ def diagnostic_attempt(
             gen._run_post_terminal_booster_phase(
                 board, booster_tracker, grid_mults, phase_executor,
                 progress, sig, hints, rng,
-                raw_steps, step_results, max_steps,
+                raw_steps, step_results,
             )
         )
 
@@ -575,44 +574,8 @@ def diagnostic_attempt(
     print(f"  INSTANCE VALIDATION (full — matches batch pipeline)")
     print(f"  {'-'*60}")
 
-    # Phase 2: Build CascadeStepRecords with actual refill symbols.
-    # Identical to cascade_generator.py — Step N's gravity refill reads from
-    # step N+1's filled board.
-    cascade_step_records: list[CascadeStepRecord] = []
-    for i, (sr, bb, ba, gm, td) in enumerate(raw_steps):
-        gravity_record = None
-        spawns = ()
-        fire_recs: tuple[BoosterFireRecord, ...] = ()
-        booster_grav: GravityRecord | None = None
-        arm_types: tuple[str, ...] = ()
-        arm_records: tuple = ()
-        if td is not None:
-            gr_base = td.gravity_record
-            empty_positions = td.empty_positions
-            spawns = td.spawns
-            fire_recs = td.fire_records
-            booster_grav = td.booster_gravity_record
-            arm_types = td.arm_types
-            arm_records = td.arm_records
-            next_filled = raw_steps[i + 1][2]
-            refill_entries = tuple(
-                (pos.reel, pos.row, next_filled.get(pos).name)
-                for pos in empty_positions
-            )
-            gravity_record = GravityRecord(
-                exploded_positions=gr_base.exploded_positions,
-                move_steps=gr_base.move_steps,
-                refill_entries=refill_entries,
-            )
-        cascade_step_records.append(gen._build_step_record(
-            sr, bb, ba, gm,
-            gravity_record=gravity_record,
-            transition_spawns=spawns,
-            booster_fire_records=fire_recs,
-            booster_gravity_record=booster_grav,
-            booster_arm_types=arm_types,
-            booster_arm_records=arm_records,
-        ))
+    # Phase 2: Build CascadeStepRecords — delegates to shared method (DRY)
+    cascade_step_records = gen._build_cascade_step_records(raw_steps)
 
     # Merge post-terminal booster fire records into the last step record.
     # These fires happen after the terminal dead board, so they attach to

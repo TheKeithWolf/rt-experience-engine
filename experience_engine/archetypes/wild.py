@@ -245,7 +245,7 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
                 repetitions=Range(1, 1),
                 cluster_count=Range(1, 1),
                 cluster_sizes=(Range(9, 10),),
-                cluster_symbol_tier=SymbolTier.LOW,
+                cluster_symbol_tier=SymbolTier.ANY,
                 spawns=("R",),
                 arms=None,
                 fires=None,

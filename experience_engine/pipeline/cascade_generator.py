@@ -197,43 +197,7 @@ class CascadeInstanceGenerator:
                 )
             )
 
-        # Phase 2: Build CascadeStepRecords with actual refill symbols.
-        # Step N's gravity refill reads from step N+1's filled board — the
-        # symbols the WFC executor actually placed at empty positions.
-        for i, (sr, bb, ba, gm, td) in enumerate(raw_steps):
-            gravity_record = None
-            spawns = ()
-            fire_recs: tuple[BoosterFireRecord, ...] = ()
-            booster_grav: GravityRecord | None = None
-            arm_types: tuple[str, ...] = ()
-            arm_records: tuple[BoosterArmRecord, ...] = ()
-            if td is not None:
-                gr_base = td.gravity_record
-                empty_positions = td.empty_positions
-                spawns = td.spawns
-                fire_recs = td.fire_records
-                booster_grav = td.booster_gravity_record
-                arm_types = td.arm_types
-                arm_records = td.arm_records
-                next_filled = raw_steps[i + 1][2]
-                refill_entries = tuple(
-                    (pos.reel, pos.row, next_filled.get(pos).name)
-                    for pos in empty_positions
-                )
-                gravity_record = GravityRecord(
-                    exploded_positions=gr_base.exploded_positions,
-                    move_steps=gr_base.move_steps,
-                    refill_entries=refill_entries,
-                )
-            cascade_step_records.append(self._build_step_record(
-                sr, bb, ba, gm,
-                gravity_record=gravity_record,
-                transition_spawns=spawns,
-                booster_fire_records=fire_recs,
-                booster_gravity_record=booster_grav,
-                booster_arm_types=arm_types,
-                booster_arm_records=arm_records,
-            ))
+        cascade_step_records = self._build_cascade_step_records(raw_steps)
 
         # Merge post-terminal booster fire records into the last step record.
         # These fires happen after the terminal dead board, so they attach to
@@ -361,6 +325,57 @@ class CascadeInstanceGenerator:
             # After re-cascade, check if new armed boosters appeared — while loop continues
 
         return board, raw_steps, tuple(all_fire_records), all_booster_grav
+
+    # ------------------------------------------------------------------
+    # Phase 2 record building — shared by _attempt_generation and diagnostic
+    # ------------------------------------------------------------------
+
+    def _build_cascade_step_records(
+        self,
+        raw_steps: list[tuple],
+    ) -> list[CascadeStepRecord]:
+        """Build CascadeStepRecords with actual refill symbols from raw step data.
+
+        Step N's gravity refill reads from step N+1's filled board — the
+        symbols the WFC executor actually placed at empty positions.
+        Each raw_steps entry: (step_result, board_before, filled, grid_mults, transition_data)
+        """
+        records: list[CascadeStepRecord] = []
+        for i, (sr, bb, ba, gm, td) in enumerate(raw_steps):
+            gravity_record = None
+            spawns = ()
+            fire_recs: tuple[BoosterFireRecord, ...] = ()
+            booster_grav: GravityRecord | None = None
+            arm_types: tuple[str, ...] = ()
+            arm_records: tuple[BoosterArmRecord, ...] = ()
+            if td is not None:
+                gr_base = td.gravity_record
+                empty_positions = td.empty_positions
+                spawns = td.spawns
+                fire_recs = td.fire_records
+                booster_grav = td.booster_gravity_record
+                arm_types = td.arm_types
+                arm_records = td.arm_records
+                next_filled = raw_steps[i + 1][2]
+                refill_entries = tuple(
+                    (pos.reel, pos.row, next_filled.get(pos).name)
+                    for pos in empty_positions
+                )
+                gravity_record = GravityRecord(
+                    exploded_positions=gr_base.exploded_positions,
+                    move_steps=gr_base.move_steps,
+                    refill_entries=refill_entries,
+                )
+            records.append(self._build_step_record(
+                sr, bb, ba, gm,
+                gravity_record=gravity_record,
+                transition_spawns=spawns,
+                booster_fire_records=fire_recs,
+                booster_gravity_record=booster_grav,
+                booster_arm_types=arm_types,
+                booster_arm_records=arm_records,
+            ))
+        return records
 
     # ------------------------------------------------------------------
     # Shared cascade step — used by main loop and post-terminal re-cascade
