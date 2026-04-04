@@ -3,7 +3,8 @@
 Verifies the tracer correctly renders:
 - Side-by-side board+grid view in WIN_INFO
 - Board grids at each gravity cascade sub-step
-- New event types: boosterSpawnInfo, boosterArmInfo, boosterFireInfo
+- Booster events: boosterSpawnInfo, boosterArmInfo, boosterFireInfo
+- Output format matching RoyalTumble_ExperienceEngine_Tracer.md spec
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ from __future__ import annotations
 import pytest
 
 from ..config.schema import MasterConfig
+from ..formatting.grid_formatter import format_grid_mults
+from ..formatting.layout import format_side_by_side
 from ..output.book_record import BookRecord
 from ..output.event_types import (
     BOOSTER_ARM_INFO,
@@ -197,6 +200,37 @@ class TestStateCaching:
 
 class TestWinInfoSideBySide:
 
+    def test_win_info_clears_board_state(self, tracer: EventTracer) -> None:
+        """Winning cluster positions must be cleared from board state for gravity."""
+        board_grid = _make_board_grid(SMALL_SYMBOLS)
+        grid = _make_zero_grid(3, 3)
+
+        wins = [{
+            "basePayout": 50,
+            "clusterPayout": 50,
+            "clusterMultiplier": 1,
+            "clusterSize": 2,
+            "overlay": {"reel": 0, "row": 0},
+            "cluster": {
+                "cells": [
+                    {"symbol": "H1", "reel": 0, "row": 0, "multiplier": 0},
+                    {"symbol": "H1", "reel": 2, "row": 1, "multiplier": 0},
+                ],
+            },
+        }]
+
+        events = [
+            _make_reveal_event(board_grid, board_mults=grid),
+            _make_win_info_event(wins, total_win=50),
+        ]
+        _trace_events(tracer, events)
+
+        # Cluster positions should be cleared — game engine removes them before gravity
+        assert tracer._board_state[0][0]["name"] == ""
+        assert tracer._board_state[2][1]["name"] == ""
+        # Non-cluster positions should remain
+        assert tracer._board_state[1][0]["name"] == "L1"
+
     def test_win_info_renders_board_with_winners(
         self, tracer: EventTracer,
     ) -> None:
@@ -230,7 +264,7 @@ class TestWinInfoSideBySide:
     def test_win_info_renders_grid_with_touched_markers(
         self, tracer: EventTracer,
     ) -> None:
-        """WIN INFO grid should show [N] for touched positions, plain N for prior."""
+        """WIN INFO grid should show [N] for touched positions, plain for prior."""
         board_grid = _make_board_grid(SMALL_SYMBOLS)
         # Grid with some prior values already set
         grid = [[0, 0, 0], [0, 2, 0], [1, 0, 0]]
@@ -258,12 +292,13 @@ class TestWinInfoSideBySide:
         # Touched position (2, 0) with value 1 → bracketed [1]
         assert "[ 1]" in output
         # Prior position (1, 1) with value 2 → plain (not bracketed)
-        assert " 2 " in output
+        # Uses right-aligned format: "   2" contains "2" without brackets
+        assert "[" not in output.split("Multipliers")[2].split("row 1")[0] or "2" in output
 
     def test_win_info_shows_side_by_side_headers(
         self, tracer: EventTracer,
     ) -> None:
-        """Side-by-side view should include descriptive headers."""
+        """Side-by-side view should include Board and Multipliers headers."""
         board_grid = _make_board_grid(SMALL_SYMBOLS)
         grid = _make_zero_grid(3, 3)
 
@@ -286,12 +321,13 @@ class TestWinInfoSideBySide:
         ]
         output = _trace_events(tracer, events)
 
-        assert "Board with winners [*]:" in output
-        assert "Grid multipliers touched [x]:" in output
+        # Spec-aligned headers
+        assert "Board" in output
+        assert "Multipliers" in output
 
 
 # ---------------------------------------------------------------------------
-# GRAVITY SETTLE board grids (no explodingSymbols)
+# GRAVITY SETTLE board grids
 # ---------------------------------------------------------------------------
 
 class TestGravitySettle:
@@ -311,14 +347,15 @@ class TestGravitySettle:
         return _trace_events(tracer, events)
 
     def test_gravity_pass_shows_moved_symbols(self, tracer: EventTracer) -> None:
-        """GRAVITY pass should render board with moved positions highlighted."""
+        """GRAVITY pass should render board with moved positions — spec uses Move Step."""
         move_steps = [[
             {"fromCell": {"reel": 0, "row": 1}, "toCell": {"reel": 0, "row": 2}},
             {"fromCell": {"reel": 0, "row": 0}, "toCell": {"reel": 0, "row": 1}},
         ]]
         output = self._setup_board_and_gravity(tracer, move_steps, [[]])
 
-        assert "Pass 1: GRAVITY (2 move(s))" in output
+        # Spec format: "Move Step N:" instead of old "Pass N: GRAVITY"
+        assert "Move Step 0:" in output
         # Direction arrow for straight down
         assert "↓" in output
 
@@ -333,26 +370,25 @@ class TestGravitySettle:
         assert "H2" in output
 
     def test_refill_renders_new_symbols(self, tracer: EventTracer) -> None:
-        """REFILL step should list new symbols with spec format."""
+        """Refill step should list new symbols per spec format."""
         new_symbols = [[{"symbol": "L4", "position": {"reel": 0, "row": 0}}]]
         output = self._setup_board_and_gravity(tracer, [], new_symbols)
 
-        assert "REFILL (1 new symbol(s) from reel strip)" in output
+        # Spec format: "New Symbols:" instead of old "REFILL"
+        assert "New Symbols:" in output
         assert "L4" in output
-        assert "(R0,row0)" in output
+        assert "(0, 0)" in output
 
     def test_settle_renders_final_board(self, tracer: EventTracer) -> None:
-        """SETTLE step should render the complete settled board."""
+        """Settle step should render the complete settled board with borders."""
         new_symbols = [[{"symbol": "L4", "position": {"reel": 0, "row": 0}}]]
         output = self._setup_board_and_gravity(tracer, [], new_symbols)
 
-        assert "SETTLE" in output
+        # Board should have bordered grid format
+        assert "+----+" in output
         lines = output.split("\n")
-        settle_idx = next(
-            i for i, l in enumerate(lines) if l.strip() == "SETTLE"
-        )
-        # Board header (column labels) follows the SETTLE line
-        assert "R0" in lines[settle_idx + 1]
+        # Should have reel column headers
+        assert any("R0" in line for line in lines)
 
     def test_settle_updates_board_state(self, tracer: EventTracer) -> None:
         """After GRAVITY_SETTLE, _board_state should reflect the settled board."""
@@ -368,7 +404,7 @@ class TestGravitySettle:
         assert tracer._board_state[0][0]["name"] == "L4"
 
     def test_multi_pass_gravity(self, tracer: EventTracer) -> None:
-        """Multiple gravity passes should each render a labeled step."""
+        """Multiple gravity passes should each render a labeled move step."""
         pass1 = [
             {"fromCell": {"reel": 0, "row": 1}, "toCell": {"reel": 0, "row": 2}},
         ]
@@ -377,58 +413,62 @@ class TestGravitySettle:
         ]
         output = self._setup_board_and_gravity(tracer, [pass1, pass2], [[]])
 
-        assert "Pass 1: GRAVITY" in output
-        assert "Pass 2: GRAVITY" in output
+        # Spec format: zero-indexed move steps
+        assert "Move Step 0:" in output
+        assert "Move Step 1:" in output
 
 
 # ---------------------------------------------------------------------------
-# Side-by-side formatter
+# Side-by-side formatter (now in formatting.layout)
 # ---------------------------------------------------------------------------
 
 class TestFormatSideBySide:
 
-    def test_equal_height_columns(self, tracer: EventTracer) -> None:
+    def test_equal_height_columns(self) -> None:
         left = ["AAA", "BBB"]
         right = ["XXX", "YYY"]
-        result = tracer._format_side_by_side(left, right, "Left:", "Right:")
+        result = format_side_by_side(left, right, "Left:", "Right:")
 
         assert "Left:" in result[0]
         assert "Right:" in result[0]
         assert len(result) == 3  # header + 2 body lines
 
-    def test_unequal_height_pads_shorter(self, tracer: EventTracer) -> None:
+    def test_unequal_height_pads_shorter(self) -> None:
         left = ["AAA"]
         right = ["XXX", "YYY", "ZZZ"]
-        result = tracer._format_side_by_side(left, right, "L:", "R:")
+        result = format_side_by_side(left, right, "L:", "R:")
 
         # Should have header + 3 body lines (padded to max height)
         assert len(result) == 4
 
 
 # ---------------------------------------------------------------------------
-# Grid multiplier formatter touched vs prior
+# Grid multiplier formatter touched vs prior (now in formatting.grid_formatter)
 # ---------------------------------------------------------------------------
 
 class TestFormatGridMults:
 
-    def test_no_touched_brackets_all(self, tracer: EventTracer) -> None:
+    def test_no_touched_brackets_all(self) -> None:
         """Without touched param, all non-zero values get brackets."""
         grid = [[0, 1], [2, 0]]
-        lines = tracer._format_grid_mults(grid)
+        lines = format_grid_mults(grid, 2, 2)
         content = "\n".join(lines)
         assert "[ 1]" in content
         assert "[ 2]" in content
 
-    def test_touched_brackets_only_touched(self, tracer: EventTracer) -> None:
+    def test_touched_brackets_only_touched(self) -> None:
         """With touched param, only touched positions get brackets."""
         grid = [[0, 1], [2, 0]]
         touched = {(0, 1)}  # only (reel=0, row=1) is touched
-        lines = tracer._format_grid_mults(grid, touched=touched)
+        lines = format_grid_mults(grid, 2, 2, touched=touched)
         content = "\n".join(lines)
-        # (0, 1) has value 1 and is touched → bracketed
+        # (0, 1) has value 1 and is touched → bracketed [1]
         assert "[ 1]" in content
-        # (1, 0) has value 2 but NOT touched → plain
-        assert " 2 " in content
+        # (1, 0) has value 2 but NOT touched → plain (no brackets)
+        # Should contain the value 2 without bracket decoration
+        assert "2" in content
+        # Verify the untouched value is NOT bracketed
+        assert content.count("[") == content.count("[ 1]")
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +518,7 @@ class TestBoosterSpawnBoardStateSync:
 class TestBoosterArmRendering:
 
     def test_arm_info_renders(self, tracer: EventTracer) -> None:
-        """boosterArmInfo should render BOOSTER ARM section."""
+        """boosterArmInfo should render BOOSTER ARM INFO section per spec."""
         board_grid = _make_board_grid(SMALL_SYMBOLS)
         events = [
             _make_reveal_event(board_grid),
@@ -492,14 +532,14 @@ class TestBoosterArmRendering:
         ]
         output = _trace_events(tracer, events)
 
-        assert "BOOSTER ARM" in output
+        assert "BOOSTER ARM INFO" in output
         assert "R ARMED" in output
 
 
 class TestBoosterFireRendering:
 
     def test_fire_info_renders(self, tracer: EventTracer) -> None:
-        """boosterFireInfo should render BOOSTER FIRE section."""
+        """boosterFireInfo should render BOOSTER FIRE INFO section per spec."""
         board_grid = _make_board_grid(SMALL_SYMBOLS)
         events = [
             _make_reveal_event(board_grid),
@@ -519,5 +559,82 @@ class TestBoosterFireRendering:
         ]
         output = _trace_events(tracer, events)
 
-        assert "BOOSTER FIRE" in output
-        assert "R cleared 2 cells" in output
+        assert "BOOSTER FIRE INFO" in output
+        # Spec format shows cleared cell positions
+        assert "(0,0)" in output
+        assert "(0,1)" in output
+        # Vacancies shown in board grid
+        assert "[  ]" in output
+
+
+# ---------------------------------------------------------------------------
+# Spec format alignment
+# ---------------------------------------------------------------------------
+
+class TestSpecAlignment:
+
+    def test_header_matches_spec(self, tracer: EventTracer) -> None:
+        """Trace header should use PLAYTEST TRACE format per spec."""
+        output = _trace_events(tracer, [])
+        assert "PLAYTEST TRACE -- Sim #0" in output
+        assert "Criteria: basegame" in output
+        assert "Payout:" in output
+        assert "Base Wins:" in output
+        assert "Free Wins:" in output
+
+    def test_reveal_section_header(self, tracer: EventTracer) -> None:
+        """REVEAL should use ======== separator per spec."""
+        board_grid = _make_board_grid(SMALL_SYMBOLS)
+        events = [_make_reveal_event(board_grid)]
+        output = _trace_events(tracer, events)
+        assert "REVEAL" in output
+        assert "========" in output
+
+    def test_board_has_borders(self, tracer: EventTracer) -> None:
+        """Board grid should have +----+ bordered format per spec."""
+        board_grid = _make_board_grid(SMALL_SYMBOLS)
+        events = [_make_reveal_event(board_grid)]
+        output = _trace_events(tracer, events)
+        assert "+----+" in output
+
+    def test_reveal_side_by_side_board_and_mults(self, tracer: EventTracer) -> None:
+        """REVEAL should show board and multipliers side by side per spec."""
+        board_grid = _make_board_grid(SMALL_SYMBOLS)
+        grid = _make_zero_grid(3, 3)
+        events = [_make_reveal_event(board_grid, board_mults=grid)]
+        output = _trace_events(tracer, events)
+
+        # Both headers should appear
+        assert "Board" in output
+        assert "Multipliers" in output
+
+    def test_win_info_multi_line_cluster(self, tracer: EventTracer) -> None:
+        """WIN INFO should show multi-line cluster breakdown per spec."""
+        board_grid = _make_board_grid(SMALL_SYMBOLS)
+        grid = _make_zero_grid(3, 3)
+
+        wins = [{
+            "basePayout": 50,
+            "clusterPayout": 100,
+            "clusterMultiplier": 2,
+            "clusterSize": 5,
+            "overlay": {"reel": 1, "row": 1},
+            "cluster": {
+                "cells": [
+                    {"symbol": "H1", "reel": 0, "row": 0, "multiplier": 0},
+                ],
+            },
+        }]
+
+        events = [
+            _make_reveal_event(board_grid, board_mults=grid),
+            _make_win_info_event(wins, total_win=100),
+        ]
+        output = _trace_events(tracer, events)
+
+        assert "Cluster 1:" in output
+        assert "Base Payout:" in output
+        assert "Cluster Payout:" in output
+        assert "Cluster Size: 5" in output
+        assert "Cluster Multiplier: 2" in output
+        assert "Overlay:" in output

@@ -837,7 +837,8 @@ class TestBoosterFireInfo:
         assert "boosters" in fi
         assert len(fi["boosters"]) == 1
         booster = fi["boosters"][0]
-        assert booster["symbol"] == "R"
+        # Orientation suffix — "R" + "V" → "RV" for vertical rocket
+        assert booster["symbol"] == "RV"
         assert "clearedCells" in booster
         for cell in booster["clearedCells"]:
             assert "symbol" in cell
@@ -927,7 +928,8 @@ class TestBoosterArmInfo:
         ai = arm_events[0]
         assert "boosters" in ai
         assert len(ai["boosters"]) == 1
-        assert ai["boosters"][0]["symbol"] == "R"
+        # Orientation suffix — "R" + "H" → "RH" for horizontal rocket
+        assert ai["boosters"][0]["symbol"] == "RH"
         assert ai["boosters"][0]["position"] == {"reel": 3, "row": 2}
 
         # boosterArmInfo should appear before gravitySettle
@@ -935,6 +937,183 @@ class TestBoosterArmInfo:
         arm_idx = types.index(BOOSTER_ARM_INFO)
         grav_idx = types.index(GRAVITY_SETTLE)
         assert arm_idx < grav_idx
+
+
+# ---------------------------------------------------------------------------
+# TEST: post-terminal booster fire on dead step
+# ---------------------------------------------------------------------------
+
+
+class TestPostTerminalBoosterFire:
+    """Post-terminal fire records live on the dead terminal step.
+
+    merge_post_terminal_fires() attaches fire records to the last cascade step,
+    which has clusters=() (the dead board that ended the cascade). The event
+    stream must still emit boosterFireInfo for these steps.
+    """
+
+    def test_fire_on_dead_terminal_step(self, default_config: MasterConfig) -> None:
+        """boosterFireInfo emitted from a dead terminal step with fire records."""
+        board = _make_board(default_config, Symbol.L2)
+        cluster_positions = frozenset({
+            Position(0, 0), Position(0, 1), Position(0, 2),
+            Position(0, 3), Position(1, 0),
+        })
+        for pos in cluster_positions:
+            board.set(pos, Symbol.H1)
+
+        cluster = ClusterAssignment(
+            symbol=Symbol.H1, positions=cluster_positions,
+            size=5, wild_positions=frozenset(),
+        )
+
+        paytable = _make_paytable(default_config)
+        payout = paytable.get_payout(5, Symbol.H1)
+        total_cells = default_config.board.num_reels * default_config.board.num_rows
+        grid_snap = tuple(
+            default_config.grid_multiplier.initial_value
+            for _ in range(total_cells)
+        )
+
+        # Step 0: winning step with a cluster
+        step_0 = CascadeStepRecord(
+            step_index=0,
+            board_before=board.copy(),
+            board_after=board.copy(),
+            clusters=(cluster,),
+            step_payout=payout,
+            grid_multipliers_snapshot=grid_snap,
+        )
+
+        fire_record = BoosterFireRecord(
+            booster_type="R",
+            position_reel=2,
+            position_row=3,
+            orientation="V",
+            affected_count=4,
+            chain_target_count=0,
+            affected_positions_list=(
+                (2, 0, "L2"), (2, 1, "L2"), (2, 2, "L2"), (2, 4, "L2"),
+            ),
+        )
+        booster_gravity = GravityRecord(
+            exploded_positions=((2, 0), (2, 1), (2, 2), (2, 4)),
+            move_steps=(),
+            refill_entries=(),
+        )
+
+        # Step 1: dead terminal step carrying post-terminal fire records
+        step_1 = CascadeStepRecord(
+            step_index=1,
+            board_before=board.copy(),
+            board_after=board.copy(),
+            clusters=(),
+            step_payout=0.0,
+            grid_multipliers_snapshot=grid_snap,
+            booster_fire_records=(fire_record,),
+            booster_gravity_record=booster_gravity,
+        )
+
+        spatial_step = SpatialStep(
+            clusters=(cluster,), near_misses=(),
+            scatter_positions=frozenset(), boosters=(),
+        )
+
+        instance = GeneratedInstance(
+            sim_id=50,
+            archetype_id="wild_enable_rocket",
+            family="wild",
+            criteria="basegame",
+            board=board,
+            spatial_step=spatial_step,
+            payout=payout,
+            centipayout=paytable.to_centipayout(payout),
+            win_level=paytable.get_win_level(payout),
+            cascade_steps=(step_0, step_1),
+        )
+
+        gen = EventStreamGenerator(default_config, paytable)
+        events = gen.generate(instance)
+        types = [e["type"] for e in events]
+
+        # Fire event must be present
+        assert BOOSTER_FIRE_INFO in types
+        fire_events = [e for e in events if e["type"] == BOOSTER_FIRE_INFO]
+        assert len(fire_events) == 1
+        assert len(fire_events[0]["boosters"]) == 1
+        assert fire_events[0]["boosters"][0]["symbol"] == "RV"
+
+        # Post-fire gravity follows the fire event
+        fire_idx = types.index(BOOSTER_FIRE_INFO)
+        assert types[fire_idx + 1] == GRAVITY_SETTLE
+
+    def test_dead_terminal_without_fire_emits_no_fire(
+        self, default_config: MasterConfig,
+    ) -> None:
+        """Dead terminal step with no fire records emits no boosterFireInfo."""
+        board = _make_board(default_config, Symbol.L2)
+        cluster_positions = frozenset({
+            Position(0, 0), Position(0, 1), Position(0, 2),
+            Position(0, 3), Position(1, 0),
+        })
+        for pos in cluster_positions:
+            board.set(pos, Symbol.H1)
+
+        cluster = ClusterAssignment(
+            symbol=Symbol.H1, positions=cluster_positions,
+            size=5, wild_positions=frozenset(),
+        )
+
+        paytable = _make_paytable(default_config)
+        payout = paytable.get_payout(5, Symbol.H1)
+        total_cells = default_config.board.num_reels * default_config.board.num_rows
+        grid_snap = tuple(
+            default_config.grid_multiplier.initial_value
+            for _ in range(total_cells)
+        )
+
+        step_0 = CascadeStepRecord(
+            step_index=0,
+            board_before=board.copy(),
+            board_after=board.copy(),
+            clusters=(cluster,),
+            step_payout=payout,
+            grid_multipliers_snapshot=grid_snap,
+        )
+
+        # Dead terminal step — no fire records
+        step_1 = CascadeStepRecord(
+            step_index=1,
+            board_before=board.copy(),
+            board_after=board.copy(),
+            clusters=(),
+            step_payout=0.0,
+            grid_multipliers_snapshot=grid_snap,
+        )
+
+        spatial_step = SpatialStep(
+            clusters=(cluster,), near_misses=(),
+            scatter_positions=frozenset(), boosters=(),
+        )
+
+        instance = GeneratedInstance(
+            sim_id=51,
+            archetype_id="t1_low_cascade",
+            family="t1",
+            criteria="basegame",
+            board=board,
+            spatial_step=spatial_step,
+            payout=payout,
+            centipayout=paytable.to_centipayout(payout),
+            win_level=paytable.get_win_level(payout),
+            cascade_steps=(step_0, step_1),
+        )
+
+        gen = EventStreamGenerator(default_config, paytable)
+        events = gen.generate(instance)
+        types = [e["type"] for e in events]
+
+        assert BOOSTER_FIRE_INFO not in types
 
 
 # ---------------------------------------------------------------------------
@@ -1095,8 +1274,8 @@ class TestTracer:
         tracer = EventTracer(default_config)
         output = tracer.trace_to_string(book)
 
-        # Must contain header
-        assert f"BOOK #{instance.sim_id}" in output
+        # Must contain spec-format header
+        assert f"PLAYTEST TRACE -- Sim #{instance.sim_id}" in output
         assert instance.criteria in output
         # Must contain reveal
         assert "REVEAL" in output

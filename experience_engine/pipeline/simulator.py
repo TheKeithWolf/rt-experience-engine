@@ -250,10 +250,6 @@ class StepTransitionSimulator:
         for pos in all_fire_affected:
             board.set(pos, None)
 
-        # Increment grid multipliers at fire-cleared positions
-        for pos in all_fire_affected:
-            grid_mults.increment(pos)
-
         # Gravity settle for booster fire clearings
         booster_gravity_exploded = frozenset(all_fire_affected)
         booster_settle = settle(

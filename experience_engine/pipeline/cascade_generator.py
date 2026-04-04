@@ -37,6 +37,7 @@ from .data_types import (
     GeneratedInstance,
     GenerationResult,
     TransitionData,
+    compute_refill_entries,
     merge_post_terminal_fires,
 )
 from .step_executor import StepExecutor
@@ -175,7 +176,7 @@ class CascadeInstanceGenerator:
             step_results.append(outcome.step_result)
             raw_steps.append((
                 outcome.step_result, outcome.board_before, outcome.filled,
-                grid_mults, outcome.transition_data,
+                grid_mults.copy(), outcome.transition_data,
             ))
             if outcome.is_terminal:
                 filled = outcome.filled
@@ -319,12 +320,20 @@ class CascadeInstanceGenerator:
             all_booster_grav = fire_result.booster_gravity_record
 
             # 2. Refill empty cells with random standard symbols
-            for reel in range(self._config.board.num_reels):
-                for row in range(self._config.board.num_rows):
-                    pos = Position(reel, row)
-                    if board.get(pos) is None:
-                        sym = symbol_from_name(rng.choice(standard_symbol_names))
-                        board.set(pos, sym)
+            refill_entries = compute_refill_entries(
+                board.empty_positions(), standard_symbol_names, rng,
+            )
+            for reel, row, sym_name in refill_entries:
+                board.set(Position(reel, row), symbol_from_name(sym_name))
+
+            # Attach refill entries so the event stream animates new symbols
+            # dropping into vacant cells after booster-fire gravity
+            if all_booster_grav is not None and refill_entries:
+                all_booster_grav = GravityRecord(
+                    exploded_positions=all_booster_grav.exploded_positions,
+                    move_steps=all_booster_grav.move_steps,
+                    refill_entries=refill_entries,
+                )
 
             # 3. Detect clusters on refilled board
             clusters = detect_clusters(board, self._config)
@@ -342,7 +351,7 @@ class CascadeInstanceGenerator:
                 step_results.append(outcome.step_result)
                 raw_steps.append((
                     outcome.step_result, outcome.board_before, outcome.filled,
-                    grid_mults, outcome.transition_data,
+                    grid_mults.copy(), outcome.transition_data,
                 ))
                 if outcome.is_terminal:
                     break

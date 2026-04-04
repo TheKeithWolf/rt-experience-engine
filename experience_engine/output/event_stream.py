@@ -18,6 +18,11 @@ from ..pipeline.data_types import (
     GravityRecord,
 )
 from ..primitives.board import Board, Position
+
+
+def _qualified_symbol(base: str, orientation: str | None) -> str:
+    """Append rocket orientation suffix when present (e.g. 'R' + 'H' → 'RH')."""
+    return base + orientation if orientation else base
 from ..primitives.paytable import Paytable
 from ..primitives.symbols import Symbol, is_booster, is_scatter, is_wild
 from ..spatial_solver.data_types import ClusterAssignment
@@ -149,47 +154,47 @@ class EventStreamGenerator:
         ))
 
         for step in steps:
-            if not step.clusters:
-                continue  # Dead step — no events
+            # Cluster-dependent events — only for steps that produced wins
+            if step.clusters:
+                # winInfo (spec step 3)
+                events.append(self._make_win_info(
+                    step.clusters, grid_state, step.board_before,
+                ))
 
-            # winInfo (spec step 3)
-            events.append(self._make_win_info(
-                step.clusters, grid_state, step.board_before,
-            ))
+                # Accumulate payout (spec step 4)
+                step_centipayout = self._paytable.to_centipayout(step.step_payout)
+                self._cumulative_centipayout += step_centipayout
+                events.append(self._make_update_tumble_win(
+                    self._cumulative_centipayout,
+                ))
 
-            # Accumulate payout (spec step 4)
-            step_centipayout = self._paytable.to_centipayout(step.step_payout)
-            self._cumulative_centipayout += step_centipayout
-            events.append(self._make_update_tumble_win(
-                self._cumulative_centipayout,
-            ))
+                # updateBoardMultipliers (spec step 5) — sparse delta from snapshot
+                new_grid = step.grid_multipliers_snapshot
+                events.append(self._make_update_board_multipliers(grid_state, new_grid))
+                grid_state = new_grid
 
-            # updateBoardMultipliers (spec step 5) — sparse delta from snapshot
-            new_grid = step.grid_multipliers_snapshot
-            events.append(self._make_update_board_multipliers(grid_state, new_grid))
-            grid_state = new_grid
+                # Wincap check (spec step 6) — halt cascade if cap crossed
+                if (is_wincap and self._config.wincap.halt_cascade
+                        and self._cumulative_centipayout >= wincap_centipayout):
+                    self._cumulative_centipayout = wincap_centipayout
+                    events.append(self._make_wincap(wincap_centipayout))
+                    wincap_hit = True
+                    break
 
-            # Wincap check (spec step 6) — halt cascade if cap crossed
-            if (is_wincap and self._config.wincap.halt_cascade
-                    and self._cumulative_centipayout >= wincap_centipayout):
-                self._cumulative_centipayout = wincap_centipayout
-                events.append(self._make_wincap(wincap_centipayout))
-                wincap_hit = True
-                break
+                # boosterSpawnInfo (spec step 7)
+                if step.booster_spawn_positions:
+                    events.append(self._make_booster_spawn_info(step))
 
-            # boosterSpawnInfo (spec step 7)
-            if step.booster_spawn_positions:
-                events.append(self._make_booster_spawn_info(step))
+                # boosterArmInfo (spec step 8)
+                if step.booster_arm_records:
+                    events.append(self._make_booster_arm_info(step.booster_arm_records))
 
-            # boosterArmInfo (spec step 8)
-            if step.booster_arm_records:
-                events.append(self._make_booster_arm_info(step.booster_arm_records))
+                # gravitySettle — cluster explosion (spec step 9)
+                if step.gravity_record is not None:
+                    events.append(self._make_gravity_settle(step.gravity_record))
 
-            # gravitySettle — cluster explosion (spec step 9)
-            if step.gravity_record is not None:
-                events.append(self._make_gravity_settle(step.gravity_record))
-
-            # boosterFireInfo — fires on terminal board (spec step 12)
+            # boosterFireInfo — post-terminal fires live on the dead terminal
+            # step; mid-cascade fires on cluster steps (spec step 12)
             if step.booster_fire_records:
                 events.append(self._make_booster_fire_info(step.booster_fire_records))
 
@@ -364,10 +369,10 @@ class EventStreamGenerator:
         """Build boosterSpawnInfo event — flat list of spawned boosters."""
         boosters = [
             {
-                "symbol": btype,
+                "symbol": _qualified_symbol(btype, orient),
                 "position": {"reel": reel, "row": row},
             }
-            for btype, reel, row, _orient in step.booster_spawn_positions
+            for btype, reel, row, orient in step.booster_spawn_positions
         ]
         return {
             "index": self._next_index(),
@@ -381,7 +386,7 @@ class EventStreamGenerator:
         """Build boosterArmInfo event — boosters that transitioned to ARMED."""
         boosters = [
             {
-                "symbol": rec.booster_type,
+                "symbol": _qualified_symbol(rec.booster_type, rec.orientation),
                 "position": {"reel": rec.position_reel, "row": rec.position_row},
             }
             for rec in arm_records
@@ -399,7 +404,7 @@ class EventStreamGenerator:
         boosters: list[dict] = []
         for record in fire_records:
             boosters.append({
-                "symbol": record.booster_type,
+                "symbol": _qualified_symbol(record.booster_type, record.orientation),
                 "clearedCells": [
                     {
                         "symbol": sym_name,

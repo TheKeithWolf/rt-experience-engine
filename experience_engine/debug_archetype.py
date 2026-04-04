@@ -115,7 +115,7 @@ def _write_debug_report(
 
 
 # ---------------------------------------------------------------------------
-# Board rendering — pure ASCII to avoid encoding issues
+# Board rendering — delegates to shared formatting package
 # ---------------------------------------------------------------------------
 
 def _display_name(
@@ -135,23 +135,6 @@ def _display_name(
     return sym.name
 
 
-# Derived from longest symbol name (e.g. SLB) — controls all grid geometry
-_NAME_WIDTH = max(len(s.name) for s in Symbol)
-
-# Cell decoration: (left_char, right_char) per highlight type
-_CELL_STYLE: dict[str, tuple[str, str]] = {
-    "cluster":   ("*", "*"),
-    "strategic": ("[", "]"),
-    "default":   (" ", " "),
-}
-
-
-def _format_cell(name: str, style: str) -> str:
-    """Format a cell with the given highlight style, derived from _NAME_WIDTH."""
-    left, right = _CELL_STYLE[style]
-    return f"{left}{name:>{_NAME_WIDTH}}{right}"
-
-
 def render_board(
     board: Board,
     cluster_positions: frozenset[Position] | None = None,
@@ -165,55 +148,34 @@ def render_board(
     empty cells as ' .. '. Booster symbols enriched with orientation from
     the tracker (R → RH/RV) when available.
     """
-    cluster_positions = cluster_positions or frozenset()
-    strategic_positions = strategic_positions or frozenset()
-    num_reels = board.num_reels
-    num_rows = board.num_rows
+    from .formatting.board_formatter import format_board_grid
+    from .formatting.cells import CellStyle
 
-    # Geometry derived from _NAME_WIDTH — single source of truth
-    cell_width = _NAME_WIDTH + 2  # +2 for left/right decoration chars
-    border = "-" * cell_width + "+"
-    empty_cell = _format_cell("..", "default")
+    cluster_set = cluster_positions or frozenset()
+    strategic_set = strategic_positions or frozenset()
+
+    def resolve_cell(reel: int, row: int) -> tuple[str, CellStyle]:
+        pos = Position(reel, row)
+        sym = board.get(pos)
+
+        if sym is None:
+            return "..", CellStyle.REGULAR
+
+        name = _display_name(sym, pos, booster_tracker)
+
+        # Cluster wins over strategic
+        if pos in cluster_set:
+            return name, CellStyle.WINNER
+        elif pos in strategic_set:
+            return name, CellStyle.ARMED
+        else:
+            return name, CellStyle.REGULAR
 
     lines: list[str] = []
     if label:
         lines.append(f"  {label}")
 
-    # Header row with reel indices — spacing derived from cell width
-    gap = " " * (cell_width - 2)
-    header = " " * (cell_width + 1) + gap.join(f"R{r}" for r in range(num_reels))
-    lines.append(header)
-
-    # Top border
-    lines.append("  +" + border * num_reels)
-
-    for row in range(num_rows):
-        cells: list[str] = []
-        for reel in range(num_reels):
-            pos = Position(reel, row)
-            sym = board.get(pos)
-
-            if sym is None:
-                cells.append(empty_cell)
-                continue
-
-            name = _display_name(sym, pos, booster_tracker)
-
-            # Style lookup — cluster wins over strategic
-            if pos in cluster_positions:
-                style = "cluster"
-            elif pos in strategic_positions:
-                style = "strategic"
-            else:
-                style = "default"
-            cells.append(_format_cell(name, style))
-
-        row_str = f"{row} |" + "|".join(cells) + "|"
-        lines.append(row_str)
-
-        # Row separator or bottom border
-        lines.append("  +" + border * num_reels)
-
+    lines.extend(format_board_grid(board.num_reels, board.num_rows, resolve_cell))
     return "\n".join(lines)
 
 

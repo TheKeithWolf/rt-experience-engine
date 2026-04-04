@@ -27,15 +27,16 @@ from .primitives.symbols import Symbol, is_booster
 # Resolved relative to this file
 _CONFIG_PATH = Path(__file__).parent / "config" / "default.yaml"
 
-_MAJOR_SEP = "=" * 64
-_MINOR_SEP = "-" * 64
+from .formatting.board_formatter import format_board_grid
+from .formatting.cells import CellStyle
+from .formatting.constants import MAJOR_SEP as _MAJOR_SEP, MINOR_SEP as _MINOR_SEP
 
 # Rocket glyph for board display — orientation-dependent
 _ROCKET_GLYPH: dict[str, str] = {"H": "R>", "V": "R^"}
 
 
 # ---------------------------------------------------------------------------
-# Board formatting — adapted from EventTracer._format_board() conventions
+# Board formatting — delegates to shared formatting package
 # ---------------------------------------------------------------------------
 
 def _format_board(
@@ -44,46 +45,35 @@ def _format_board(
     rocket_pos: Position | None = None,
     rocket_orient: str | None = None,
 ) -> list[str]:
-    """Render board as ASCII table matching EventTracer conventions.
+    """Render board as bordered ASCII table via shared formatter.
 
-    - Normal cell:      ` H2 `
-    - Highlighted cell:  `*H2*`
-    - Vacancy (None):    `[  ]`
-    - Rocket cell:       ` R> ` (H) or ` R^ ` (V)
+    - Normal cell:      | H2 |
+    - Highlighted cell:  |*H2*|
+    - Vacancy (None):    |[  ]|
+    - Rocket cell:       | R> | (H) or | R^ | (V)
     """
-    lines: list[str] = []
+    def resolve_cell(reel: int, row: int) -> tuple[str, CellStyle]:
+        pos = Position(reel, row)
+        sym = board.get(pos)
 
-    # Column headers
-    header = "     " + "".join(f"  R{r:<3}" for r in range(board.num_reels))
-    lines.append(header)
+        if sym is None:
+            return "  ", CellStyle.VACANCY
 
-    for row in range(board.num_rows):
-        cells: list[str] = []
-        for reel in range(board.num_reels):
-            pos = Position(reel, row)
-            sym = board.get(pos)
+        # Rocket with orientation glyph
+        if pos == rocket_pos and rocket_orient is not None:
+            glyph = _ROCKET_GLYPH.get(rocket_orient, f" {sym.name}")
+            if pos in highlights:
+                return glyph, CellStyle.WINNER
+            return glyph, CellStyle.REGULAR
 
-            if sym is None:
-                cell = "[  ]"
-            elif pos == rocket_pos and rocket_orient is not None:
-                # Rocket with orientation glyph
-                glyph = _ROCKET_GLYPH.get(rocket_orient, " R ")
-                if pos in highlights:
-                    cell = f"*{glyph}*"
-                else:
-                    cell = f" {glyph} "
-            elif pos in highlights:
-                cell = f"*{sym.name:>2s}*"
-            elif is_booster(sym):
-                cell = f" {sym.name:>2s} "
-            else:
-                cell = f" {sym.name:>3s}"
+        if pos in highlights:
+            return sym.name, CellStyle.WINNER
+        if is_booster(sym):
+            return sym.name, CellStyle.REGULAR
 
-            cells.append(f"|{cell}")
-        line = f"  {row:>2d} " + "".join(cells) + "|"
-        lines.append(line)
+        return sym.name, CellStyle.REGULAR
 
-    return lines
+    return format_board_grid(board.num_reels, board.num_rows, resolve_cell)
 
 
 def _print_board(
