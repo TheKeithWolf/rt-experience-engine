@@ -11,16 +11,18 @@ import random
 
 from ...board_filler.propagators import NoClusterPropagator, NoSpecialSymbolPropagator
 from ...config.schema import MasterConfig
-from ...primitives.board import Position
+from ...primitives.board import Position, orthogonal_neighbors
 from ...primitives.symbols import Symbol, SymbolTier
 from ..context import BoardContext, DormantBooster
 from ..evaluators import ChainEvaluator
 from ..intent import StepIntent, StepType
 from ..progress import ProgressTracker
+from ..services.boundary_analyzer import BoundaryAnalysis
 from ..services.cluster_builder import ClusterBuilder
 from ..services.forward_simulator import ForwardSimulator
 from ..services.landing_evaluator import BoosterLandingEvaluator
 from ..services.influence_map import DemandSpec
+from ..services.merge_policy import MergePolicy
 from ..services.seed_planner import SeedPlanner, build_cluster_exclusions
 from ..services.spatial_context import StepSpatialContext
 from ..services.utility_scorer import ScoringContext
@@ -78,6 +80,19 @@ class BoosterArmStrategy:
         # Boundary analysis for merge-aware placement
         boundary = self._cluster_builder.analyze_boundary(context)
 
+        # Scan for survivor components adjacent to the dormant booster —
+        # these existing groups can contribute to the arming cluster
+        adjacent_survivors = self._booster_adjacent_survivors(booster_pos, boundary)
+
+        # Build affinity scores: base 1.0 + per-cell bonus from config
+        # Counteracts the merge-safety penalty for symbols that can arm
+        # the booster with fewer new cells
+        affinity_per_cell = self._config.reasoner.survivor_affinity_per_cell
+        affinity_scores: dict[Symbol, float] = {
+            sym: 1.0 + count * affinity_per_cell
+            for sym, count in adjacent_survivors.items()
+        }
+
         # Clamp size to available space and spawn-safe ceiling so the arm
         # cluster doesn't trigger an unbudgeted booster spawn
         step_sizes = progress.current_step_size_ranges()
@@ -95,14 +110,29 @@ class BoosterArmStrategy:
         cluster_symbol = self._cluster_builder.select_symbol(
             progress, signature, variance, self._rng,
             boundary=boundary, planned_size=cluster_size,
+            affinity_scores=affinity_scores,
         )
         cluster_tier = SymbolTier.ANY# SymbolTier.LOW if cluster_symbol.value <= 4 else SymbolTier.HIGH
 
-        # Grow cluster adjacent to the booster — AVOID merge to keep exact size for correct booster trigger
-        from ..services.merge_policy import MergePolicy
+        # Exploit survivors adjacent to the booster — they reduce new cells needed.
+        # Avoid otherwise (no useful survivors to leverage).
+        survivor_count = adjacent_survivors.get(cluster_symbol, 0)
+        merged_total = cluster_size + survivor_count
+        # Guard: merged total must not trigger an unwanted booster spawn
+        unwanted_spawn = (
+            self._cluster_builder._spawn_eval.booster_for_size(merged_total)
+            if survivor_count > 0
+            else None
+        )
+        policy = (
+            MergePolicy.EXPLOIT
+            if survivor_count > 0 and unwanted_spawn is None
+            else MergePolicy.AVOID
+        )
+
         result = self._cluster_builder.find_positions(
             context, cluster_size, self._rng, variance,
-            symbol=cluster_symbol, boundary=boundary, merge_policy=MergePolicy.AVOID,
+            symbol=cluster_symbol, boundary=boundary, merge_policy=policy,
             must_be_adjacent_to=frozenset({booster_pos}),
         )
         cluster_positions = result.planned_positions
@@ -226,3 +256,24 @@ class BoosterArmStrategy:
         if not self._chain_eval.can_initiate_chain(target_booster.booster_type):
             return False
         return signature.required_chain_depth.min_val > progress.chain_depth_max
+
+    def _booster_adjacent_survivors(
+        self,
+        booster_pos: Position,
+        boundary: BoundaryAnalysis,
+    ) -> dict[Symbol, int]:
+        """Survivor cells orthogonally adjacent to the booster, per symbol.
+
+        Reuses BoundaryAnalysis.survivor_components (DRY — no second BFS).
+        Only includes components that directly touch the booster position,
+        since those are the ones that can contribute to the arming cluster.
+        """
+        booster_neighbors = frozenset(
+            orthogonal_neighbors(booster_pos, self._config.board)
+        )
+        totals: dict[Symbol, int] = {}
+        for symbol, components in boundary.survivor_components.items():
+            for comp in components:
+                if comp.positions & booster_neighbors:
+                    totals[symbol] = totals.get(symbol, 0) + comp.size
+        return totals

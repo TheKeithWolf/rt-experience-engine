@@ -121,7 +121,7 @@ class TestNRA044:
             max_component_size=None,
             triggers_freespin=False, reaches_wincap=False,
         )
-        assert sig.required_booster_spawns == {"R": Range(2, 3)}
+        assert sig.required_booster_spawns == {"R": Range(2, 6)}
 
 
 # ---------------------------------------------------------------------------

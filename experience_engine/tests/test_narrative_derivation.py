@@ -114,7 +114,7 @@ class TestNRA013:
     def test_single_booster_spawn(self):
         arc = _arc(_phase(spawns=("W",), repetitions=Range(2, 4)))
         d = derive_constraints(arc)
-        assert d.booster_spawns == {"W": Range(2, 4)}
+        assert d.booster_spawns == {"W": Range(2, 8)}
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ class TestNRA014:
             _phase(id="b", spawns=("R",), repetitions=Range(1, 3)),
         )
         d = derive_constraints(arc)
-        assert d.booster_spawns == {"R": Range(2, 5)}
+        assert d.booster_spawns == {"R": Range(2, 10)}
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ class TestNRA015:
             _phase(id="b", spawns=None),
         )
         d = derive_constraints(arc)
-        assert d.booster_spawns == {"R": Range(1, 1)}
+        assert d.booster_spawns == {"R": Range(1, 2)}
 
     def test_fires_aggregation(self):
         arc = _arc(
@@ -191,7 +191,7 @@ class TestNRA017:
         )
         d = derive_constraints(arc)
         assert d.cascade_depth == Range(3, 3)
-        assert d.booster_spawns == {"R": Range(1, 1)}
+        assert d.booster_spawns == {"R": Range(1, 2)}
         assert d.booster_fires == {"R": Range(1, 1)}
 
 
@@ -236,5 +236,5 @@ class TestNRA019:
         )
         d = derive_constraints(arc)
         assert d.cascade_depth == Range(3, 4)
-        assert d.booster_spawns == {"R": Range(1, 2), "B": Range(1, 1)}
+        assert d.booster_spawns == {"R": Range(1, 4), "B": Range(1, 2)}
         assert d.booster_fires == {"R": Range(1, 1), "B": Range(1, 1)}

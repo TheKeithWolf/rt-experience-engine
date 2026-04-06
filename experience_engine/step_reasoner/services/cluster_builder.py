@@ -176,15 +176,18 @@ class ClusterBuilder:
         tier: SymbolTier | None = None,
         boundary: BoundaryAnalysis | None = None,
         planned_size: int | None = None,
+        affinity_scores: dict[Symbol, float] | None = None,
     ) -> Symbol:
         """Select cluster symbol within tier, merge-aware and payout-aware.
 
-        Three scoring dimensions combined multiplicatively (no if/elif chains):
+        Four scoring dimensions combined multiplicatively (no if/elif chains):
         1. Merge safety — penalizes symbols that would merge with survivors
         2. Payout targeting — steers toward symbols that fit the remaining budget
         3. Variance balance — symbol rotation via population-level weights
+        4. Affinity — optional caller-provided per-symbol multiplier (default 1.0)
 
         When boundary is None: simple variance-weighted selection (backward compat).
+        When affinity_scores is None: affinity term is 1.0 for all symbols (no-op).
         """
         resolved_tier = tier or signature.required_cluster_symbols or SymbolTier.ANY
         candidates = list(symbols_in_tier(resolved_tier, self._symbol_config))
@@ -204,7 +207,8 @@ class ClusterBuilder:
             payout_score = self._payout_score(
                 sym, planned_size or 0, remaining_budget, remaining_steps,
             )
-            scored.append((sym, variance_score * merge_score * payout_score))
+            affinity = affinity_scores.get(sym, 1.0) if affinity_scores else 1.0
+            scored.append((sym, variance_score * merge_score * payout_score * affinity))
 
         symbols, weights = zip(*scored)
         return rng.choices(list(symbols), weights=list(weights), k=1)[0]

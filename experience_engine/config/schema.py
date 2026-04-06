@@ -460,6 +460,9 @@ class ReasonerConfig:
     max_strategic_cells_per_step: int
     # How many gravity-settle steps ahead strategies may chain-simulate (1 = immediate only)
     lookahead_depth: int
+    # Per-survivor-cell weight bonus during booster arm symbol selection —
+    # counteracts merge-safety penalty for symbols with adjacent survivors
+    survivor_affinity_per_cell: float
 
     def __post_init__(self) -> None:
         if not (0.0 <= self.payout_low_fraction <= 1.0):
@@ -494,6 +497,10 @@ class ReasonerConfig:
         if self.lookahead_depth < 1:
             raise ConfigValidationError(
                 "reasoner.lookahead_depth", "must be >= 1"
+            )
+        if self.survivor_affinity_per_cell < 0.0:
+            raise ConfigValidationError(
+                "reasoner.survivor_affinity_per_cell", "must be >= 0.0"
             )
 
 

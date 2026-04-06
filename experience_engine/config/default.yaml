@@ -304,7 +304,10 @@ reasoner:
   # SeedPlanner typically places 5-15 cells; 16 gives headroom without over-constraining WFC
   max_strategic_cells_per_step: 16
   # How many gravity-settle steps ahead strategies may chain-simulate (1 = immediate only)
-  lookahead_depth: 2
+  lookahead_depth: 3
+  # Affinity bonus per existing survivor cell adjacent to a dormant booster
+  # during arm-step symbol selection — counteracts merge-safety penalty
+  survivor_affinity_per_cell: 2.0
 
 # Refill strategy tuning — controls post-gravity symbol placement behavior
 # for both cluster-seeking (cascade booster phase) and terminal-safe (static cosmetic) refills
@@ -314,7 +317,7 @@ refill:
   adjacency_boost: 3.0
   # Row-index multiplier biasing cluster formation toward the bottom of the board —
   # deeper neighbors contribute proportionally more to adjacency scores
-  depth_scale: 0.3
+  depth_scale: 0.5
   # Per-cell retry budget for terminal refill when a candidate would create a cluster —
   # exhaustion triggers deterministic smallest-component fallback
   terminal_max_retries: 10

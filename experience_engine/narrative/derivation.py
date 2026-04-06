@@ -36,11 +36,13 @@ def _is_terminal_phase(phase: NarrativePhase) -> bool:
 def _aggregate_booster_ranges(
     phases: tuple[NarrativePhase, ...],
     field: str,
+    scale_by_cluster_count: bool,
 ) -> dict[str, Range]:
-    """Sum repetition ranges per booster type across phases that use the given field.
+    """Sum booster budget per type across phases that declare the given field.
 
-    For each booster type appearing in any phase's spawns/fires tuple, the
-    total range is the sum of repetition ranges across phases that include it.
+    When scale_by_cluster_count is True (spawns), each cluster independently
+    produces a booster so the budget scales with cluster_count. When False
+    (fires), fire count depends on armed boosters, not on how many clusters form.
     """
     totals: dict[str, list[int]] = {}  # type -> [sum_min, sum_max]
 
@@ -48,12 +50,14 @@ def _aggregate_booster_ranges(
         booster_types: tuple[str, ...] | None = getattr(phase, field)
         if booster_types is None:
             continue
-        # Deduplicate within a single phase — each type counted once per phase
+        # Per-step scale factor: cluster_count when each cluster spawns independently
+        scale_min = phase.cluster_count.min_val if scale_by_cluster_count else 1
+        scale_max = phase.cluster_count.max_val if scale_by_cluster_count else 1
         for btype in set(booster_types):
             if btype not in totals:
                 totals[btype] = [0, 0]
-            totals[btype][0] += phase.repetitions.min_val
-            totals[btype][1] += phase.repetitions.max_val
+            totals[btype][0] += phase.repetitions.min_val * scale_min
+            totals[btype][1] += phase.repetitions.max_val * scale_max
 
     return {btype: Range(vals[0], vals[1]) for btype, vals in totals.items()}
 
@@ -95,8 +99,8 @@ def derive_constraints(arc: NarrativeArc) -> DerivedConstraints:
 
     return DerivedConstraints(
         cascade_depth=Range(depth_min, depth_max),
-        booster_spawns=_aggregate_booster_ranges(arc.phases, "spawns"),
-        booster_fires=_aggregate_booster_ranges(arc.phases, "fires"),
+        booster_spawns=_aggregate_booster_ranges(arc.phases, "spawns", scale_by_cluster_count=True),
+        booster_fires=_aggregate_booster_ranges(arc.phases, "fires", scale_by_cluster_count=False),
         cluster_count=cluster_count,
         cluster_sizes=tuple(seen_sizes),
     )

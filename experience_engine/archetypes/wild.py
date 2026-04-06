@@ -425,13 +425,9 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
         rocket_orientation=None,
         lb_target_tier=None,
     )
-    # Derives: depth Range(2,4), spawns {"W": Range(2,3)} (from spawn phase cluster_count 2-3)
-    # Note: spawns aggregation uses repetitions, not cluster_count. With spawns=("W",)
-    # and repetitions=Range(1,1), derived W budget = Range(1,1). But we need 2-3 W spawns.
-    # The cluster_count=Range(2,3) produces 2-3 clusters each spawning W, but the derivation
-    # counts by repetitions not cluster_count. So we need repetitions=Range(2,3) with
-    # cluster_count=Range(1,1) per repetition, OR we accept the derivation gives W=Range(1,1)
-    # and override. Let's restructure:
+    # Derives: depth Range(2,5), spawns {"W": Range(2,3)}.
+    # Structured as repetitions=Range(2,3) with cluster_count=Range(1,1) so each
+    # repetition produces exactly one W spawn across sequential cascade steps.
     _wild_multi_arc = NarrativeArc(
         phases=(
             NarrativePhase(

@@ -370,6 +370,9 @@ def _build_reasoner(data: dict[str, Any]) -> ReasonerConfig:
         lookahead_depth=int(
             _require(data, "lookahead_depth", "reasoner.lookahead_depth")
         ),
+        survivor_affinity_per_cell=float(
+            data.get("survivor_affinity_per_cell", 2.0)
+        ),
     )
 
 
