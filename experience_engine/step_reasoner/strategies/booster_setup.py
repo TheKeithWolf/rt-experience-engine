@@ -19,8 +19,12 @@ from ..evaluators import ChainEvaluator, SpawnEvaluator
 from ..intent import StepIntent, StepType
 from ..progress import ProgressTracker
 from ..services.cluster_builder import ClusterBuilder
+from ..services.merge_policy import MergePolicy, ClusterPositionResult
+from ..services.boundary_analyzer import BoundaryAnalysis
 from ..services.forward_simulator import ForwardSimulator
-from ..services.landing_evaluator import BoosterLandingEvaluator
+from ..services.landing_evaluator import (
+    BoosterLandingEvaluator, compute_reshape_bias,
+)
 from ..services.seed_planner import SeedPlanner
 from ..services.spatial_context import StepSpatialContext
 from ...archetypes.registry import ArchetypeSignature
@@ -84,8 +88,6 @@ class BoosterSetupStrategy:
         constrained: dict[Position, Symbol] = {}
         expected_spawns: list[str] = []
 
-        from ..services.merge_policy import MergePolicy
-
         for booster_type in missing_boosters:
             # Determine cluster size needed to spawn this booster type
             size_range = self._spawn_eval.size_range_for_booster(booster_type)
@@ -114,32 +116,10 @@ class BoosterSetupStrategy:
                 else MergePolicy.AVOID
             )
 
-            result = self._cluster_builder.find_positions(
-                context, cluster_size, self._rng, variance,
-                symbol=cluster_symbol, boundary=boundary, merge_policy=policy,
-                avoid_positions=frozenset(constrained),
+            result = self._find_viable_cluster(
+                context, cluster_size, cluster_symbol,
+                boundary, policy, constrained, variance, booster_type,
             )
-
-            # Score the booster's post-gravity landing for chain geometry viability.
-            # Low score → retry with centroid biased toward the board interior
-            # where rocket paths and bomb blasts have maximum coverage.
-            hypothetical = self._forward_sim.build_hypothetical(
-                context.board,
-                {pos: cluster_symbol for pos in result.planned_positions},
-            )
-            _ctx, landing_score = self._landing_eval.evaluate_and_score(
-                frozenset(result.planned_positions), hypothetical, booster_type,
-            )
-            if landing_score < 0.5:
-                result = self._cluster_builder.find_positions(
-                    context, cluster_size, self._rng, variance,
-                    symbol=cluster_symbol, boundary=boundary, merge_policy=policy,
-                    avoid_positions=frozenset(constrained),
-                    centroid_target=Position(
-                        self._config.board.num_reels // 2,
-                        self._config.board.num_rows // 2,
-                    ),
-                )
 
             for pos in result.planned_positions:
                 constrained[pos] = cluster_symbol
@@ -174,6 +154,77 @@ class BoosterSetupStrategy:
             planned_explosion=frozenset(constrained),
             is_terminal=False,
         )
+
+    def _find_viable_cluster(
+        self,
+        context: BoardContext,
+        cluster_size: int,
+        cluster_symbol: Symbol,
+        boundary: BoundaryAnalysis,
+        policy: MergePolicy,
+        constrained: dict[Position, Symbol],
+        variance: VarianceHints,
+        booster_type: str,
+    ) -> ClusterPositionResult:
+        """Place a spawn cluster whose post-gravity landing can support the
+        next step's arming cluster.
+
+        Generates candidate shapes by progressively biasing variance toward
+        upper, vertically concentrated placements (where centroids stay near
+        the refill zone). Scores each via the landing evaluator's composite
+        criterion; returns the first candidate meeting
+        reasoner.arm_feasibility_threshold, or the best-scoring candidate
+        if the retry budget is exhausted.
+
+        The retry budget (reasoner.arm_feasibility_retry_budget) caps how
+        many reshape attempts the strategy will try before settling for the
+        best available — prevents unbounded spinning on infeasible boards.
+        """
+        avoid = frozenset(constrained)
+        threshold = self._config.reasoner.arm_feasibility_threshold
+        budget = self._config.reasoner.arm_feasibility_retry_budget
+
+        best_result: ClusterPositionResult | None = None
+        best_score = -1.0
+
+        # attempt 0 is the unbiased placement; each subsequent attempt
+        # progressively concentrates vertically via compute_reshape_bias.
+        # Total attempts = 1 + budget (original + retries).
+        # Reshape bias can over-concentrate to the point where find_positions
+        # cannot fit the cluster; ValueError on a later attempt is treated as
+        # a failed reshape and doesn't mask an earlier viable result.
+        for attempt in range(budget + 1):
+            attempt_variance = compute_reshape_bias(
+                variance, self._config.board, attempt,
+            )
+            try:
+                result = self._cluster_builder.find_positions(
+                    context, cluster_size, self._rng, attempt_variance,
+                    symbol=cluster_symbol, boundary=boundary, merge_policy=policy,
+                    avoid_positions=avoid,
+                )
+            except ValueError:
+                if best_result is None:
+                    raise
+                continue
+            hypothetical = self._forward_sim.build_hypothetical(
+                context.board,
+                {pos: cluster_symbol for pos in result.planned_positions},
+            )
+            _ctx, score = self._landing_eval.evaluate_and_score(
+                frozenset(result.planned_positions), hypothetical, booster_type,
+            )
+            if score > best_score:
+                best_result = result
+                best_score = score
+            if score >= threshold:
+                break
+
+        # best_result is never None: first attempt (unbiased) raises on
+        # genuine infeasibility, which propagates; subsequent reshape
+        # failures are caught above.
+        assert best_result is not None
+        return best_result
 
     def _determine_missing_boosters(
         self,

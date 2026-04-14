@@ -21,6 +21,7 @@ from ..primitives.symbols import SymbolTier
 from .context import BoardContext, DormantBooster
 from .evaluators import ChainEvaluator, PayoutEstimator, SpawnEvaluator
 from .progress import ProgressTracker
+from .services.feasibility_estimator import FeasibilityEstimator
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +62,10 @@ class StepAssessor:
     provide rule lookups; all thresholds come from ReasonerConfig.
     """
 
-    __slots__ = ("_spawn_eval", "_chain_eval", "_payout_eval", "_config")
+    __slots__ = (
+        "_spawn_eval", "_chain_eval", "_payout_eval", "_config",
+        "_feasibility_est",
+    )
 
     def __init__(
         self,
@@ -69,11 +73,15 @@ class StepAssessor:
         chain_evaluator: ChainEvaluator,
         payout_estimator: PayoutEstimator,
         config: ReasonerConfig,
+        feasibility_estimator: FeasibilityEstimator | None = None,
     ) -> None:
         self._spawn_eval = spawn_evaluator
         self._chain_eval = chain_evaluator
         self._payout_eval = payout_estimator
         self._config = config
+        # Default-constructed estimator keeps callers that don't wire one
+        # (legacy tests) on the same short-circuit path as the registry
+        self._feasibility_est = feasibility_estimator or FeasibilityEstimator()
 
     def assess(
         self,
@@ -141,12 +149,18 @@ class StepAssessor:
             next_phase is not None and next_phase.wild_behavior == "bridge"
         )
 
+        # Feasibility check — if remaining phases need more cells than the
+        # board can offer, force terminal-dead rather than burn retries on
+        # an impossible configuration.
+        infeasible = not self._feasibility_est.estimate(progress, context)
+
         return StepAssessment(
             steps_remaining=steps_remaining,
             is_first_step=is_first_step,
             must_terminate_now=(
                 steps_remaining.max_val <= 0
                 or (steps_remaining.min_val <= 0 and progress.is_satisfied())
+                or infeasible
             ),
             should_terminate_soon=steps_remaining.max_val <= 1,
             needs_booster_spawn=needs_spawn,

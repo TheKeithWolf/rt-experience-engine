@@ -463,6 +463,13 @@ class ReasonerConfig:
     # Per-survivor-cell weight bonus during booster arm symbol selection —
     # counteracts merge-safety penalty for symbols with adjacent survivors
     survivor_affinity_per_cell: float
+    # Minimum acceptable landing score for a spawn-cluster candidate. Below
+    # this, BoosterSetupStrategy retries with reshape bias to find a landing
+    # whose refill zone can fit the next step's arming cluster.
+    arm_feasibility_threshold: float
+    # Maximum reshape attempts after the first cluster placement fails the
+    # arm_feasibility_threshold. Each attempt re-rolls via compute_reshape_bias.
+    arm_feasibility_retry_budget: int
 
     def __post_init__(self) -> None:
         if not (0.0 <= self.payout_low_fraction <= 1.0):
@@ -501,6 +508,14 @@ class ReasonerConfig:
         if self.survivor_affinity_per_cell < 0.0:
             raise ConfigValidationError(
                 "reasoner.survivor_affinity_per_cell", "must be >= 0.0"
+            )
+        if not (0.0 <= self.arm_feasibility_threshold <= 1.0):
+            raise ConfigValidationError(
+                "reasoner.arm_feasibility_threshold", "must be in [0.0, 1.0]"
+            )
+        if self.arm_feasibility_retry_budget < 0:
+            raise ConfigValidationError(
+                "reasoner.arm_feasibility_retry_budget", "must be >= 0"
             )
 
 

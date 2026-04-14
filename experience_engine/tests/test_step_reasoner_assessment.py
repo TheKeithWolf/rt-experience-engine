@@ -76,6 +76,8 @@ def _make_reasoner_config(**overrides) -> ReasonerConfig:
         max_strategic_cells_per_step=16,
         lookahead_depth=2,
         survivor_affinity_per_cell=2.0,
+        arm_feasibility_threshold=0.7,
+        arm_feasibility_retry_budget=3,
     )
     defaults.update(overrides)
     return ReasonerConfig(**defaults)

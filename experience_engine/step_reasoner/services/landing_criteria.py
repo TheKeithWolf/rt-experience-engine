@@ -9,11 +9,13 @@ Used by: BoosterLandingEvaluator (dict dispatch to criterion.score()).
 
 from __future__ import annotations
 
+from collections import deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from ...config.schema import BoardConfig
-from ...primitives.board import Position
+from ...primitives.board import Position, orthogonal_neighbors
 from ...primitives.booster_rules import BoosterRules
 
 if TYPE_CHECKING:
@@ -217,3 +219,108 @@ class LightballArmCriterion:
 
 # SLB reuses the same criterion — armability is the bottleneck, not board composition
 SuperLightballArmCriterion = LightballArmCriterion
+
+
+# ---------------------------------------------------------------------------
+# Arm Feasibility — BFS flood-fill of post-settle empty cells near the landing
+# ---------------------------------------------------------------------------
+
+class ArmFeasibilityCriterion:
+    """Scores whether the rocket's landing has enough connected empty space
+    for an arming cluster of min_cluster_size.
+
+    Starts BFS from the landing's orthogonal refill neighbors and expands
+    through the full post-settle refill zone. Reports the connected component
+    size as a fraction of the cluster threshold. Unlike RocketArmCriterion
+    (which counts only immediate adjacencies and centrality), this criterion
+    measures reachable post-gravity space — the true bottleneck for arming.
+    """
+
+    __slots__ = ("_board_config", "_required")
+
+    def __init__(self, board_config: BoardConfig) -> None:
+        self._board_config = board_config
+        # An arming cluster must reach min_cluster_size connected cells in the
+        # refill zone adjacent to the rocket. Derived from game rules, not magic.
+        self._required = board_config.min_cluster_size
+
+    def score(self, ctx: LandingContext) -> float:
+        if not ctx.adjacent_refill:
+            return 0.0
+
+        refill_set = frozenset(ctx.all_refill)
+        if not refill_set:
+            return 0.0
+
+        # BFS seeded from every landing-adjacent refill cell — the connected
+        # component reachable through the refill zone is the pool the WFC
+        # fill + gravity cascade has to form an arming cluster within.
+        visited: set[Position] = set()
+        queue: deque[Position] = deque()
+        for seed in ctx.adjacent_refill:
+            if seed in refill_set and seed not in visited:
+                visited.add(seed)
+                queue.append(seed)
+
+        while queue:
+            pos = queue.popleft()
+            for neighbor in orthogonal_neighbors(pos, self._board_config):
+                if neighbor in refill_set and neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+
+        reachable = len(visited)
+        return min(1.0, reachable / self._required)
+
+
+# ---------------------------------------------------------------------------
+# Composite — combine multiple criteria via a configurable aggregator
+# ---------------------------------------------------------------------------
+
+class CompositeCriterion:
+    """Composes N criteria via a configurable aggregation function.
+
+    The aggregator is a callable taking an iterable of floats and returning
+    one float — pass `min` for worst-of, `statistics.mean` for average,
+    `math.prod` for multiplicative. No if/else dispatch on mode strings,
+    so adding new aggregation strategies requires no edits here.
+    """
+
+    __slots__ = ("_criteria", "_aggregate")
+
+    def __init__(
+        self,
+        criteria: tuple[LandingCriterion, ...],
+        aggregate: Callable[[Iterable[float]], float],
+    ) -> None:
+        self._criteria = criteria
+        self._aggregate = aggregate
+
+    def score(self, ctx: LandingContext) -> float:
+        return self._aggregate(c.score(ctx) for c in self._criteria)
+
+
+# ---------------------------------------------------------------------------
+# Chain Target — landing must fall inside the initiator's effect zone
+# ---------------------------------------------------------------------------
+
+class ChainTargetCriterion:
+    """Binary criterion: 1.0 if the target booster lands inside the initiator's
+    effect zone, 0.0 otherwise.
+
+    Consumes a ChainConstraint describing the zone produced by the chain
+    initiator (rocket path, bomb blast, …). Binary because near-misses aren't
+    useful for chains — the target is either in the path or it isn't.
+
+    The constraint is supplied at construction time by the strategy that
+    resolves it at plan-time; this keeps the criterion free of cross-step
+    state lookups.
+    """
+
+    __slots__ = ("_constraint",)
+
+    def __init__(self, constraint: ChainConstraint) -> None:
+        self._constraint = constraint
+
+    def score(self, ctx: LandingContext) -> float:
+        return 1.0 if ctx.landing_position in self._constraint.effect_zone else 0.0

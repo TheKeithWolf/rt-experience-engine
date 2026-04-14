@@ -72,7 +72,7 @@ def build_default_registry(
     from .services.influence_map import InfluenceMap
     from .services.landing_criteria import (
         WildBridgeCriterion, RocketArmCriterion, BombArmCriterion,
-        LightballArmCriterion,
+        LightballArmCriterion, ArmFeasibilityCriterion, CompositeCriterion,
     )
     from .services.landing_evaluator import BoosterLandingEvaluator
     from .services.near_miss_planner import NearMissPlanner
@@ -110,9 +110,21 @@ def build_default_registry(
     # Booster landing evaluator — shared service for post-gravity viability scoring.
     # Criteria dict dispatch replaces per-strategy if/else on booster type.
     booster_rules = BoosterRules(config.boosters, config.board, config.symbols)
+    # Rocket needs the composite gate — RocketArmCriterion alone only checks
+    # immediate adjacency and centrality, which scores well at Step 0 but
+    # doesn't guarantee the post-gravity refill zone has enough connected
+    # empty space for an arming cluster. ArmFeasibilityCriterion BFSs the
+    # refill pool; aggregating with `min` makes the worse score dominate so
+    # both constraints must hold.
     landing_criteria = {
         "W": WildBridgeCriterion(config.board),
-        "R": RocketArmCriterion(booster_rules, config.board),
+        "R": CompositeCriterion(
+            (
+                RocketArmCriterion(booster_rules, config.board),
+                ArmFeasibilityCriterion(config.board),
+            ),
+            aggregate=min,
+        ),
         "B": BombArmCriterion(booster_rules, config.board),
         "LB": LightballArmCriterion(config.board),
         "SLB": LightballArmCriterion(config.board),

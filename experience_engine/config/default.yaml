@@ -308,6 +308,12 @@ reasoner:
   # Affinity bonus per existing survivor cell adjacent to a dormant booster
   # during arm-step symbol selection — counteracts merge-safety penalty
   survivor_affinity_per_cell: 2.0
+  # Minimum acceptable landing score for spawn-cluster candidates — below
+  # this, BoosterSetupStrategy retries with reshape bias to find a landing
+  # whose refill zone can fit the next step's arming cluster
+  arm_feasibility_threshold: 0.7
+  # Maximum reshape attempts after the initial cluster fails the threshold
+  arm_feasibility_retry_budget: 3
 
 # Refill strategy tuning — controls post-gravity symbol placement behavior
 # for both cluster-seeking (cascade booster phase) and terminal-safe (static cosmetic) refills

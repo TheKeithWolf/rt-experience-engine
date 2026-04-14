@@ -373,6 +373,14 @@ def _build_reasoner(data: dict[str, Any]) -> ReasonerConfig:
         survivor_affinity_per_cell=float(
             data.get("survivor_affinity_per_cell", 2.0)
         ),
+        arm_feasibility_threshold=float(
+            _require(data, "arm_feasibility_threshold",
+                     "reasoner.arm_feasibility_threshold")
+        ),
+        arm_feasibility_retry_budget=int(
+            _require(data, "arm_feasibility_retry_budget",
+                     "reasoner.arm_feasibility_retry_budget")
+        ),
     )
 
 

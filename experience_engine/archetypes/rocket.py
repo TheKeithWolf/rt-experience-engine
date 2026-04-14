@@ -105,18 +105,64 @@ def _rocket_fire_phase(
     )
 
 
+# Size ranges for chain-target spawn phases, derived from the same game rule
+# as boosters.spawn_thresholds in default.yaml (B fires at 11-12, LB at 13-14,
+# SLB at 15+). SLB capped at 16 so the phase fits within board space alongside
+# the rocket spawn and arming cluster. SpawnEvaluator resolves the runtime
+# mapping; this mirror exists only because NarrativePhase construction happens
+# at import time, before the evaluator is available.
+_CHAIN_TARGET_SIZES: dict[str, Range] = {
+    "B": Range(11, 12),
+    "LB": Range(13, 14),
+    "SLB": Range(15, 16),
+}
+
+
+def _chain_target_spawn_phase(
+    target_booster: str,
+    *,
+    phase_id: str = "spawn_chain_target",
+    intent: str = "Cluster spawns the chain-target booster",
+) -> NarrativePhase:
+    """Phase where a cluster spawns the booster that a rocket will chain-trigger.
+
+    Used by chain archetypes (rocket_chain_{bomb,fizzle,lb,slb}) to guarantee
+    the target booster exists before the rocket fires, and by tease archetypes
+    (rocket_bomb_tease, rocket_near_miss_orientation) to guarantee a dormant
+    bomb appears on the terminal board.
+    """
+    return NarrativePhase(
+        id=phase_id,
+        intent=intent,
+        repetitions=Range(1, 1),
+        cluster_count=Range(1, 1),
+        cluster_sizes=(_CHAIN_TARGET_SIZES[target_booster],),
+        cluster_symbol_tier=None,
+        spawns=(target_booster,),
+        arms=None,
+        fires=None,
+        wild_behavior=None,
+        ends_when="always",
+    )
+
+
 def _low_cluster_phase(
     *,
     phase_id: str = "low_cluster",
     intent: str = "LOW-tier cluster filler — modest value before the payoff",
+    cluster_sizes: tuple[Range, ...] = (Range(5, 6),),
 ) -> NarrativePhase:
-    """Phase of LOW-tier filler clusters with no booster activity."""
+    """Phase of LOW-tier filler clusters with no booster activity.
+
+    cluster_sizes override exists so space-tight arcs (late_save_chain) can
+    tighten to the minimum (5-5) without forking the factory.
+    """
     return NarrativePhase(
         id=phase_id,
         intent=intent,
         repetitions=Range(1, 1),
         cluster_count=Range(1, 2),
-        cluster_sizes=(Range(5, 6),),
+        cluster_sizes=cluster_sizes,
         cluster_symbol_tier=SymbolTier.LOW,
         spawns=None,
         arms=None,
@@ -297,13 +343,22 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
         arc=NarrativeArc(
             phases=(
                 _rocket_spawn_phase(),
-                # Rocket fires and its path hits a dormant bomb, causing both to fire
+                # Bomb spawns from a dedicated cluster so the rocket's fire
+                # path has a real target — previously relied on accidental
+                # post-refill spawns that almost never materialised.
+                _chain_target_spawn_phase(
+                    "B",
+                    phase_id="spawn_chain_bomb",
+                    intent="Cluster spawns the bomb that the rocket will chain-trigger",
+                ),
+                # Rocket fires and its path hits the dormant bomb, causing both to fire
                 NarrativePhase(
                     id="fire_rocket_chain_bomb",
                     intent="Cluster arms rocket, fire path chain-triggers dormant bomb",
                     repetitions=Range(1, 1),
                     cluster_count=Range(1, 2),
-                    cluster_sizes=(Range(5, 12),),
+                    # Arming cluster only — bomb already spawned in prior phase
+                    cluster_sizes=(Range(5, 10),),
                     cluster_symbol_tier=None,
                     spawns=None,
                     arms=("R",),
@@ -333,12 +388,17 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
         arc=NarrativeArc(
             phases=(
                 _rocket_spawn_phase(),
+                _chain_target_spawn_phase(
+                    "LB",
+                    phase_id="spawn_chain_lb",
+                    intent="Cluster spawns the lightball that the rocket will chain-trigger",
+                ),
                 NarrativePhase(
                     id="fire_rocket_chain_lb",
                     intent="Cluster arms rocket, fire path chain-triggers lightball",
                     repetitions=Range(1, 1),
                     cluster_count=Range(1, 2),
-                    cluster_sizes=(Range(5, 14),),
+                    cluster_sizes=(Range(5, 10),),
                     cluster_symbol_tier=None,
                     spawns=None,
                     arms=("R",),
@@ -368,12 +428,17 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
         arc=NarrativeArc(
             phases=(
                 _rocket_spawn_phase(),
+                _chain_target_spawn_phase(
+                    "SLB",
+                    phase_id="spawn_chain_slb",
+                    intent="Cluster spawns the superlightball that the rocket will chain-trigger",
+                ),
                 NarrativePhase(
                     id="fire_rocket_chain_slb",
                     intent="Cluster arms rocket, fire path chain-triggers superlightball",
                     repetitions=Range(1, 1),
                     cluster_count=Range(1, 2),
-                    cluster_sizes=(Range(5, 49),),
+                    cluster_sizes=(Range(5, 10),),
                     cluster_symbol_tier=None,
                     spawns=None,
                     arms=("R",),
@@ -464,6 +529,13 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
         arc=NarrativeArc(
             phases=(
                 _rocket_spawn_phase(),
+                # Bomb spawned deliberately before the H-fire so the near-miss
+                # geometry (bomb on the adjacent row) can actually materialise.
+                _chain_target_spawn_phase(
+                    "B",
+                    phase_id="spawn_near_miss_bomb",
+                    intent="Cluster spawns the bomb that the H-rocket will narrowly miss",
+                ),
                 _rocket_fire_phase(),
             ),
             payout=RangeFloat(1.0, 15.0),
@@ -487,10 +559,18 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
     registry.register(build_arc_signature(
         arc=NarrativeArc(
             phases=(
+                # Sequential spawns — fitting two 9-10 clusters on one 49-cell
+                # board is geometrically tight; splitting into two phases lets
+                # gravity + refill free space between spawns.
                 _rocket_spawn_phase(
-                    cluster_count=Range(2, 2),
-                    phase_id="dual_spawn_idle",
-                    intent="Two clusters spawn rockets that stay dormant",
+                    cluster_count=Range(1, 1),
+                    phase_id="dual_idle_spawn_1",
+                    intent="First cluster spawns a dormant rocket",
+                ),
+                _rocket_spawn_phase(
+                    cluster_count=Range(1, 1),
+                    phase_id="dual_idle_spawn_2",
+                    intent="Second cluster spawns another dormant rocket",
                 ),
             ),
             payout=RangeFloat(1.0, 15.0),
@@ -547,14 +627,20 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 _low_cluster_phase(
                     phase_id="low_filler",
                     intent="Early LOW clusters before bomb spawns",
+                    # Tightened to the minimum-size cluster so the three
+                    # remaining phases (B spawn, R spawn, R fire) have cells
+                    # left on the 49-cell board.
+                    cluster_sizes=(Range(5, 5),),
                 ),
-                # Bomb spawns from 11-12 cluster
+                # Bomb spawns from the minimum-size B cluster — tightened to
+                # 11-11 to conserve cells for the rocket spawn + fire that
+                # must follow on the same 49-cell board.
                 NarrativePhase(
                     id="spawn_bomb_early",
                     intent="Bomb spawns early and waits dormant",
                     repetitions=Range(1, 1),
                     cluster_count=Range(1, 2),
-                    cluster_sizes=(Range(11, 12),),
+                    cluster_sizes=(Range(11, 11),),
                     cluster_symbol_tier=None,
                     spawns=("B",),
                     arms=None,
@@ -562,13 +648,15 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                     wild_behavior=None,
                     ends_when="always",
                 ),
-                # Rocket spawns, fires, and chain-triggers the dormant bomb
+                # Rocket spawns, fires, and chain-triggers the dormant bomb.
+                # Cluster size tightened to 9-9 for the same space-conservation
+                # reason as the bomb spawn above.
                 NarrativePhase(
                     id="spawn_fire_rocket_chain",
                     intent="Rocket spawns, fires, and chain-triggers dormant bomb",
                     repetitions=Range(1, 1),
                     cluster_count=Range(1, 2),
-                    cluster_sizes=(Range(9, 10),),
+                    cluster_sizes=(Range(9, 9),),
                     cluster_symbol_tier=None,
                     spawns=("R",),
                     arms=("R",),
@@ -641,10 +729,17 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
     registry.register(build_arc_signature(
         arc=NarrativeArc(
             phases=(
+                # Sequential rocket spawns — two 9-10 clusters on one board
+                # rarely fit; splitting gives gravity room to clear between.
                 _rocket_spawn_phase(
-                    cluster_count=Range(2, 2),
-                    phase_id="cross_spawn",
-                    intent="Two clusters each spawn a rocket (one H, one V)",
+                    cluster_count=Range(1, 1),
+                    phase_id="cross_spawn_1",
+                    intent="First cluster spawns a rocket (H or V)",
+                ),
+                _rocket_spawn_phase(
+                    cluster_count=Range(1, 1),
+                    phase_id="cross_spawn_2",
+                    intent="Second cluster spawns the other-orientation rocket",
                 ),
                 _rocket_fire_phase(
                     phase_id="cross_fire",
@@ -768,12 +863,17 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
         arc=NarrativeArc(
             phases=(
                 _rocket_spawn_phase(),
+                _chain_target_spawn_phase(
+                    "B",
+                    phase_id="spawn_chain_bomb_fizzle",
+                    intent="Cluster spawns the bomb the rocket chain will trigger",
+                ),
                 NarrativePhase(
                     id="fire_rocket_chain_fizzle",
                     intent="Cluster arms rocket, chain triggers bomb, then cascade dies",
                     repetitions=Range(1, 1),
                     cluster_count=Range(1, 2),
-                    cluster_sizes=(Range(5, 12),),
+                    cluster_sizes=(Range(5, 10),),
                     cluster_symbol_tier=None,
                     spawns=None,
                     arms=("R",),
@@ -806,6 +906,14 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
             phases=(
                 _rocket_spawn_phase(),
                 _rocket_fire_phase(),
+                # Dedicated bomb spawn — post-fire refill alone never reliably
+                # produced the 11-12 cluster needed, so the tease archetype
+                # now explicitly plants the dormant bomb.
+                _chain_target_spawn_phase(
+                    "B",
+                    phase_id="spawn_dormant_bomb",
+                    intent="Post-fire cluster spawns the dormant bomb that stays on terminal",
+                ),
             ),
             payout=RangeFloat(1.0, 20.0),
             wild_count_on_terminal=Range(0, 0),

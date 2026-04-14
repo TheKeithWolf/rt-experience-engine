@@ -504,4 +504,6 @@ class TestConfigValidation:
                 max_strategic_cells_per_step=r.max_strategic_cells_per_step,
                 lookahead_depth=r.lookahead_depth,
                 survivor_affinity_per_cell=-1.0,
+                arm_feasibility_threshold=r.arm_feasibility_threshold,
+                arm_feasibility_retry_budget=r.arm_feasibility_retry_budget,
             )
