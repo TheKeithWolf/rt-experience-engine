@@ -24,6 +24,7 @@ from ..primitives.grid_multipliers import GridMultiplierGrid
 from ..primitives.paytable import Paytable
 from ..primitives.symbols import Symbol, symbol_from_name
 from ..step_reasoner.context import BoardContext
+from ..step_reasoner.intent import StepIntent
 from ..step_reasoner.progress import ProgressTracker
 from ..step_reasoner.reasoner import StepReasoner
 from ..step_reasoner.results import StepResult
@@ -313,11 +314,30 @@ class CascadeInstanceGenerator:
                 # No clusters and while-loop will check for armed boosters
                 break
 
-            # 4. Clusters found — re-enter cascade loop via shared step method
-            for _ in range(post_terminal_max - post_steps):
+            # 4. Re-cascade: passthrough existing clusters until board is
+            # cluster-free, then fill remaining empty cells dead.
+            # Gravity can create new clusters after each transition, so
+            # passthrough must loop until the board settles cluster-free.
+            # Re-cascade depth depends on how many clusters gravity creates,
+            # not the archetype's intended chain depth. Upper bound: each
+            # cluster removes min_cluster_size cells, so cascade depth is
+            # bounded by board_cells / min_cluster_size (+1 for terminal fill).
+            board_cfg = self._config.board
+            remaining_budget = (
+                board_cfg.num_reels * board_cfg.num_rows
+                // board_cfg.min_cluster_size + 1
+            )
+            for _ in range(remaining_budget):
+                has_clusters = bool(detect_clusters(board, self._config))
                 outcome = self._execute_cascade_step(
                     board, grid_mults, booster_tracker, phase_executor,
                     progress, sig, hints, rng,
+                    # Passthrough when clusters exist on a filled board —
+                    # validates payout and transitions (explode + gravity).
+                    # Normal path when no clusters — reasoner fills dead.
+                    intent_override=(
+                        StepIntent.passthrough() if has_clusters else None
+                    ),
                 )
                 step_results.append(outcome.step_result)
                 raw_steps.append((
@@ -327,6 +347,12 @@ class CascadeInstanceGenerator:
                 if outcome.is_terminal:
                     break
                 board = outcome.next_board
+            else:
+                # Budget exhausted without terminal — cascade couldn't settle
+                raise StepValidationFailed(
+                    f"Post-terminal re-cascade exhausted budget of "
+                    f"{remaining_budget} steps without settling"
+                )
 
             post_steps += 1
             # After re-cascade, check if new armed boosters appeared — while loop continues
@@ -364,9 +390,13 @@ class CascadeInstanceGenerator:
                 arm_types = td.arm_types
                 arm_records = td.arm_records
                 next_filled = raw_steps[i + 1][2]
+                # Filter positions: passthrough re-cascade steps don't
+                # WFC-fill, so some positions may still be empty on the
+                # next step's board (filled later by the terminal step)
                 refill_entries = tuple(
-                    (pos.reel, pos.row, next_filled.get(pos).name)
+                    (pos.reel, pos.row, sym.name)
                     for pos in empty_positions
+                    if (sym := next_filled.get(pos)) is not None
                 )
                 gravity_record = GravityRecord(
                     exploded_positions=gr_base.exploded_positions,
@@ -398,23 +428,34 @@ class CascadeInstanceGenerator:
         sig: ArchetypeSignature,
         hints: VarianceHints,
         rng: random.Random,
+        *,
+        intent_override: StepIntent | None = None,
     ) -> CascadeStepOutcome:
         """One reason→execute→validate→advance→transition cycle.
 
         Shared by the main cascade loop and post-terminal re-cascade loop.
         Callers handle appending to step_results/raw_steps and breaking on
         terminal — this method only executes one step and returns its outcome.
+
+        When intent_override is provided, reasoning and execution are skipped —
+        the board is treated as already filled (used for post-terminal re-cascade
+        where clusters formed from refill need validation + transition).
         """
         board_before = board.copy()
 
-        context = BoardContext.from_board(
-            board, grid_mults,
-            progress.dormant_boosters, progress.active_wilds,
-            self._config.board,
-        )
+        if intent_override is not None:
+            # Re-cascade: board is already filled, skip reasoning and execution
+            intent = intent_override
+            filled = board
+        else:
+            context = BoardContext.from_board(
+                board, grid_mults,
+                progress.dormant_boosters, progress.active_wilds,
+                self._config.board,
+            )
 
-        intent = self._reasoner.reason(context, progress, sig, hints)
-        filled = self._executor.execute(intent, board, rng)
+            intent = self._reasoner.reason(context, progress, sig, hints)
+            filled = self._executor.execute(intent, board, rng)
 
         step_result = self._validator.validate_step(
             filled, intent, progress, grid_mults,

@@ -479,6 +479,75 @@ class TestClusterBuilder:
         )
         assert not (result.planned_positions & avoid), "Result contains avoided positions"
 
+    def test_forced_seed_respects_must_be_adjacent_to(
+        self, cluster_builder: ClusterBuilder, default_config: MasterConfig,
+    ) -> None:
+        """Forced seed non-adjacent to the must_be_adjacent_to target is rejected.
+
+        Regression guard for the bug where _find_avoiding_merge passed a
+        merge-safe forced_seed that was nowhere near the booster, producing
+        clusters that failed to arm the target. The contract is enforced in
+        _bfs_grow_once: when must_be_adjacent_to is active, a forced_seed
+        that fails adjacency must fall through to _select_seed.
+        """
+        variance = _make_variance_hints(default_config)
+        rng = random.Random(42)
+        target = frozenset({Position(3, 3)})
+        available = {
+            Position(r, c)
+            for r in range(default_config.board.num_reels)
+            for c in range(default_config.board.num_rows)
+        }
+        # Corner seed — guaranteed not adjacent to (3,3)
+        non_adjacent_forced = Position(0, 0)
+
+        result = cluster_builder._bfs_grow_once(
+            available, size=5, variance=variance, rng=rng,
+            must_be_adjacent_to=target, forced_seed=non_adjacent_forced,
+        )
+
+        assert result is not None
+        # The forced seed must not have been honoured — instead _select_seed
+        # ran and chose a seed adjacent to the target
+        target_neighbors = set(
+            orthogonal_neighbors(Position(3, 3), default_config.board)
+        )
+        assert result & target_neighbors, (
+            "Result has no cell adjacent to must_be_adjacent_to target — "
+            "adjacency contract violated"
+        )
+
+    def test_forced_seed_used_when_adjacent(
+        self, cluster_builder: ClusterBuilder, default_config: MasterConfig,
+    ) -> None:
+        """Forced seed adjacent to the must_be_adjacent_to target is honoured.
+
+        Regression guard: adjacency-satisfying forced seeds must not be
+        rejected by the new gate. This preserves _find_accepting_merge and
+        _find_exploiting_merge behaviour which depend on forced_seed working.
+        """
+        variance = _make_variance_hints(default_config)
+        rng = random.Random(42)
+        target = frozenset({Position(3, 3)})
+        # Direct orthogonal neighbour of (3,3) — satisfies adjacency
+        adjacent_forced = Position(3, 2)
+        available = {
+            Position(r, c)
+            for r in range(default_config.board.num_reels)
+            for c in range(default_config.board.num_rows)
+        }
+
+        result = cluster_builder._bfs_grow_once(
+            available, size=5, variance=variance, rng=rng,
+            must_be_adjacent_to=target, forced_seed=adjacent_forced,
+        )
+
+        assert result is not None
+        assert adjacent_forced in result, (
+            "Adjacent forced_seed was not honoured — regression in "
+            "merge-accepting/exploiting policies"
+        )
+
 
 # ---------------------------------------------------------------------------
 # TestSeedPlanner

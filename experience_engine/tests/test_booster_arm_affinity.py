@@ -504,4 +504,5 @@ class TestConfigValidation:
                 max_strategic_cells_per_step=r.max_strategic_cells_per_step,
                 lookahead_depth=r.lookahead_depth,
                 survivor_affinity_per_cell=-1.0,
+                min_booster_landing_score=r.min_booster_landing_score,
             )

@@ -623,7 +623,20 @@ class ClusterBuilder:
         Core algorithm shared by all merge-policy handlers and the
         backward-compatible no-boundary path. Weighted by spatial_bias.
         """
-        if forced_seed is not None and forced_seed in available:
+        # A forced_seed is only honoured when it also satisfies the
+        # must_be_adjacent_to contract. This prevents merge-safety pickers
+        # (e.g. _safest_seed in _find_avoiding_merge) from bypassing the
+        # booster-adjacency requirement and producing clusters that never
+        # arm their target booster.
+        use_forced = forced_seed is not None and forced_seed in available
+        if use_forced and must_be_adjacent_to is not None:
+            if not any(
+                n in must_be_adjacent_to
+                for n in orthogonal_neighbors(forced_seed, self._board_config)
+            ):
+                use_forced = False
+
+        if use_forced:
             seed = forced_seed
         else:
             seed = self._select_seed(

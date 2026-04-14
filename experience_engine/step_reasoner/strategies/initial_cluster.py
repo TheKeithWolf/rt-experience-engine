@@ -215,6 +215,33 @@ class InitialClusterStrategy:
             booster_landing = ctx.landing_position
 
             if self._next_step_needs_arming_cluster(signature, progress):
+                # Gate 1 — landing viability. A low score means the booster
+                # would spawn with no (or too few) adjacent refill cells to
+                # form an arming cluster, so the cluster shape is rejected
+                # and the caller retries with a different layout.
+                min_score = self._config.reasoner.min_booster_landing_score
+                if score < min_score:
+                    raise ValueError(
+                        f"{booster_type} landing at {booster_landing} "
+                        f"scored {score:.2f} < {min_score} — retry"
+                    )
+
+                # Gate 2 — orientation constraint. Data-driven: non-rocket
+                # archetypes leave signature.rocket_orientation=None, so the
+                # condition short-circuits. Prevents rocket_h_fire from
+                # committing to a cluster whose firing direction mismatches
+                # the archetype's declared orientation.
+                if (
+                    signature.rocket_orientation is not None
+                    and ctx.cluster_shape_stats.orientation
+                        != signature.rocket_orientation
+                ):
+                    raise ValueError(
+                        f"Cluster orientation "
+                        f"'{ctx.cluster_shape_stats.orientation}' != "
+                        f"required '{signature.rocket_orientation}'"
+                    )
+
                 utility_scores, reserve_zone = self._compute_spatial_scores(
                     cluster_positions, booster_landing, booster_type,
                     self._config.board.min_cluster_size, settle_result,

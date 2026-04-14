@@ -87,3 +87,29 @@ class StepIntent:
     # count wilds as same-symbol during virtual BFS, preventing WFC from
     # building groups that merge through wilds into booster-spawning clusters.
     predicted_wild_positions: frozenset[Position] | None = None
+
+    @classmethod
+    def passthrough(cls) -> StepIntent:
+        """Non-terminal intent for re-cascade — validates existing board state.
+
+        Used when clusters already exist on a fully-filled board (e.g. after
+        post-terminal booster refill). Skips reasoning and execution — the
+        validator detects whatever clusters are present and computes payout.
+        """
+        return cls(
+            step_type=StepType.CASCADE_CLUSTER,
+            constrained_cells={},
+            strategic_cells={},
+            expected_cluster_count=Range(0, 0),
+            expected_cluster_sizes=[],
+            expected_cluster_tier=None,
+            expected_spawns=[],
+            expected_arms=[],
+            expected_fires=[],
+            wfc_propagators=[],
+            wfc_symbol_weights={},
+            predicted_post_gravity=None,
+            terminal_near_misses=None,
+            terminal_dormant_boosters=None,
+            is_terminal=False,
+        )

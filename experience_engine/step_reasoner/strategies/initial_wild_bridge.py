@@ -38,11 +38,6 @@ from ...pipeline.protocols import Range
 from ...variance.hints import VarianceHints
 
 
-# Minimum landing viability score — below this threshold the wild's landing
-# position has no viable refill adjacency and the cluster should be retried
-_MIN_LANDING_SCORE = 0.1
-
-
 class InitialWildBridgeStrategy:
     """Step 0 for wild bridge arcs: cluster + deterministic bridge path setup.
 
@@ -139,7 +134,7 @@ class InitialWildBridgeStrategy:
         )
         booster_landing = ctx.landing_position
 
-        if score < _MIN_LANDING_SCORE:
+        if score < self._config.reasoner.min_booster_landing_score:
             raise ValueError(
                 f"{first_booster} at {booster_landing} scored {score:.2f} — "
                 f"no viable refill adjacency, retry cluster placement"

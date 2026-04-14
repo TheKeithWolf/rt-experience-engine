@@ -308,6 +308,11 @@ reasoner:
   # Affinity bonus per existing survivor cell adjacent to a dormant booster
   # during arm-step symbol selection — counteracts merge-safety penalty
   survivor_affinity_per_cell: 2.0
+  # Minimum BoosterLandingEvaluator score for a spawned booster's post-gravity
+  # landing. Below this threshold the cluster shape is rejected and retried.
+  # Derived from RocketArmCriterion formula at min_cluster_size=5: rejects
+  # only zero-adjacency and extreme-edge landings.
+  min_booster_landing_score: 0.1
 
 # Refill strategy tuning — controls post-gravity symbol placement behavior
 # for both cluster-seeking (cascade booster phase) and terminal-safe (static cosmetic) refills
