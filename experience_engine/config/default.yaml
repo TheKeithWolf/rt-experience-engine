@@ -134,6 +134,14 @@ solvers:
   # BFS seed retry limit — when frontier exhaustion occurs on fragmented
   # available-sets, retry with a different seed before failing the attempt
   max_seed_retries: 50
+  # Cluster size at which BFS growth switches from single-seed to multi-seed.
+  # 11 = boosters.spawn_thresholds.B.min_size — bomb-spawn clusters and
+  # larger exhaust single-seed BFS on post-gravity fragmented boards.
+  multi_seed_threshold: 11
+  # Number of initial seeds when multi-seed BFS engages — widens the initial
+  # growth frontier so clusters of 11+ can reach their target size through
+  # narrow corridors without frontier exhaustion.
+  multi_seed_count: 3
 
 diagnostics:
   targets:

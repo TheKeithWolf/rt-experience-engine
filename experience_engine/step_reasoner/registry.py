@@ -103,6 +103,8 @@ def build_default_registry(
         spawn_evaluator, payout_evaluator, config.board, config.symbols,
         boundary_analyzer, centipayout_multiplier=config.centipayout.multiplier,
         max_seed_retries=config.solvers.max_seed_retries,
+        multi_seed_threshold=config.solvers.multi_seed_threshold,
+        multi_seed_count=config.solvers.multi_seed_count,
     )
     seed_planner = SeedPlanner(forward_sim, config.board, config.symbols)
     near_miss_planner = NearMissPlanner(config, cluster_builder, rng)

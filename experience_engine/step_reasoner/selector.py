@@ -103,7 +103,14 @@ DEFAULT_SELECTION_RULES: list[SelectionRule] = [
     ),
     SelectionRule(
         strategy_name="booster_setup",
-        condition=lambda a: a.needs_chain,
+        # Chain targets require booster_setup's EXPLOIT merge for spawn
+        # thresholds; non-chain spawn requirements (needs_booster_spawn) need
+        # the same EXPLOIT merge policy to grow a 11-16 cell cluster in a
+        # narrow post-gravity corridor. BoosterSetupStrategy already handles
+        # both via _determine_missing_boosters — duplicating the logic into
+        # CascadeClusterStrategy would violate DRY, so the selector routes
+        # both cases to the strategy that already knows how to plan them.
+        condition=lambda a: a.needs_chain or bool(a.needs_booster_spawn),
         priority=60,
     ),
 ]

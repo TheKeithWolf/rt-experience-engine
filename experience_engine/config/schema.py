@@ -291,6 +291,15 @@ class SolverConfig:
     # BFS seed retry limit — when frontier exhaustion occurs on fragmented
     # available-sets, retry with a different seed before failing the attempt
     max_seed_retries: int = 5
+    # Cluster size (inclusive) at which BFS growth switches from single-seed
+    # to multi-seed. Derived from the minimum bomb-spawn threshold in
+    # boosters.spawn_thresholds — clusters at or above this size are large
+    # enough to exhaust a single BFS frontier on fragmented post-gravity
+    # boards, so multi-seed BFS is used to widen the initial frontier.
+    multi_seed_threshold: int = 11
+    # Number of initial seeds when multi-seed BFS is engaged. 3 balances
+    # growth-frontier width against risk of overlapping initial components.
+    multi_seed_count: int = 3
 
     def __post_init__(self) -> None:
         if self.wfc_max_backtracks < 0:
@@ -305,6 +314,12 @@ class SolverConfig:
             raise ConfigValidationError("solvers.asp_rand_freq", "must be in [0.0, 1.0]")
         if self.max_seed_retries < 1:
             raise ConfigValidationError("solvers.max_seed_retries", "must be >= 1")
+        if self.multi_seed_threshold < 2:
+            raise ConfigValidationError(
+                "solvers.multi_seed_threshold", "must be >= 2"
+            )
+        if self.multi_seed_count < 1:
+            raise ConfigValidationError("solvers.multi_seed_count", "must be >= 1")
 
 
 # ---------------------------------------------------------------------------

@@ -155,11 +155,22 @@ class BoosterArmStrategy:
 
             # Score the arming cluster's own secondary spawn viability — if it's
             # large enough to spawn a booster, verify the landing won't obstruct
-            # the chain sequence
+            # the chain sequence. A score of 0.0 means ArmFeasibilityCriterion's
+            # BFS flood-fill found no reachable post-settle empty region near
+            # the landing — no subsequent cluster can form there no matter how
+            # many times we retry the seed. Raise so the outer retry selects a
+            # different cluster placement rather than burning retries on a
+            # geometrically impossible continuation.
             _ctx, landing_score = self._landing_eval.evaluate_and_score(
                 frozenset(cluster_positions), hypothetical,
                 target_booster.booster_type,
             )
+            if landing_score == 0.0:
+                raise ValueError(
+                    f"Landing for {target_booster.booster_type} has zero arm "
+                    f"feasibility — no reachable refill region for a "
+                    f"continuation cluster"
+                )
 
             # Prevent arm seeds from merging into the arming cluster
             exclusions = build_cluster_exclusions(

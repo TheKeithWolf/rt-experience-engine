@@ -173,6 +173,8 @@ def main(argv: list[str] | None = None) -> int:
         spawn_eval, payout_eval, config.board, config.symbols,
         boundary_analyzer, centipayout_multiplier=config.centipayout.multiplier,
         max_seed_retries=config.solvers.max_seed_retries,
+        multi_seed_threshold=config.solvers.multi_seed_threshold,
+        multi_seed_count=config.solvers.multi_seed_count,
     )
     booster_rules = BoosterRules(config.boosters, config.board, config.symbols)
     executor = StepExecutor(config, gravity_dag=gravity_dag)

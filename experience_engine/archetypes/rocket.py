@@ -65,14 +65,21 @@ def _rocket_spawn_phase(
     *,
     phase_id: str = "spawn_rocket",
     intent: str = "Cluster spawns a rocket",
+    cluster_sizes: tuple[Range, ...] = (Range(9, 10),),
 ) -> NarrativePhase:
-    """Phase where a 9-10 cluster spawns a rocket."""
+    """Phase where a cluster at the rocket spawn threshold spawns a rocket.
+
+    cluster_sizes defaults to the full spawn range (9-10 from
+    boosters.spawn_thresholds.R). Storm archetypes tighten to (9, 9) — the
+    minimum — because their second-spawn phase runs on a post-gravity board
+    with less free space than the initial 49 cells.
+    """
     return NarrativePhase(
         id=phase_id,
         intent=intent,
         repetitions=Range(1, 1),
         cluster_count=cluster_count,
-        cluster_sizes=(Range(9, 10),),
+        cluster_sizes=cluster_sizes,
         cluster_symbol_tier=cluster_symbol_tier,
         spawns=("R",),
         arms=None,
@@ -107,14 +114,16 @@ def _rocket_fire_phase(
 
 # Size ranges for chain-target spawn phases, derived from the same game rule
 # as boosters.spawn_thresholds in default.yaml (B fires at 11-12, LB at 13-14,
-# SLB at 15+). SLB capped at 16 so the phase fits within board space alongside
-# the rocket spawn and arming cluster. SpawnEvaluator resolves the runtime
-# mapping; this mirror exists only because NarrativePhase construction happens
-# at import time, before the evaluator is available.
+# SLB at 15+). SLB pinned to its spawn-threshold minimum because on a 49-cell
+# board after a 9-10 rocket cluster has exploded, the post-gravity refill zone
+# leaves roughly 15-20 empty cells — the full [15, 49] config range is
+# geometrically infeasible. SpawnEvaluator resolves the runtime mapping; this
+# mirror exists only because NarrativePhase construction happens at import
+# time, before the evaluator is available.
 _CHAIN_TARGET_SIZES: dict[str, Range] = {
     "B": Range(11, 12),
     "LB": Range(13, 14),
-    "SLB": Range(15, 16),
+    "SLB": Range(15, 15),
 }
 
 
@@ -447,7 +456,10 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                     ends_when="always",
                 ),
             ),
-            payout=RangeFloat(8.0, 120.0),
+            # Floor lowered from 8.0 to 3.0: the R spawn + SLB spawn + R fire
+            # arc can clear the board via the SLB wipe but cluster-phase
+            # payouts alone are far below 8.0 when arming clusters are size-5.
+            payout=RangeFloat(3.0, 120.0),
             wild_count_on_terminal=Range(0, 0),
             terminal_near_misses=None,
             dormant_boosters_on_terminal=None,
@@ -559,18 +571,15 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
     registry.register(build_arc_signature(
         arc=NarrativeArc(
             phases=(
-                # Sequential spawns — fitting two 9-10 clusters on one 49-cell
-                # board is geometrically tight; splitting into two phases lets
-                # gravity + refill free space between spawns.
+                # Step-0 simultaneous placement of two 9-10 clusters — the fresh
+                # 49-cell board has room for ~18-20 occupied cells (37-41%).
+                # build_multi_cluster handles dual placement in one phase;
+                # sequentialisation would force the first to explode and settle
+                # before the second, which is a different archetype (storm).
                 _rocket_spawn_phase(
-                    cluster_count=Range(1, 1),
-                    phase_id="dual_idle_spawn_1",
-                    intent="First cluster spawns a dormant rocket",
-                ),
-                _rocket_spawn_phase(
-                    cluster_count=Range(1, 1),
-                    phase_id="dual_idle_spawn_2",
-                    intent="Second cluster spawns another dormant rocket",
+                    cluster_count=Range(2, 2),
+                    phase_id="dual_spawn_idle",
+                    intent="Two clusters spawn rockets that stay dormant",
                 ),
             ),
             payout=RangeFloat(1.0, 15.0),
@@ -604,7 +613,12 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                 _rocket_spawn_phase(),
                 _rocket_fire_phase(),
             ),
-            payout=RangeFloat(2.0, 30.0),
+            # Floor derived from minimum achievable payout across the arc's
+            # three phases: LOW-tier size-5 cluster = 0.1, size-9 spawn = 0.2
+            # minimum, fire 5-6 arming cluster = 0.1-0.2. Summed minimum ~0.4
+            # so the floor sits at 0.5 — previously 2.0, which no LOW-tier
+            # instance could reach. Ceiling unchanged.
+            payout=RangeFloat(0.5, 30.0),
             wild_count_on_terminal=Range(0, 0),
             terminal_near_misses=None,
             dormant_boosters_on_terminal=None,
@@ -665,7 +679,11 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                     ends_when="always",
                 ),
             ),
-            payout=RangeFloat(4.0, 60.0),
+            # Floor lowered from 4.0 to 1.0: the three-phase arc (LOW filler +
+            # B spawn + R spawn/fire/chain) cannot accumulate 4.0 when the
+            # filler and arming clusters are size-5 LOW-tier. Paytable floor
+            # plus chain bonus sits near 0.5-1.0.
+            payout=RangeFloat(1.0, 60.0),
             wild_count_on_terminal=Range(0, 0),
             terminal_near_misses=None,
             dormant_boosters_on_terminal=None,
@@ -694,13 +712,17 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                     phase_id="storm_spawn",
                     intent="LOW-tier cluster spawns first rocket",
                 ),
-                # Second rocket spawns while first fires — both LOW tier
+                # Second rocket spawns while first fires — both LOW tier.
+                # Size pinned to 9 (= spawn_thresholds.R.min_size) because the
+                # post-gravity board after the first spawn has fewer free
+                # cells than the initial 49, so the minimum threshold
+                # maximises success of the second spawn.
                 NarrativePhase(
                     id="storm_spawn_fire",
                     intent="LOW-tier cluster spawns another rocket and fires previous",
                     repetitions=Range(1, 1),
                     cluster_count=Range(1, 2),
-                    cluster_sizes=(Range(9, 10),),
+                    cluster_sizes=(Range(9, 9),),
                     cluster_symbol_tier=SymbolTier.LOW,
                     spawns=("R",),
                     arms=("R",),
@@ -736,10 +758,14 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                     phase_id="cross_spawn_1",
                     intent="First cluster spawns a rocket (H or V)",
                 ),
+                # Size pinned to the rocket spawn-threshold minimum so the
+                # second spawn fits alongside the first on a post-gravity
+                # board.
                 _rocket_spawn_phase(
                     cluster_count=Range(1, 1),
                     phase_id="cross_spawn_2",
                     intent="Second cluster spawns the other-orientation rocket",
+                    cluster_sizes=(Range(9, 9),),
                 ),
                 _rocket_fire_phase(
                     phase_id="cross_fire",
@@ -799,12 +825,15 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
                     phase_id="scatter_storm_spawn",
                     intent="LOW-tier cluster spawns first rocket amid scatters",
                 ),
+                # Size pinned to the rocket spawn-threshold minimum so the
+                # second-spawn phase fits on the post-gravity LOW-cascade
+                # board alongside the scatters and the first rocket.
                 NarrativePhase(
                     id="scatter_storm_spawn_fire",
                     intent="LOW-tier cluster spawns second rocket and fires first",
                     repetitions=Range(1, 1),
                     cluster_count=Range(1, 2),
-                    cluster_sizes=(Range(9, 10),),
+                    cluster_sizes=(Range(9, 9),),
                     cluster_symbol_tier=SymbolTier.LOW,
                     spawns=("R",),
                     arms=("R",),
@@ -905,7 +934,12 @@ def register_rocket_archetypes(registry: ArchetypeRegistry) -> None:
         arc=NarrativeArc(
             phases=(
                 _rocket_spawn_phase(),
-                _rocket_fire_phase(),
+                # Post-fire refill can spawn an accidental cluster that
+                # extends the cascade by one step. cluster_count=Range(0, 2)
+                # lets derive_constraints widen cascade_depth to match the
+                # engine's observed behaviour rather than rejecting the arc
+                # when refill produces a continuation cluster.
+                _rocket_fire_phase(cluster_count=Range(0, 2)),
                 # Dedicated bomb spawn — post-fire refill alone never reliably
                 # produced the 11-12 cluster needed, so the tease archetype
                 # now explicitly plants the dormant bomb.

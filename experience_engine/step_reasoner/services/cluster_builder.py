@@ -69,6 +69,7 @@ class ClusterBuilder:
     __slots__ = (
         "_spawn_eval", "_payout_eval", "_board_config", "_symbol_config",
         "_boundary_analyzer", "_centipayout_multiplier", "_max_seed_retries",
+        "_multi_seed_threshold", "_multi_seed_count",
     )
 
     def __init__(
@@ -80,6 +81,8 @@ class ClusterBuilder:
         boundary_analyzer: BoundaryAnalyzer | None = None,
         centipayout_multiplier: int = 100,
         max_seed_retries: int = 5,
+        multi_seed_threshold: int = 11,
+        multi_seed_count: int = 3,
     ) -> None:
         self._spawn_eval = spawn_evaluator
         self._payout_eval = payout_estimator
@@ -91,6 +94,12 @@ class ClusterBuilder:
         # BFS seed retry limit — retries with different seeds when frontier
         # exhaustion occurs on fragmented available-sets (AVOID merge policy)
         self._max_seed_retries = max_seed_retries
+        # Cluster size at/above which BFS grows from multiple seeds simultaneously.
+        # Single-seed BFS exhausts its frontier in narrow post-gravity corridors
+        # for cluster sizes at the bomb-spawn threshold and above — widening the
+        # initial frontier with multiple seeds fixes this.
+        self._multi_seed_threshold = multi_seed_threshold
+        self._multi_seed_count = multi_seed_count
 
     # -- Public convenience -------------------------------------------------
 
@@ -315,6 +324,16 @@ class ClusterBuilder:
                 f"Only {len(available)} cells available, need {size} for cluster"
             )
 
+        # Pre-filter to a viable connected component before dispatch. Post-gravity
+        # boards frequently leave the empty region fragmented across column tops;
+        # starting BFS in a too-small fragment is the primary failure mode for
+        # 11+ cell clusters. Lifting this filter here (previously only inside
+        # _find_avoiding_merge) means ACCEPT and EXPLOIT handlers also start in
+        # a viable fragment. _filter_to_viable_component returns `available`
+        # unchanged when the set is already a single component, so single-region
+        # cases (step 0, early cascade) incur no behaviour change.
+        available = self._filter_to_viable_component(available, size, rng)
+
         # No boundary analysis — simple BFS (backward compat for strategies not yet updated)
         if boundary is None or symbol is None:
             positions = self._bfs_grow(
@@ -364,12 +383,13 @@ class ClusterBuilder:
         risky_available = available & risky_cells
 
         if len(safe_cells) >= size:
-            # Enough safe cells — grow from safe only. Pre-filter to a connected
-            # component so BFS doesn't start in a too-small fragment (the AVOID
-            # partition can create disconnected safe-cell islands)
-            filtered = self._filter_to_viable_component(safe_cells, size, rng)
+            # Enough safe cells — grow from safe only. find_positions has
+            # already pre-filtered `available` to a viable connected component
+            # before dispatch, so safe_cells is already within that component.
+            # Partition into safe/risky may split that component further; BFS
+            # seed retry handles any remaining fragmentation.
             positions = self._bfs_grow(
-                filtered, size, variance, rng, centroid_target, must_be_adjacent_to,
+                safe_cells, size, variance, rng, centroid_target, must_be_adjacent_to,
             )
             return ClusterPositionResult(
                 planned_positions=positions,
@@ -379,16 +399,14 @@ class ClusterBuilder:
             )
 
         # Not enough safe cells — include risky, seed from safest position.
-        # Pre-filter combined set to a viable connected component
+        # find_positions already pre-filtered `available` to a viable component.
         all_available = safe_cells | risky_available
-        filtered = self._filter_to_viable_component(all_available, size, rng)
-        safe_in_component = safe_cells & filtered
         seed = (
-            self._safest_seed(safe_in_component, boundary, symbol, rng)
-            if safe_in_component else None
+            self._safest_seed(safe_cells, boundary, symbol, rng)
+            if safe_cells else None
         )
         positions = self._bfs_grow(
-            filtered, size, variance, rng, centroid_target, must_be_adjacent_to,
+            all_available, size, variance, rng, centroid_target, must_be_adjacent_to,
             forced_seed=seed,
         )
 
@@ -592,7 +610,20 @@ class ClusterBuilder:
         When the available-set is fragmented (e.g., AVOID merge policy splits
         safe cells into disconnected islands), the first seed may land in a
         too-small fragment. Retrying with a different seed finds the viable one.
+
+        Clusters at or above multi_seed_threshold use multi-seed BFS — the
+        initial frontier grows from multiple seeds to avoid exhaustion when
+        the 11+ cell target has to be reached through a narrow corridor.
         """
+        # Derived from config — the only site where the threshold is evaluated.
+        # Single-seed BFS is the default; multi-seed is an opt-in for large
+        # clusters where single-seed frontier exhaustion is the bottleneck.
+        seed_count = (
+            self._multi_seed_count
+            if size >= self._multi_seed_threshold
+            else 1
+        )
+
         for attempt in range(self._max_seed_retries):
             result = self._bfs_grow_once(
                 available, size, variance, rng,
@@ -600,6 +631,7 @@ class ClusterBuilder:
                 # Only honour forced_seed on the first attempt — subsequent
                 # retries must pick a fresh seed to escape the bad fragment
                 forced_seed if attempt == 0 else None,
+                seed_count=seed_count,
             )
             if result is not None:
                 return result
@@ -617,11 +649,19 @@ class ClusterBuilder:
         centroid_target: Position | None = None,
         must_be_adjacent_to: frozenset[Position] | None = None,
         forced_seed: Position | None = None,
+        seed_count: int = 1,
     ) -> frozenset[Position] | None:
         """Single BFS growth attempt. Returns None on frontier exhaustion.
 
         Core algorithm shared by all merge-policy handlers and the
         backward-compatible no-boundary path. Weighted by spatial_bias.
+
+        When seed_count > 1, multiple initial seeds are selected from
+        `available`; all are added to the initial result set and their
+        neighbors seed the frontier before the growth loop begins. This
+        widens the initial frontier enough to reach large cluster sizes in
+        narrow corridors where single-seed BFS would exhaust. seed_count=1
+        is behaviorally identical to the single-seed path (LSP).
         """
         # A forced_seed is only honoured when it also satisfies the
         # must_be_adjacent_to contract. This prevents merge-safety pickers
@@ -646,6 +686,20 @@ class ClusterBuilder:
         result: set[Position] = {seed}
         frontier: deque[Position] = deque()
         self._expand_frontier(seed, result, available, frontier)
+
+        # Additional seeds widen the starting frontier for large clusters.
+        # _select_seed rejects already-chosen cells (it only returns from
+        # `available`), so we exclude picked seeds from the pool per pick.
+        remaining_pool = available - result
+        for _ in range(seed_count - 1):
+            if not remaining_pool:
+                break
+            extra = self._select_seed(
+                remaining_pool, variance, rng, centroid_target, must_be_adjacent_to=None,
+            )
+            result.add(extra)
+            remaining_pool = remaining_pool - {extra}
+            self._expand_frontier(extra, result, available, frontier)
 
         while len(result) < size:
             if not frontier:
