@@ -205,25 +205,34 @@ class InitialClusterStrategy:
         # cannot guard them
         exclusions = build_cluster_exclusions(cluster_groups, self._config.board)
 
-        # Predict where the booster will land and score the landing's viability
-        # for the next cascade step (bridge, arm, or chain)
+        # Predict where the booster will land. The landing's post-gravity
+        # arming viability is enforced by the column-overlap gate below, not
+        # by the evaluator's score (which is meaningless on a pre-WFC board).
         if booster_type:
             cluster_positions = frozenset().union(*(g[0] for g in cluster_groups))
-            ctx, score = self._landing_eval.evaluate_and_score(
+            ctx = self._landing_eval.evaluate(
                 cluster_positions, context.board, booster_type,
             )
             booster_landing = ctx.landing_position
 
             if self._next_step_needs_arming_cluster(signature, progress):
-                # Gate 1 — landing viability. A low score means the booster
-                # would spawn with no (or too few) adjacent refill cells to
-                # form an arming cluster, so the cluster shape is rejected
-                # and the caller retries with a different layout.
-                min_score = self._config.reasoner.min_booster_landing_score
-                if score < min_score:
+                # Gate 1 — column overlap. After WFC fills the board and the
+                # cluster explodes, gravity leaves empty cells only at the
+                # top of columns that contained cluster positions. The
+                # booster lands near the cluster centroid; for an arming
+                # cluster to form around it, at least one cluster column
+                # must sit within orthogonal-adjacency range (±1) of the
+                # landing column. The score-based gate was meaningless at
+                # Step 0 (evaluator runs on a pre-WFC, nearly-empty board);
+                # the column check is derived from gravity + adjacency rules
+                # and works regardless of current board state.
+                landing_col = booster_landing.reel
+                cluster_cols = ctx.cluster_shape_stats.columns_used
+                if not any(abs(c - landing_col) <= 1 for c in cluster_cols):
                     raise ValueError(
-                        f"{booster_type} landing at {booster_landing} "
-                        f"scored {score:.2f} < {min_score} — retry"
+                        f"Cluster columns {sorted(cluster_cols)} not within "
+                        f"1 of landing column {landing_col} — no post-gravity "
+                        f"refill adjacency possible"
                     )
 
                 # Gate 2 — orientation constraint. Data-driven: non-rocket
@@ -307,8 +316,13 @@ class InitialClusterStrategy:
         Arc-based: peek at the next phase's arms field.
         Legacy: index into cascade_steps[next_step].must_arm_booster.
         """
-        # Arc-based path
-        next_phase = progress.peek_next_phase()
+        # Arc-based path. Uses peek_phase_after_current — not peek_next_phase —
+        # because at planning time the current step has not yet been counted
+        # toward the current phase's repetitions. The current step will
+        # complete (or further) the current phase, so the NEXT step belongs
+        # to the phase that follows. peek_next_phase would return the current
+        # phase while reps remain, making arming-cluster gates unreachable.
+        next_phase = progress.peek_phase_after_current()
         if next_phase is not None:
             return next_phase.arms is not None
 

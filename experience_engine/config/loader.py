@@ -373,9 +373,6 @@ def _build_reasoner(data: dict[str, Any]) -> ReasonerConfig:
         survivor_affinity_per_cell=float(
             data.get("survivor_affinity_per_cell", 2.0)
         ),
-        min_booster_landing_score=float(
-            _require(data, "min_booster_landing_score", "reasoner.min_booster_landing_score")
-        ),
     )
 
 

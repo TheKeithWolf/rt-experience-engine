@@ -38,6 +38,15 @@ from ...pipeline.protocols import Range
 from ...variance.hints import VarianceHints
 
 
+# Minimum landing score accepted for the Wild spawn's post-gravity position.
+# Derived from RocketArmCriterion's scoring formula at
+# board.min_cluster_size=5: a value of 0.1 rejects only zero-adjacency and
+# extreme-edge landings while admitting viable bridge starts. Single
+# consumer today — promote to ReasonerConfig when a second consumer appears
+# (rule of three).
+_MIN_LANDING_SCORE = 0.1
+
+
 class InitialWildBridgeStrategy:
     """Step 0 for wild bridge arcs: cluster + deterministic bridge path setup.
 
@@ -134,7 +143,7 @@ class InitialWildBridgeStrategy:
         )
         booster_landing = ctx.landing_position
 
-        if score < self._config.reasoner.min_booster_landing_score:
+        if score < _MIN_LANDING_SCORE:
             raise ValueError(
                 f"{first_booster} at {booster_landing} scored {score:.2f} — "
                 f"no viable refill adjacency, retry cluster placement"

@@ -224,6 +224,28 @@ class ProgressTracker:
             return arc.phases[next_idx]
         return None
 
+    def peek_phase_after_current(self):
+        """Return the phase that follows after the current phase completes.
+
+        Unlike `peek_next_phase` — which returns the current phase while
+        repetitions remain — this always looks ahead to the NEXT phase in
+        the arc, regardless of repetition count. Returns None if no arc
+        exists or the current phase is the last.
+
+        Used by strategies that plan for what happens AFTER the step they
+        are currently building completes the current phase. At planning
+        time the current step has not yet been counted toward reps, so
+        `peek_next_phase` still points at the current phase — the wrong
+        answer for "what will the step after this one do?".
+        """
+        arc = self.signature.narrative_arc
+        if arc is None:
+            return None
+        next_idx = self.current_phase_index + 1
+        if next_idx < len(arc.phases):
+            return arc.phases[next_idx]
+        return None
+
     def advance_phase(self) -> None:
         """Advance to the next phase, recording repetitions completed.
 

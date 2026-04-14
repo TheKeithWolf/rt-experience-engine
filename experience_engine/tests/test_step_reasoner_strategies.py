@@ -12,6 +12,7 @@ import pytest
 
 from ..archetypes.registry import ArchetypeSignature, TerminalNearMissSpec
 from ..board_filler.propagators import (
+    ClusterBoundaryPropagator,
     MaxComponentPropagator,
     NearMissAwareDeadPropagator,
     NoSpecialSymbolPropagator,
@@ -1659,3 +1660,104 @@ class TestCrossCutting:
                 # (only referenced as self._xxx, never as ClassName(...))
                 assert constructor not in source, \
                     f"{mod_name} constructs {constructor.rstrip('(')} inline"
+
+
+# ---------------------------------------------------------------------------
+# impl-plan-6 regression tests — arming-cluster reachability + WFC boundary
+# ---------------------------------------------------------------------------
+
+def _rocket_fire_arc() -> NarrativeArc:
+    """Two-phase arc mirroring rocket_h_fire: spawn (no arms) → fire (arms R).
+
+    This is the minimal narrative shape the planning strategy must see in
+    order for the arming-cluster gates to activate at Step 0.
+    """
+    spawn = NarrativePhase(
+        id="spawn", intent="spawn rocket", repetitions=Range(1, 1),
+        cluster_count=Range(1, 1), cluster_sizes=(Range(7, 7),),
+        cluster_symbol_tier=None,
+        spawns=("R",), arms=None, fires=None,
+        wild_behavior=None, ends_when="always",
+    )
+    fire = NarrativePhase(
+        id="fire", intent="arm and fire rocket", repetitions=Range(1, 1),
+        cluster_count=Range(1, 1), cluster_sizes=(Range(5, 5),),
+        cluster_symbol_tier=None,
+        spawns=None, arms=("R",), fires=("R",),
+        wild_behavior=None, ends_when="always",
+    )
+    return NarrativeArc(
+        phases=(spawn, fire),
+        payout=RangeFloat(0.0, 50.0),
+        wild_count_on_terminal=Range(0, 10),
+        terminal_near_misses=None,
+        dormant_boosters_on_terminal=None,
+        required_chain_depth=Range(0, 0),
+        rocket_orientation="H",
+        lb_target_tier=None,
+    )
+
+
+class TestArmingClusterGatesReachable:
+    """Plan v6 §4.2a — _next_step_needs_arming_cluster must see the fire
+    phase at Step 0, not the (still-repeating) spawn phase."""
+
+    def test_next_step_needs_arming_sees_fire_phase(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, spawn_evaluator, near_miss_planner, landing_evaluator, rng,
+    ) -> None:
+        strategy = InitialClusterStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, spawn_evaluator, near_miss_planner,
+            landing_evaluator, rng,
+        )
+        sig = _make_signature(
+            family="rocket",
+            required_cluster_sizes=(Range(7, 7),),
+            required_cascade_depth=Range(2, 2),
+            required_booster_spawns={"R": Range(1, 1)},
+            required_booster_fires={"R": Range(1, 1)},
+            rocket_orientation="H",
+            narrative_arc=_rocket_fire_arc(),
+        )
+        progress = _make_progress(sig)
+
+        # Step 0: current_phase_repetitions=0 < Phase0.max_val=1. peek_next_phase
+        # returns Phase 0 (arms=None) — the old bug. peek_phase_after_current
+        # must return Phase 1 (arms=("R",)), so the guard returns True.
+        assert strategy._next_step_needs_arming_cluster(sig, progress) is True
+
+
+class TestBoosterArmBoundaryPropagator:
+    """Plan v6 §4.3 — BoosterArmStrategy must guard the arming cluster with
+    ClusterBoundaryPropagator so WFC does not merge strays into the planned
+    cluster shape (which previously pulled the cluster off the booster)."""
+
+    def test_booster_arm_includes_boundary_propagator(
+        self, default_config, forward_simulator, cluster_builder,
+        seed_planner, chain_evaluator, landing_evaluator, rng,
+    ) -> None:
+        strategy = BoosterArmStrategy(
+            default_config, forward_simulator, cluster_builder,
+            seed_planner, chain_evaluator, landing_evaluator, rng,
+        )
+        sig = _make_signature(
+            family="rocket",
+            required_booster_fires={"R": Range(1, 1)},
+            required_cascade_depth=Range(2, 4),
+        )
+        context = _make_settled_context(
+            default_config,
+            dormant_boosters=[
+                DormantBooster("R", Position(3, 4), "H", spawned_step=0)
+            ],
+        )
+        progress = _make_progress(sig, steps_completed=1)
+        variance = _make_variance_hints(default_config)
+
+        intent = strategy.plan_step(context, progress, sig, variance)
+
+        assert any(
+            isinstance(p, ClusterBoundaryPropagator)
+            for p in intent.wfc_propagators
+        ), "BoosterArmStrategy must include ClusterBoundaryPropagator"

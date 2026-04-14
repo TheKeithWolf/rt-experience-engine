@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import random
 
-from ...board_filler.propagators import NoClusterPropagator, NoSpecialSymbolPropagator
+from ...board_filler.propagators import (
+    ClusterBoundaryPropagator,
+    NoClusterPropagator,
+    NoSpecialSymbolPropagator,
+)
 from ...config.schema import MasterConfig
 from ...primitives.board import Position, orthogonal_neighbors
 from ...primitives.symbols import Symbol, SymbolTier
@@ -207,6 +211,15 @@ class BoosterArmStrategy:
             wfc_propagators=[
                 NoSpecialSymbolPropagator(self._config.symbols),
                 NoClusterPropagator(self._config.board.min_cluster_size),
+                # Prevent WFC from placing the arm-cluster symbol adjacent to
+                # the constrained cluster cells — without this, strays merge
+                # into the planned cluster and distort its shape so it no
+                # longer borders the booster, causing the arm to fail.
+                ClusterBoundaryPropagator(
+                    frozenset(cluster_positions),
+                    cluster_symbol,
+                    self._config.board,
+                ),
             ],
             wfc_symbol_weights=variance.symbol_weights,
             predicted_post_gravity=None,
