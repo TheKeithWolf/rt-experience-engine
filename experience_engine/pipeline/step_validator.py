@@ -195,6 +195,7 @@ class StepValidator:
                 positions=cluster.positions | cluster.wild_positions,
                 step_index=step_index,
                 payout=centipayout,
+                wild_positions=cluster.wild_positions,
             ))
         return records
 

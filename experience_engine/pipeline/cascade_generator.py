@@ -606,6 +606,7 @@ class CascadeInstanceGenerator:
                 symbol=cr.symbol,
                 positions=cr.positions,
                 size=cr.size,
+                wild_positions=cr.wild_positions,
             )
             for cr in step_result.clusters
         )

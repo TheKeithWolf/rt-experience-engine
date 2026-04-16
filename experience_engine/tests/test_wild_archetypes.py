@@ -428,12 +428,21 @@ def test_validator_bridge_wild_consumed(
         booster_spawn_types=("W",),
     )
 
-    # Step 1: bridge cluster (no new spawns)
+    # Step 1: bridge cluster consumes the wild — wild_positions tracks consumption
+    wild_pos = frozenset({Position(3, 1)})
+    bridge_positions = frozenset({Position(3, 0), Position(3, 1), Position(4, 0), Position(4, 1), Position(5, 0)})
     step1_record = CascadeStepRecord(
         step_index=1,
         board_before=terminal_board,
         board_after=terminal_board,
-        clusters=(),
+        clusters=(
+            ClusterAssignment(
+                symbol=Symbol.L2,
+                positions=bridge_positions,
+                size=5,
+                wild_positions=wild_pos,
+            ),
+        ),
         step_payout=0.5,
         grid_multipliers_snapshot=grid_snap,
     )
@@ -616,3 +625,430 @@ def test_wb_043_wild_enable_rocket_spawns_r(tmp_path) -> None:
             assert r_spawns >= 1, (
                 f"Book {book.get('id')} has no R spawns in wild_enable_rocket arc"
             )
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for _count_consumed_wilds
+# ---------------------------------------------------------------------------
+
+
+def _make_step_with_clusters(
+    step_index: int,
+    cluster_wild_positions: tuple[frozenset[Position], ...],
+    board: Board,
+    grid_snap: tuple[int, ...],
+) -> "CascadeStepRecord":
+    """Build a minimal CascadeStepRecord with clusters carrying wild_positions."""
+    from ..pipeline.data_types import CascadeStepRecord
+
+    clusters = tuple(
+        ClusterAssignment(
+            symbol=Symbol.L1,
+            positions=frozenset({Position(0, 0)}) | wp,
+            size=1 + len(wp),
+            wild_positions=wp,
+        )
+        for wp in cluster_wild_positions
+    )
+    return CascadeStepRecord(
+        step_index=step_index,
+        board_before=board,
+        board_after=board,
+        clusters=clusters,
+        step_payout=1.0,
+        grid_multipliers_snapshot=grid_snap,
+    )
+
+
+def test_count_consumed_wilds_empty_cascade() -> None:
+    """Empty or None cascade returns 0 consumed wilds."""
+    from ..validation.validator import _count_consumed_wilds
+
+    assert _count_consumed_wilds(None) == 0
+    assert _count_consumed_wilds(()) == 0
+
+
+def test_count_consumed_wilds_one_cluster_one_wild(
+    default_config: MasterConfig,
+) -> None:
+    """One step, one cluster with one wild position → consumed = 1."""
+    from ..validation.validator import _count_consumed_wilds
+
+    board = Board.empty(default_config.board)
+    grid_snap = tuple(0 for _ in range(default_config.board.num_reels * default_config.board.num_rows))
+    step = _make_step_with_clusters(
+        0, (frozenset({Position(1, 1)}),), board, grid_snap,
+    )
+    assert _count_consumed_wilds((step,)) == 1
+
+
+def test_count_consumed_wilds_shared_wild_deduplication(
+    default_config: MasterConfig,
+) -> None:
+    """One step, two clusters sharing one wild position → consumed = 1 (R-WILD-5 dedup)."""
+    from ..validation.validator import _count_consumed_wilds
+
+    board = Board.empty(default_config.board)
+    grid_snap = tuple(0 for _ in range(default_config.board.num_reels * default_config.board.num_rows))
+    shared_wild = frozenset({Position(2, 2)})
+    step = _make_step_with_clusters(0, (shared_wild, shared_wild), board, grid_snap)
+    assert _count_consumed_wilds((step,)) == 1
+
+
+def test_count_consumed_wilds_multi_step(
+    default_config: MasterConfig,
+) -> None:
+    """Two steps each consuming one distinct wild → consumed = 2."""
+    from ..validation.validator import _count_consumed_wilds
+
+    board = Board.empty(default_config.board)
+    grid_snap = tuple(0 for _ in range(default_config.board.num_reels * default_config.board.num_rows))
+    step0 = _make_step_with_clusters(
+        0, (frozenset({Position(1, 0)}),), board, grid_snap,
+    )
+    step1 = _make_step_with_clusters(
+        1, (frozenset({Position(3, 0)}),), board, grid_snap,
+    )
+    assert _count_consumed_wilds((step0, step1)) == 2
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: validator wild conservation & range checks
+# ---------------------------------------------------------------------------
+
+
+def _build_wild_terminal_board(
+    config: MasterConfig,
+    wild_positions: frozenset[Position],
+) -> Board:
+    """Build a terminal board with wilds at specified positions, standard symbols elsewhere."""
+    board = Board.empty(config.board)
+    syms = [Symbol.L1, Symbol.L2, Symbol.L3, Symbol.L4]
+    for reel in range(config.board.num_reels):
+        for row in range(config.board.num_rows):
+            pos = Position(reel, row)
+            if pos in wild_positions:
+                board.set(pos, Symbol.W)
+            else:
+                board.set(pos, syms[(reel * 2 + row) % len(syms)])
+    return board
+
+
+def test_validator_wild_idle_survives(
+    default_config: MasterConfig,
+    full_registry: ArchetypeRegistry,
+) -> None:
+    """Spawn 1, consumed 0, terminal has 1 wild. Conservation + range pass."""
+    from ..pipeline.data_types import CascadeStepRecord, GeneratedInstance
+    from ..spatial_solver.data_types import SpatialStep as _SpatialStep
+    from ..validation.validator import InstanceValidator
+
+    validator = InstanceValidator(default_config, full_registry)
+
+    wild_pos = Position(3, 1)
+    terminal_board = _build_wild_terminal_board(
+        default_config, frozenset({wild_pos}),
+    )
+
+    # Step 0 cluster spawns wild, no wild consumed
+    cluster_positions = frozenset(Position(r, 0) for r in range(7))
+    grid_snap = tuple(
+        0 for _ in range(default_config.board.num_reels * default_config.board.num_rows)
+    )
+    step0_board = Board.empty(default_config.board)
+    syms = [Symbol.L1, Symbol.L2, Symbol.L3, Symbol.L4]
+    for reel in range(default_config.board.num_reels):
+        for row in range(default_config.board.num_rows):
+            step0_board.set(Position(reel, row), syms[(reel * 2 + row) % len(syms)])
+    for pos in cluster_positions:
+        step0_board.set(pos, Symbol.L1)
+
+    step0_record = CascadeStepRecord(
+        step_index=0,
+        board_before=step0_board,
+        board_after=step0_board,
+        clusters=(ClusterAssignment(symbol=Symbol.L1, positions=cluster_positions, size=7),),
+        step_payout=1.0,
+        grid_multipliers_snapshot=grid_snap,
+        booster_spawn_types=("W",),
+    )
+
+    # Step 1: terminal, no clusters (wild survives idle)
+    step1_record = CascadeStepRecord(
+        step_index=1,
+        board_before=terminal_board,
+        board_after=terminal_board,
+        clusters=(),
+        step_payout=0.0,
+        grid_multipliers_snapshot=grid_snap,
+    )
+
+    # wild_idle expects wild_count_on_terminal=Range(1, 1)
+    instance = GeneratedInstance(
+        sim_id=0,
+        archetype_id="wild_idle",
+        family="wild",
+        criteria="basegame",
+        board=terminal_board,
+        spatial_step=_SpatialStep(
+            clusters=(ClusterAssignment(symbol=Symbol.L1, positions=cluster_positions, size=7),),
+            near_misses=(),
+            scatter_positions=frozenset(),
+            boosters=(),
+        ),
+        payout=1.0,
+        centipayout=100,
+        win_level=1,
+        cascade_steps=(step0_record, step1_record),
+    )
+
+    metrics = validator.validate(instance)
+    wild_errors = [e for e in metrics.validation_errors if "wild_count" in e]
+    assert not wild_errors, f"Unexpected wild_count errors: {wild_errors}"
+
+
+def test_validator_wild_consumed_outside_bridge(
+    default_config: MasterConfig,
+    full_registry: ArchetypeRegistry,
+) -> None:
+    """Wild consumed by cluster outside a bridge-labelled phase — empirical counting catches it."""
+    from ..pipeline.data_types import CascadeStepRecord, GeneratedInstance
+    from ..spatial_solver.data_types import SpatialStep as _SpatialStep
+    from ..validation.validator import InstanceValidator
+
+    validator = InstanceValidator(default_config, full_registry)
+
+    # Terminal board with no wilds — wild was consumed
+    terminal_board = _build_wild_terminal_board(default_config, frozenset())
+
+    cluster_positions = frozenset(Position(r, 0) for r in range(7))
+    grid_snap = tuple(
+        0 for _ in range(default_config.board.num_reels * default_config.board.num_rows)
+    )
+    step0_board = Board.empty(default_config.board)
+    syms = [Symbol.L1, Symbol.L2, Symbol.L3, Symbol.L4]
+    for reel in range(default_config.board.num_reels):
+        for row in range(default_config.board.num_rows):
+            step0_board.set(Position(reel, row), syms[(reel * 2 + row) % len(syms)])
+    for pos in cluster_positions:
+        step0_board.set(pos, Symbol.L1)
+
+    step0_record = CascadeStepRecord(
+        step_index=0,
+        board_before=step0_board,
+        board_after=step0_board,
+        clusters=(ClusterAssignment(symbol=Symbol.L1, positions=cluster_positions, size=7),),
+        step_payout=1.0,
+        grid_multipliers_snapshot=grid_snap,
+        booster_spawn_types=("W",),
+    )
+
+    # Step 1: cluster consumes wild (wild in wild_positions)
+    wild_pos = frozenset({Position(3, 1)})
+    bridge_positions = frozenset({Position(3, 0), Position(3, 1), Position(4, 0), Position(4, 1), Position(5, 0)})
+    step1_record = CascadeStepRecord(
+        step_index=1,
+        board_before=terminal_board,
+        board_after=terminal_board,
+        clusters=(
+            ClusterAssignment(
+                symbol=Symbol.L2,
+                positions=bridge_positions,
+                size=5,
+                wild_positions=wild_pos,
+            ),
+        ),
+        step_payout=0.5,
+        grid_multipliers_snapshot=grid_snap,
+    )
+
+    # wild_bridge_small: wild_count_on_terminal=Range(0, 1) — 0 wilds accepted
+    instance = GeneratedInstance(
+        sim_id=0,
+        archetype_id="wild_bridge_small",
+        family="wild",
+        criteria="basegame",
+        board=terminal_board,
+        spatial_step=_SpatialStep(
+            clusters=(ClusterAssignment(symbol=Symbol.L1, positions=cluster_positions, size=7),),
+            near_misses=(),
+            scatter_positions=frozenset(),
+            boosters=(),
+        ),
+        payout=1.5,
+        centipayout=150,
+        win_level=2,
+        cascade_steps=(step0_record, step1_record),
+    )
+
+    metrics = validator.validate(instance)
+    # Conservation: spawned(1) - consumed(1) = 0 = actual(0). Pass.
+    # Range: 0 in [0, 1]. Pass.
+    wild_errors = [e for e in metrics.validation_errors if "wild_count" in e]
+    assert not wild_errors, f"Unexpected wild_count errors: {wild_errors}"
+
+
+def test_validator_conservation_failure(
+    default_config: MasterConfig,
+    full_registry: ArchetypeRegistry,
+) -> None:
+    """Spawn 2, consumed 0, terminal has 1 wild → conservation error."""
+    from ..pipeline.data_types import CascadeStepRecord, GeneratedInstance
+    from ..spatial_solver.data_types import SpatialStep as _SpatialStep
+    from ..validation.validator import InstanceValidator
+
+    validator = InstanceValidator(default_config, full_registry)
+
+    # Terminal board with 1 wild
+    terminal_board = _build_wild_terminal_board(
+        default_config, frozenset({Position(3, 1)}),
+    )
+
+    cluster_positions = frozenset(Position(r, 0) for r in range(7))
+    grid_snap = tuple(
+        0 for _ in range(default_config.board.num_reels * default_config.board.num_rows)
+    )
+    step0_board = Board.empty(default_config.board)
+    syms = [Symbol.L1, Symbol.L2, Symbol.L3, Symbol.L4]
+    for reel in range(default_config.board.num_reels):
+        for row in range(default_config.board.num_rows):
+            step0_board.set(Position(reel, row), syms[(reel * 2 + row) % len(syms)])
+    for pos in cluster_positions:
+        step0_board.set(pos, Symbol.L1)
+
+    # Spawns 2 wilds but none consumed — terminal only has 1
+    step0_record = CascadeStepRecord(
+        step_index=0,
+        board_before=step0_board,
+        board_after=step0_board,
+        clusters=(ClusterAssignment(symbol=Symbol.L1, positions=cluster_positions, size=7),),
+        step_payout=1.0,
+        grid_multipliers_snapshot=grid_snap,
+        booster_spawn_types=("W", "W"),
+    )
+
+    step1_record = CascadeStepRecord(
+        step_index=1,
+        board_before=terminal_board,
+        board_after=terminal_board,
+        clusters=(),
+        step_payout=0.0,
+        grid_multipliers_snapshot=grid_snap,
+    )
+
+    # wild_multi expects wild_count_on_terminal=Range(0, 3)
+    instance = GeneratedInstance(
+        sim_id=0,
+        archetype_id="wild_multi",
+        family="wild",
+        criteria="basegame",
+        board=terminal_board,
+        spatial_step=_SpatialStep(
+            clusters=(ClusterAssignment(symbol=Symbol.L1, positions=cluster_positions, size=7),),
+            near_misses=(),
+            scatter_positions=frozenset(),
+            boosters=(),
+        ),
+        payout=1.0,
+        centipayout=100,
+        win_level=1,
+        cascade_steps=(step0_record, step1_record),
+    )
+
+    metrics = validator.validate(instance)
+    # Conservation: spawned(2) - consumed(0) = 2 ≠ actual(1) → error
+    conservation_errors = [
+        e for e in metrics.validation_errors
+        if "wild_count=1" in e and "expected 2" in e
+    ]
+    assert len(conservation_errors) == 1, (
+        f"Expected conservation error, got: {metrics.validation_errors}"
+    )
+
+
+def test_validator_range_failure_independent(
+    default_config: MasterConfig,
+    full_registry: ArchetypeRegistry,
+) -> None:
+    """Conservation passes but range fails — proves the two checks are independent."""
+    from ..pipeline.data_types import CascadeStepRecord, GeneratedInstance
+    from ..spatial_solver.data_types import SpatialStep as _SpatialStep
+    from ..validation.validator import InstanceValidator
+
+    validator = InstanceValidator(default_config, full_registry)
+
+    # Terminal board with 1 wild
+    terminal_board = _build_wild_terminal_board(
+        default_config, frozenset({Position(3, 1)}),
+    )
+
+    cluster_positions = frozenset(Position(r, 0) for r in range(7))
+    grid_snap = tuple(
+        0 for _ in range(default_config.board.num_reels * default_config.board.num_rows)
+    )
+    step0_board = Board.empty(default_config.board)
+    syms = [Symbol.L1, Symbol.L2, Symbol.L3, Symbol.L4]
+    for reel in range(default_config.board.num_reels):
+        for row in range(default_config.board.num_rows):
+            step0_board.set(Position(reel, row), syms[(reel * 2 + row) % len(syms)])
+    for pos in cluster_positions:
+        step0_board.set(pos, Symbol.L1)
+
+    # Spawn 1, consumed 0, terminal has 1 → conservation passes (1-0=1=1)
+    step0_record = CascadeStepRecord(
+        step_index=0,
+        board_before=step0_board,
+        board_after=step0_board,
+        clusters=(ClusterAssignment(symbol=Symbol.L1, positions=cluster_positions, size=7),),
+        step_payout=1.0,
+        grid_multipliers_snapshot=grid_snap,
+        booster_spawn_types=("W",),
+    )
+
+    step1_record = CascadeStepRecord(
+        step_index=1,
+        board_before=terminal_board,
+        board_after=terminal_board,
+        clusters=(),
+        step_payout=0.0,
+        grid_multipliers_snapshot=grid_snap,
+    )
+
+    # wild_bridge_large: wild_count_on_terminal=Range(0, 0) — 1 wild violates range
+    instance = GeneratedInstance(
+        sim_id=0,
+        archetype_id="wild_bridge_large",
+        family="wild",
+        criteria="basegame",
+        board=terminal_board,
+        spatial_step=_SpatialStep(
+            clusters=(ClusterAssignment(symbol=Symbol.L1, positions=cluster_positions, size=7),),
+            near_misses=(),
+            scatter_positions=frozenset(),
+            boosters=(),
+        ),
+        payout=1.0,
+        centipayout=100,
+        win_level=1,
+        cascade_steps=(step0_record, step1_record),
+    )
+
+    metrics = validator.validate(instance)
+
+    # Conservation: spawned(1) - consumed(0) = 1 = actual(1) → no conservation error
+    conservation_errors = [
+        e for e in metrics.validation_errors
+        if "expected" in e and "spawned" in e and "consumed" in e
+    ]
+    assert not conservation_errors, (
+        f"Conservation should pass but got: {conservation_errors}"
+    )
+
+    # Range: wild_count=1 outside [0, 0] → range error
+    range_errors = [
+        e for e in metrics.validation_errors
+        if "outside signature range" in e
+    ]
+    assert len(range_errors) == 1, (
+        f"Expected range error, got: {metrics.validation_errors}"
+    )

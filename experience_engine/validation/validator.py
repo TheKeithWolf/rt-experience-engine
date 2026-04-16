@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from ..archetypes.registry import ArchetypeRegistry, ArchetypeSignature
 from ..config.schema import MasterConfig
-from ..pipeline.data_types import GeneratedInstance
+from ..pipeline.data_types import CascadeStepRecord, GeneratedInstance
 from ..primitives.board import Board, Position
 from ..primitives.cluster_detection import (
     Cluster,
@@ -30,6 +30,26 @@ from ..primitives.symbols import (
     tier_of,
 )
 from .metrics import InstanceMetrics
+
+
+def _count_consumed_wilds(
+    cascade_steps: tuple[CascadeStepRecord, ...] | None,
+) -> int:
+    """Count wild positions cleared by cluster explosions across a cascade.
+
+    Deduplicates per step — a wild bridging multiple clusters in one step
+    (R-WILD-5) is cleared once.
+    """
+    if not cascade_steps:
+        return 0
+    return sum(
+        len({
+            pos
+            for cluster in step_rec.clusters
+            for pos in cluster.wild_positions
+        })
+        for step_rec in cascade_steps
+    )
 
 
 class InstanceValidator:
@@ -336,25 +356,11 @@ class InstanceValidator:
                         f"expected {sig.rocket_orientation}"
                     )
 
-        # 11d-post. Wild-family terminal validation — spawned minus consumed
-        # must equal terminal count. Universal formula: idle wilds have
-        # consumed=0, bridge wilds have consumed=1. No archetype branching.
+        # 11d-post. Wild-family terminal validation — empirical consumption
+        # from cluster detection records replaces signature-derived estimates.
         if sig.family == "wild":
-            wild_consumed = 0
-            if sig.cascade_steps is not None:
-                wild_consumed = sum(
-                    1 for step_spec in sig.cascade_steps
-                    if step_spec.wild_behavior == "bridge"
-                )
-            elif sig.narrative_arc is not None:
-                # Arc-based archetypes: bridge phases consume wilds, scaled
-                # by repetitions (each repetition represents one bridge event)
-                wild_consumed = sum(
-                    phase.repetitions.min_val
-                    for phase in sig.narrative_arc.phases
-                    if phase.wild_behavior == "bridge"
-                )
             wild_spawned = booster_spawn_counts.get("W", 0)
+            wild_consumed = _count_consumed_wilds(instance.cascade_steps)
             expected_terminal = wild_spawned - wild_consumed
             if wild_count != expected_terminal:
                 errors.append(
@@ -362,6 +368,17 @@ class InstanceValidator:
                     f"expected {expected_terminal} "
                     f"(spawned={wild_spawned}, consumed={wild_consumed})"
                 )
+            # Archetype-intent range check — independent of conservation
+            if (
+                sig.narrative_arc is not None
+                and sig.narrative_arc.wild_count_on_terminal is not None
+            ):
+                if not sig.narrative_arc.wild_count_on_terminal.contains(wild_count):
+                    errors.append(
+                        f"wild_count={wild_count} outside signature range "
+                        f"[{sig.narrative_arc.wild_count_on_terminal.min_val}, "
+                        f"{sig.narrative_arc.wild_count_on_terminal.max_val}]"
+                    )
 
         # 11e. LB/SLB-specific validation
         lb_target_symbol: str | None = None

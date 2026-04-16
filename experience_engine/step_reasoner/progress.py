@@ -35,6 +35,9 @@ class ClusterRecord:
     step_index: int
     # Centipayout contribution from this cluster
     payout: int
+    # Wild positions that participated in this cluster via bridging (R-WILD-5).
+    # Subset of positions: wilds are unioned into positions for the explosion footprint.
+    wild_positions: frozenset[Position] = frozenset()
 
 
 @dataclass
