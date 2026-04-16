@@ -787,7 +787,7 @@ class TestInstanceGeneratorIntegration:
 
         from ..step_reasoner.assessor import StepAssessor
         assessor = StepAssessor(
-            spawn_eval, chain_eval, payout_eval, config.reasoner,
+            spawn_eval, chain_eval, payout_eval, config.reasoner, config.board,
         )
         selector = StrategySelector(DEFAULT_SELECTION_RULES)
         reasoner = StepReasoner(strategy_registry, selector, assessor)

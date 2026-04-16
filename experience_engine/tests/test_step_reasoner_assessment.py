@@ -15,6 +15,7 @@ from ..archetypes.registry import (
     TerminalNearMissSpec,
 )
 from ..config.schema import MasterConfig, ReasonerConfig
+from ..narrative.arc import NarrativeArc, NarrativePhase
 from ..pipeline.protocols import Range, RangeFloat
 from ..primitives.board import Board, Position
 from ..primitives.symbols import Symbol, SymbolTier
@@ -93,7 +94,7 @@ def _make_assessor(config: MasterConfig) -> StepAssessor:
     )
     reasoner_config = config.reasoner
     assert reasoner_config is not None, "default.yaml must include reasoner section"
-    return StepAssessor(spawn_eval, chain_eval, payout_eval, reasoner_config)
+    return StepAssessor(spawn_eval, chain_eval, payout_eval, reasoner_config, config.board)
 
 
 def _make_context(
@@ -279,6 +280,109 @@ class TestStepAssessor:
         assert assessment.signature_is_dead_family is True
         assert assessment.payout_running_low is False
         assert assessment.payout_running_high is False
+
+    def test_assessor_not_terminal_for_4_phase_arc_at_step_1(
+        self, empty_board: Board, default_config: MasterConfig,
+    ) -> None:
+        """Feasibility fix: 4-phase arc at step 1 with bridge phase and
+        active wild must not trigger must_terminate_now."""
+        phase_0 = NarrativePhase(
+            id="spawn", intent="spawn wild", repetitions=Range(1, 1),
+            cluster_count=Range(1, 1), cluster_sizes=(Range(7, 7),),
+            cluster_symbol_tier=None, spawns=("W",), arms=None, fires=None,
+            wild_behavior="spawn", ends_when="always",
+        )
+        phase_1 = NarrativePhase(
+            id="bridge", intent="bridge rocket", repetitions=Range(1, 1),
+            cluster_count=Range(1, 1), cluster_sizes=(Range(9, 10),),
+            cluster_symbol_tier=None, spawns=None, arms=None, fires=None,
+            wild_behavior="bridge", ends_when="always",
+        )
+        phase_2 = NarrativePhase(
+            id="arm", intent="arm rocket", repetitions=Range(1, 1),
+            cluster_count=Range(1, 1), cluster_sizes=(Range(5, 6),),
+            cluster_symbol_tier=None, spawns=None, arms=None, fires=None,
+            wild_behavior=None, ends_when="always",
+        )
+        phase_3 = NarrativePhase(
+            id="fire", intent="fire rocket", repetitions=Range(1, 1),
+            cluster_count=Range(0, 0), cluster_sizes=(),
+            cluster_symbol_tier=None, spawns=None, arms=None, fires=("R",),
+            wild_behavior=None, ends_when="always",
+        )
+        arc = NarrativeArc(
+            phases=(phase_0, phase_1, phase_2, phase_3),
+            payout=RangeFloat(1.0, 8.0),
+            wild_count_on_terminal=Range(0, 0),
+            terminal_near_misses=None,
+            dormant_boosters_on_terminal=None,
+            required_chain_depth=Range(3, 3),
+            rocket_orientation=None,
+            lb_target_tier=None,
+        )
+        sig = _make_signature(
+            narrative_arc=arc,
+            required_cascade_depth=Range(3, 4),
+        )
+        progress = ProgressTracker(signature=sig, centipayout_multiplier=100)
+        progress.steps_completed = 1
+        progress.current_phase_index = 1
+
+        # 7 empty cells + active wild — bridge needs min_cluster_size (5), not 9
+        board = Board(default_config.board.num_reels, default_config.board.num_rows)
+        for reel in range(default_config.board.num_reels):
+            for row in range(default_config.board.num_rows):
+                board.set(Position(reel, row), Symbol.L1)
+        for i in range(7):
+            board.set(Position(i, 0), None)
+
+        wild_pos = [Position(3, 3)]
+        context = _make_context(board, default_config, active_wilds=wild_pos)
+
+        assessor = _make_assessor(default_config)
+        assessment = assessor.assess(context, progress, sig)
+        assert assessment.must_terminate_now is False
+
+    def test_assessor_still_terminal_when_truly_infeasible(
+        self, empty_board: Board, default_config: MasterConfig,
+    ) -> None:
+        """Feasibility: non-bridge phase needing 20 cells with only 5 empties
+        must still trigger must_terminate_now."""
+        huge_phase = NarrativePhase(
+            id="huge", intent="huge cluster", repetitions=Range(1, 1),
+            cluster_count=Range(1, 1), cluster_sizes=(Range(20, 25),),
+            cluster_symbol_tier=None, spawns=None, arms=None, fires=None,
+            wild_behavior=None, ends_when="always",
+        )
+        arc = NarrativeArc(
+            phases=(huge_phase,),
+            payout=RangeFloat(1.0, 8.0),
+            wild_count_on_terminal=Range(0, 0),
+            terminal_near_misses=None,
+            dormant_boosters_on_terminal=None,
+            required_chain_depth=Range(0, 0),
+            rocket_orientation=None,
+            lb_target_tier=None,
+        )
+        sig = _make_signature(
+            narrative_arc=arc,
+            required_cascade_depth=Range(1, 2),
+        )
+        progress = ProgressTracker(signature=sig, centipayout_multiplier=100)
+
+        # Only 5 empty cells — 20 required → infeasible
+        board = Board(default_config.board.num_reels, default_config.board.num_rows)
+        for reel in range(default_config.board.num_reels):
+            for row in range(default_config.board.num_rows):
+                board.set(Position(reel, row), Symbol.L1)
+        for i in range(5):
+            board.set(Position(i, 0), None)
+
+        context = _make_context(board, default_config)
+
+        assessor = _make_assessor(default_config)
+        assessment = assessor.assess(context, progress, sig)
+        assert assessment.must_terminate_now is True
 
 
 # ---------------------------------------------------------------------------

@@ -305,7 +305,7 @@ def diagnostic_attempt(
             config.paytable, config.centipayout, config.win_levels,
             config.symbols, config.grid_multiplier,
         )
-        assessor = StepAssessor(spawn_eval, chain_eval, payout_eval, config.reasoner)
+        assessor = StepAssessor(spawn_eval, chain_eval, payout_eval, config.reasoner, config.board)
         assessment = assessor.assess(context, progress, sig)
 
         print(f"  Assessment:")

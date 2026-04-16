@@ -1,54 +1,77 @@
-"""Feasibility estimator — fast reject of arcs whose remaining phases cannot
-fit on the board.
+"""Feasibility estimator — fast reject when the next phase cannot fit on the board.
 
-Sums the minimum cluster footprint across every phase still to run, compared
-against the empty-cell pool. If the requirement exceeds what the board can
-provide, the assessor short-circuits to terminal-dead rather than burning
-the retry budget on impossible configurations.
+Checks only the immediately-next phase's minimum cluster footprint against
+the current empty-cell pool. Each phase has its own explosion → settle →
+refill cycle, so subsequent phases operate on a refill zone that doesn't
+exist yet — summing across phases would double-count cells.
 
-Conservative by design — uses each phase's minimum size × minimum count so
-only truly infeasible arcs are rejected.
+Bridge phases receive special handling: they reuse existing wild + reachable
+same-symbol cells, so only a shortfall (bounded by min_cluster_size) is needed
+rather than the full cluster footprint.
 """
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from ...config.schema import BoardConfig
 from ..context import BoardContext
 from ..progress import ProgressTracker
 
+if TYPE_CHECKING:
+    from ...narrative.arc import NarrativePhase
+
 
 class FeasibilityEstimator:
-    """Estimates whether the remaining narrative phases can fit on the board.
+    """Estimates whether the next narrative phase can fit on the board.
 
-    One instance per registry build (stateless); call `estimate()` each step.
-    Consumes only the progress tracker and current board context — no rule
-    lookups, no rng. Returns True when feasible, False when the minimum
-    cluster footprint exceeds the empty-cell pool.
+    Injected with board config at construction to derive bridge-phase cell
+    floors from ``min_cluster_size``. Call ``estimate()`` each step.
     """
 
-    __slots__ = ()
+    __slots__ = ("_min_cluster_size",)
+
+    def __init__(self, board_config: BoardConfig) -> None:
+        self._min_cluster_size = board_config.min_cluster_size
 
     def estimate(
         self,
         progress: ProgressTracker,
         context: BoardContext,
     ) -> bool:
-        """Return True if every remaining phase can still fit on the board."""
+        """Return True if the next phase's cell requirement fits current empties.
+
+        Only the immediately-next phase is checked. Each phase has its own
+        explosion → settle → refill cycle, so subsequent phases get their own
+        empty-cell pool.
+        """
         arc = progress.signature.narrative_arc
         if arc is None:
-            # Legacy archetypes without an arc — no phase-level sizing to check
             return True
 
-        remaining_phases = arc.phases[progress.current_phase_index:]
-        if not remaining_phases:
+        remaining = arc.phases[progress.current_phase_index:]
+        if not remaining:
             return True
 
-        required = 0
-        for phase in remaining_phases:
-            # cluster_sizes may be empty for terminal/spec phases — skip those
-            if not phase.cluster_sizes:
-                continue
-            min_size = phase.cluster_sizes[0].min_val
-            min_count = phase.cluster_count.min_val
-            required += min_size * min_count
-
+        required = self._required_cells_for_phase(remaining[0], context)
         return required <= len(context.empty_cells)
+
+    def _required_cells_for_phase(
+        self,
+        phase: NarrativePhase,
+        context: BoardContext,
+    ) -> int:
+        """Minimum empty cells the phase needs to place its cluster.
+
+        Bridge phases reuse existing wild + reachable same-symbol cells and
+        place only a shortfall; min_cluster_size provides the maneuvering
+        room WildBridgeStrategy needs without overstating demand.
+        """
+        if not phase.cluster_sizes:
+            return 0
+
+        # Bridge reuse only applies when a wild is already on the board
+        if phase.wild_behavior == "bridge" and context.active_wilds:
+            return self._min_cluster_size
+
+        return phase.cluster_sizes[0].min_val * phase.cluster_count.min_val

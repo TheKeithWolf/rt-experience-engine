@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..archetypes.registry import ArchetypeSignature, TerminalNearMissSpec
-from ..config.schema import ReasonerConfig
+from ..config.schema import BoardConfig, ReasonerConfig
 from ..pipeline.protocols import Range, RangeFloat
 from ..primitives.board import Position
 from ..primitives.symbols import SymbolTier
@@ -73,15 +73,14 @@ class StepAssessor:
         chain_evaluator: ChainEvaluator,
         payout_estimator: PayoutEstimator,
         config: ReasonerConfig,
+        board_config: BoardConfig,
         feasibility_estimator: FeasibilityEstimator | None = None,
     ) -> None:
         self._spawn_eval = spawn_evaluator
         self._chain_eval = chain_evaluator
         self._payout_eval = payout_estimator
         self._config = config
-        # Default-constructed estimator keeps callers that don't wire one
-        # (legacy tests) on the same short-circuit path as the registry
-        self._feasibility_est = feasibility_estimator or FeasibilityEstimator()
+        self._feasibility_est = feasibility_estimator or FeasibilityEstimator(board_config)
 
     def assess(
         self,

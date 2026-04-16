@@ -173,7 +173,7 @@ def _worker_fn(task: WorkerTask) -> WorkerResult:
         config, gravity_dag, csp_solver,
         spawn_eval, chain_eval, payout_eval,
     )
-    assessor = StepAssessor(spawn_eval, chain_eval, payout_eval, config.reasoner)
+    assessor = StepAssessor(spawn_eval, chain_eval, payout_eval, config.reasoner, config.board)
     selector = StrategySelector(DEFAULT_SELECTION_RULES)
     reasoner = StepReasoner(strategy_registry, selector, assessor)
     executor = StepExecutor(config, gravity_dag=gravity_dag)
