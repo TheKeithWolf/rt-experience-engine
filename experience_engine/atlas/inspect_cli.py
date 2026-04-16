@@ -31,6 +31,7 @@ MAP_SUMMARIES: tuple[tuple[str, str], ...] = (
     ("arm_adjacencies",    "arm_adjacencies"),
     ("fire_zones",         "fire_zones"),
     ("dormant_survivals",  "dormant_survivals"),
+    ("bridge_feasibilities", "bridge_feasibilities"),
 )
 
 

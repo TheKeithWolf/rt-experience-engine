@@ -12,7 +12,7 @@ AtlasBuilder pre-paid the compute cost.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +26,7 @@ from ..step_reasoner.evaluators import ChainEvaluator
 from .data_types import (
     AtlasConfiguration,
     BoosterLandingEntry,
+    BridgeFeasibilityEntry,
     ColumnProfile,
     DormantSurvivalEntry,
     PhaseGuidance,
@@ -62,7 +63,7 @@ class AtlasQuery:
 
     __slots__ = (
         "_atlas", "_booster_rules", "_chain_eval",
-        "_config", "_symbols",
+        "_config", "_resolvers", "_symbols",
     )
 
     def __init__(
@@ -81,6 +82,20 @@ class AtlasQuery:
         # a profile whose columns host wilds / scatters / boosters cannot
         # realize at generation time regardless of what the atlas indexed.
         self._symbols = symbols
+        # Phase-resolver registry — new behaviors add a method + a row,
+        # never a branch in _resolve_phase. "empty" intentionally absent:
+        # a phase with no clusters and no fires is unresolvable.
+        self._resolvers: dict[
+            str,
+            Callable[
+                [NarrativePhase, list[_ResolvedPhase], frozenset[int], NarrativeArc],
+                _ResolvedPhase | None,
+            ],
+        ] = {
+            "cluster": self._resolve_cluster_phase,
+            "bridge": self._resolve_bridge_phase,
+            "fire": self._resolve_fire_phase,
+        }
 
     @classmethod
     def from_config(
@@ -172,6 +187,17 @@ class AtlasQuery:
     # Per-phase resolution
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _resolver_key(phase: NarrativePhase) -> str:
+        """Derive a dispatch key from the phase's structural fields."""
+        if not phase.cluster_sizes:
+            if phase.fires:
+                return "fire"
+            return "empty"
+        if phase.wild_behavior == "bridge":
+            return "bridge"
+        return "cluster"
+
     def _resolve_phase(
         self,
         phase: NarrativePhase,
@@ -179,7 +205,20 @@ class AtlasQuery:
         blocking_columns: frozenset[int],
         arc: NarrativeArc,
     ) -> _ResolvedPhase | None:
-        """Intersect the atlas against the phase's constraints.
+        """Dispatch to the resolver registered for this phase's behavior."""
+        resolver = self._resolvers.get(self._resolver_key(phase))
+        if resolver is None:
+            return None
+        return resolver(phase, prior, blocking_columns, arc)
+
+    def _resolve_cluster_phase(
+        self,
+        phase: NarrativePhase,
+        prior: list[_ResolvedPhase],
+        blocking_columns: frozenset[int],
+        arc: NarrativeArc,
+    ) -> _ResolvedPhase | None:
+        """Intersect the atlas against a standard cluster phase's constraints.
 
         Picks a representative cluster size from phase.cluster_sizes (the
         first range midpoint); the atlas stores one entry per composition,
@@ -194,7 +233,7 @@ class AtlasQuery:
         dormant_column = _dormant_column_from_prior(prior)
         arming_target_column = _arming_target_from_prior(prior, phase)
         fire_target_column = _fire_target_from_prior(prior, phase)
-        orientation = arc.rocket_orientation  # None for unconstrained arcs.
+        orientation = arc.rocket_orientation
 
         best: _ResolvedPhase | None = None
         for profile in self._atlas.topologies_for_size(size):
@@ -202,6 +241,7 @@ class AtlasQuery:
                 continue
             topology = self._atlas.topologies[profile]
 
+            # --- shared filter block (2 of 3 threshold) ---
             dormant_entry = self._dormant_for(profile, dormant_column)
             if dormant_column is not None and (
                 dormant_entry is None or not dormant_entry.survives
@@ -213,11 +253,6 @@ class AtlasQuery:
                 if landing.landing_position.reel != arming_target_column:
                     continue
 
-            # When this phase spawns a booster and a later phase arms it,
-            # reject landings whose refill zone can't host an arming cluster.
-            # Looking ahead one phase is sufficient — the arming phase is
-            # always immediate in current arcs; deeper lookups would need
-            # the arc structure.
             if _next_phase_arms(arc, len(prior)) and landing is not None:
                 arm = self._arm_for(profile, booster_type)
                 if arm is None or not arm.sufficient:
@@ -227,11 +262,123 @@ class AtlasQuery:
             if fire_target_column is not None and chain_zone is not None:
                 if not any(p.reel == fire_target_column for p in chain_zone):
                     continue
+            # --- end shared filter block ---
 
             guidance = _phase_guidance(
                 profile, topology, landing, dormant_entry, chain_zone
             )
             score = landing.landing_score if landing is not None else 1.0
+            if best is None or score > best.score:
+                best = _ResolvedPhase(
+                    profile=profile,
+                    topology=topology,
+                    landing=landing,
+                    dormant=dormant_entry,
+                    chain_target_zone=chain_zone,
+                    booster_type=booster_type,
+                    guidance=guidance,
+                    score=score,
+                )
+        return best
+
+    def _resolve_fire_phase(
+        self,
+        phase: NarrativePhase,
+        prior: list[_ResolvedPhase],
+        blocking_columns: frozenset[int],
+        arc: NarrativeArc,
+    ) -> _ResolvedPhase | None:
+        """Fire phases produce no clusters — inherit the prior phase's topology.
+
+        Computes only the fire zone from the prior's landing position and
+        booster type. No profile iteration; one dict lookup for the zone.
+        """
+        if not prior:
+            return None
+        source = prior[-1]
+        orientation = arc.rocket_orientation
+        chain_zone = self._fire_zone_for(
+            source.landing, source.booster_type, orientation,
+        )
+        guidance = _phase_guidance(
+            source.profile, source.topology,
+            source.landing, source.dormant, chain_zone,
+        )
+        return _ResolvedPhase(
+            profile=source.profile,
+            topology=source.topology,
+            landing=source.landing,
+            dormant=source.dormant,
+            chain_target_zone=chain_zone,
+            booster_type=source.booster_type,
+            guidance=guidance,
+            score=source.score,
+        )
+
+    def _resolve_bridge_phase(
+        self,
+        phase: NarrativePhase,
+        prior: list[_ResolvedPhase],
+        blocking_columns: frozenset[int],
+        arc: NarrativeArc,
+    ) -> _ResolvedPhase | None:
+        """Resolve a wild-bridge phase — two sub-groups connected by a wild.
+
+        Same profile iteration as cluster phases, but adds bridge-specific
+        filtering via _best_bridge_for and projects bridge gap/group columns
+        into the guidance.
+        """
+        size = _midpoint_size(phase.cluster_sizes)
+        if size is None:
+            return None
+        booster_symbol = self._booster_rules.booster_type_for_size(size)
+        booster_type = booster_symbol.name if booster_symbol else None
+
+        dormant_column = _dormant_column_from_prior(prior)
+        arming_target_column = _arming_target_from_prior(prior, phase)
+        fire_target_column = _fire_target_from_prior(prior, phase)
+        orientation = arc.rocket_orientation
+
+        best: _ResolvedPhase | None = None
+        for profile in self._atlas.topologies_for_size(size):
+            if _profile_hits_blocking_columns(profile, blocking_columns):
+                continue
+            topology = self._atlas.topologies[profile]
+
+            # --- shared filter block (2 of 3 threshold) ---
+            dormant_entry = self._dormant_for(profile, dormant_column)
+            if dormant_column is not None and (
+                dormant_entry is None or not dormant_entry.survives
+            ):
+                continue
+
+            landing = self._landing_for(profile, booster_type)
+            if arming_target_column is not None and landing is not None:
+                if landing.landing_position.reel != arming_target_column:
+                    continue
+
+            if _next_phase_arms(arc, len(prior)) and landing is not None:
+                arm = self._arm_for(profile, booster_type)
+                if arm is None or not arm.sufficient:
+                    continue
+
+            chain_zone = self._fire_zone_for(landing, booster_type, orientation)
+            if fire_target_column is not None and chain_zone is not None:
+                if not any(p.reel == fire_target_column for p in chain_zone):
+                    continue
+            # --- end shared filter block ---
+
+            # Bridge-specific: require a bridgeable gap in this profile
+            bridge = self._best_bridge_for(profile)
+            if bridge is None:
+                continue
+
+            guidance = _bridge_phase_guidance(
+                profile, topology, bridge, landing, dormant_entry, chain_zone,
+            )
+            score = bridge.bridge_score * (
+                landing.landing_score if landing is not None else 1.0
+            )
             if best is None or score > best.score:
                 best = _ResolvedPhase(
                     profile=profile,
@@ -257,9 +404,15 @@ class AtlasQuery:
     ) -> BoosterLandingEntry | None:
         if booster_type is None:
             return None
-        for (p, b_type, _col), entry in self._atlas.booster_landings.items():
-            if p is profile and b_type == booster_type:
-                return entry
+        # Direct dict lookups over active columns — O(num_reels) instead of
+        # scanning all 250k+ booster_landings entries.
+        for col, count in enumerate(profile.counts):
+            if count > 0:
+                entry = self._atlas.booster_landings.get(
+                    (profile, booster_type, col)
+                )
+                if entry is not None:
+                    return entry
         return None
 
     def _fire_zone_for(
@@ -289,16 +442,35 @@ class AtlasQuery:
     ) -> object | None:
         """Pick the ArmAdjacencyEntry for this profile's booster landing.
 
-        Same lookup shape as `_landing_for`. Returns None when no arm
-        adjacency was indexed (profile doesn't spawn a booster, or the
-        booster type was skipped at build time).
+        Direct dict lookups over active columns — same O(num_reels) pattern
+        as _landing_for.
         """
         if booster_type is None:
             return None
-        for (p, b_type, _col), entry in self._atlas.arm_adjacencies.items():
-            if p is profile and b_type == booster_type:
-                return entry
+        for col, count in enumerate(profile.counts):
+            if count > 0:
+                entry = self._atlas.arm_adjacencies.get(
+                    (profile, booster_type, col)
+                )
+                if entry is not None:
+                    return entry
         return None
+
+    def _best_bridge_for(
+        self, profile: ColumnProfile,
+    ) -> BridgeFeasibilityEntry | None:
+        """Pick the highest-scoring bridgeable gap for this profile.
+
+        Filters on bridge_score > 0 so structurally unbridgeable gaps
+        (adjacent column has zero cells) are excluded.
+        """
+        best: BridgeFeasibilityEntry | None = None
+        for col in range(len(profile.counts)):
+            entry = self._atlas.bridge_feasibilities.get((profile, col))
+            if entry is not None and entry.bridge_score > 0:
+                if best is None or entry.bridge_score > best.bridge_score:
+                    best = entry
+        return best
 
 
 # ----------------------------------------------------------------------
@@ -420,4 +592,37 @@ def _phase_guidance(
         booster_landing=landing,
         dormant_survival=dormant,
         chain_target_zone=chain_zone,
+    )
+
+
+def _bridge_phase_guidance(
+    profile: ColumnProfile,
+    topology: SettleTopology,
+    bridge: BridgeFeasibilityEntry,
+    landing: BoosterLandingEntry | None,
+    dormant: DormantSurvivalEntry | None,
+    chain_zone: frozenset[Position] | None,
+) -> PhaseGuidance:
+    """Project bridge-phase atlas entries onto PhaseGuidance.
+
+    viable_columns spans both sub-groups plus the gap column (where the
+    wild bridges). The three bridge fields let ClusterBuilder (future PR)
+    split BFS growth into two sub-groups connected by the wild.
+    """
+    all_columns = bridge.left_columns | {bridge.gap_column} | bridge.right_columns
+    if topology.empty_positions:
+        rows = tuple(p.row for p in topology.empty_positions)
+        preferred = (min(rows), max(rows))
+    else:
+        preferred = (0, 0)
+    return PhaseGuidance(
+        viable_columns=frozenset(all_columns),
+        preferred_row_range=preferred,
+        column_profile=profile,
+        booster_landing=landing,
+        dormant_survival=dormant,
+        chain_target_zone=chain_zone,
+        bridge_gap_column=bridge.gap_column,
+        left_group_columns=bridge.left_columns,
+        right_group_columns=bridge.right_columns,
     )

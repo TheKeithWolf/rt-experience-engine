@@ -30,8 +30,10 @@ from ..config.schema import (
     TrajectoryConfig,
 )
 from ..planning.region_constraint import (
+    BridgeHint,
     GuidanceSource,
     RegionConstraint,
+    bridge_hint_for_step,
     region_for_step,
 )
 from ..primitives.board import Position
@@ -256,3 +258,61 @@ def test_atlas_configuration_booster_landing_entries_construct() -> None:
     assert entry.landing_position.reel == 3
     assert dormant.survives is True
     assert topology.refill_per_column[4] == 1
+
+
+# ---------------------------------------------------------------------------
+# BridgeHint + bridge_hint_for_step
+# ---------------------------------------------------------------------------
+
+
+def _bridge_phase_guidance() -> PhaseGuidance:
+    """PhaseGuidance with bridge fields populated."""
+    profile = ColumnProfile(counts=(3, 0, 4, 0, 0, 0, 0), depth_band="low", total=7)
+    return PhaseGuidance(
+        viable_columns=frozenset({0, 1, 2}),
+        preferred_row_range=(0, 3),
+        column_profile=profile,
+        booster_landing=None,
+        dormant_survival=None,
+        chain_target_zone=None,
+        bridge_gap_column=1,
+        left_group_columns=frozenset({0}),
+        right_group_columns=frozenset({2}),
+    )
+
+
+def test_bridge_hint_for_step_returns_hint_on_bridge_phase() -> None:
+    cfg = AtlasConfiguration(
+        phases=(_bridge_phase_guidance(),),
+        composite_score=0.5,
+    )
+    hint = bridge_hint_for_step(cfg, 0)
+    assert hint is not None
+    assert hint.gap_column == 1
+    assert hint.left_columns == frozenset({0})
+    assert hint.right_columns == frozenset({2})
+
+
+def test_bridge_hint_for_step_returns_none_on_cluster_phase() -> None:
+    """Non-bridge phases have bridge_gap_column=None — accessor returns None."""
+    cfg = AtlasConfiguration(
+        phases=(_sample_phase_guidance(frozenset({1, 2})),),
+        composite_score=0.5,
+    )
+    assert bridge_hint_for_step(cfg, 0) is None
+
+
+def test_bridge_hint_for_step_returns_none_without_guidance() -> None:
+    assert bridge_hint_for_step(None, 0) is None
+
+
+def test_bridge_hint_for_step_returns_none_for_non_atlas_guidance() -> None:
+    """TrajectorySketch has no bridge_hint_at method — duck typing returns None."""
+    positions = frozenset({Position(2, 3)})
+    sketch = TrajectorySketch(
+        waypoints=(_sample_waypoint(0, positions),),
+        composite_score=0.5,
+        is_feasible=True,
+        arc=None,  # type: ignore[arg-type]
+    )
+    assert bridge_hint_for_step(sketch, 0) is None

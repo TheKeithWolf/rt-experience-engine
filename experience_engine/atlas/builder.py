@@ -36,6 +36,7 @@ from ..step_reasoner.services.landing_evaluator import BoosterLandingEvaluator
 from .data_types import (
     ArmAdjacencyEntry,
     BoosterLandingEntry,
+    BridgeFeasibilityEntry,
     ColumnProfile,
     DormantSurvivalEntry,
     SettleTopology,
@@ -164,6 +165,9 @@ class AtlasBuilder:
         dormant_survivals: dict[
             tuple[ColumnProfile, int], DormantSurvivalEntry
         ] = {}
+        bridge_feasibilities: dict[
+            tuple[ColumnProfile, int], BridgeFeasibilityEntry
+        ] = {}
 
         if sizes is None:
             sizes = atlas_cluster_sizes(
@@ -197,6 +201,9 @@ class AtlasBuilder:
                 self._index_dormants(
                     profile, exploded, topology, dormant_survivals,
                 )
+                self._index_bridge_feasibility(
+                    profile, bridge_feasibilities,
+                )
             elapsed = time.perf_counter() - size_start
             report(
                 f"  Size {size:>2}: {topology_count:>6,} topologies "
@@ -208,7 +215,8 @@ class AtlasBuilder:
             f"{len(booster_landings):,} landings, "
             f"{len(arm_adjacencies):,} arms, "
             f"{len(fire_zones):,} fire zones, "
-            f"{len(dormant_survivals):,} survivals "
+            f"{len(dormant_survivals):,} survivals, "
+            f"{len(bridge_feasibilities):,} bridges "
             f"[{total_elapsed:5.2f}s]"
         )
 
@@ -218,6 +226,7 @@ class AtlasBuilder:
             arm_adjacencies=arm_adjacencies,
             fire_zones=fire_zones,
             dormant_survivals=dormant_survivals,
+            bridge_feasibilities=bridge_feasibilities,
         )
 
     # ------------------------------------------------------------------
@@ -481,6 +490,51 @@ class AtlasBuilder:
             self._config.gravity,
         )
         return _trace_through_settle(dormant, result.move_steps)
+
+    # ------------------------------------------------------------------
+    # Bridge feasibility index
+    # ------------------------------------------------------------------
+
+    def _index_bridge_feasibility(
+        self,
+        profile: ColumnProfile,
+        bridge_feasibilities: dict[
+            tuple[ColumnProfile, int], BridgeFeasibilityEntry
+        ],
+    ) -> None:
+        """For profiles in the wild spawn range, record bridgeable gaps.
+
+        A gap is a zero-count column with non-zero counts on both sides.
+        Eligibility is gated on booster_type_for_size returning the wild
+        symbol, so the set of bridge-eligible sizes derives from
+        config.boosters.spawn_thresholds — no hardcoded size check.
+        """
+        booster_symbol = self._booster_rules.booster_type_for_size(profile.total)
+        if booster_symbol is None or booster_symbol.name != "W":
+            return
+        counts = profile.counts
+        num_reels = len(counts)
+        for col in range(num_reels):
+            if counts[col] != 0:
+                continue
+            left = frozenset(c for c in range(col) if counts[c] > 0)
+            right = frozenset(
+                c for c in range(col + 1, num_reels) if counts[c] > 0
+            )
+            if not left or not right:
+                continue
+            # Adjacency counts from the columns immediately flanking the gap
+            left_adj = counts[col - 1]
+            right_adj = counts[col + 1] if col + 1 < num_reels else 0
+            score = min(left_adj, right_adj) / profile.total
+            bridge_feasibilities[(profile, col)] = BridgeFeasibilityEntry(
+                gap_column=col,
+                left_columns=left,
+                right_columns=right,
+                left_adjacency_count=left_adj,
+                right_adjacency_count=right_adj,
+                bridge_score=score,
+            )
 
 
 # ----------------------------------------------------------------------

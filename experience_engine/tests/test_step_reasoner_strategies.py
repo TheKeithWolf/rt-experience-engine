@@ -41,7 +41,9 @@ from ..step_reasoner.strategies.initial_cluster import InitialClusterStrategy
 from ..step_reasoner.strategies.cascade_cluster import CascadeClusterStrategy
 from ..step_reasoner.strategies.booster_arm import BoosterArmStrategy
 from ..step_reasoner.strategies.booster_setup import BoosterSetupStrategy
-from ..step_reasoner.strategies.wild_bridge import BridgeCandidate, WildBridgeStrategy
+from ..step_reasoner.strategies.wild_bridge import (
+    BridgeCandidate, WildBridgeStrategy, _rank_by_bridge_alignment,
+)
 from ..narrative.arc import NarrativeArc, NarrativePhase
 from ..variance.hints import VarianceHints
 
@@ -1541,6 +1543,66 @@ class TestWildBridgeStrategy:
         # HIGH tier required but only LOW symbols adjacent → no candidates
         with pytest.raises(ValueError, match="No viable bridge symbols"):
             strategy.plan_step(context, progress, sig, variance)
+
+
+# ---------------------------------------------------------------------------
+# Bridge alignment ranking
+# ---------------------------------------------------------------------------
+
+
+def test_rank_by_bridge_alignment_prefers_atlas_aligned_candidates() -> None:
+    """Candidates with reachable cells in atlas-expected columns rank first
+    among equally-needed candidates."""
+    from ..planning.region_constraint import BridgeHint
+
+    hint = BridgeHint(
+        gap_column=3,
+        left_columns=frozenset({1, 2}),
+        right_columns=frozenset({4, 5}),
+    )
+    # Candidate A: reachable in columns 1, 2 → fully aligned with left group
+    aligned = BridgeCandidate(
+        symbol=Symbol.L1,
+        reachable=frozenset({Position(1, 3), Position(2, 3)}),
+        score=3, needed=2,
+        growth_sites=(Position(1, 4),),
+    )
+    # Candidate B: reachable in column 6 → not in any expected group
+    misaligned = BridgeCandidate(
+        symbol=Symbol.L2,
+        reachable=frozenset({Position(6, 3), Position(6, 4)}),
+        score=3, needed=2,
+        growth_sites=(Position(6, 5),),
+    )
+    ranked = _rank_by_bridge_alignment([misaligned, aligned], hint)
+    assert ranked[0].symbol is Symbol.L1, "Atlas-aligned candidate should rank first"
+
+
+def test_rank_by_bridge_alignment_preserves_needed_primary_sort() -> None:
+    """Primary sort by needed must dominate over alignment."""
+    from ..planning.region_constraint import BridgeHint
+
+    hint = BridgeHint(
+        gap_column=3,
+        left_columns=frozenset({1, 2}),
+        right_columns=frozenset({4, 5}),
+    )
+    # Candidate A: needs 0 but misaligned
+    easy = BridgeCandidate(
+        symbol=Symbol.L1,
+        reachable=frozenset({Position(6, 3)}),
+        score=5, needed=0,
+        growth_sites=(),
+    )
+    # Candidate B: needs 2 but fully aligned
+    aligned = BridgeCandidate(
+        symbol=Symbol.L2,
+        reachable=frozenset({Position(1, 3), Position(2, 3)}),
+        score=3, needed=2,
+        growth_sites=(Position(1, 4),),
+    )
+    ranked = _rank_by_bridge_alignment([aligned, easy], hint)
+    assert ranked[0].needed == 0, "needed=0 should rank first regardless of alignment"
 
 
 # ---------------------------------------------------------------------------

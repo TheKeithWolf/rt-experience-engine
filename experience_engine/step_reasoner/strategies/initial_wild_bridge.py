@@ -35,6 +35,7 @@ from ..services.spatial_context import StepSpatialContext
 from ..services.utility_scorer import ScoringContext
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
+from ...planning.region_constraint import region_for_step
 from ...variance.hints import VarianceHints
 
 
@@ -105,9 +106,15 @@ class InitialWildBridgeStrategy:
             if wild_budget is not None:
                 cluster_count = min(cluster_count, wild_budget.max_val)
 
+        # Atlas/trajectory guidance steers cluster placement toward pre-validated
+        # columns — particularly valuable for bridge arcs where the cluster must
+        # land in a position that produces a bridgeable post-gravity topology.
+        region = region_for_step(progress.guidance, progress.steps_completed)
+
         multi_result = self._cluster_builder.build_multi_cluster(
             context, cluster_count, list(step_sizes),
             progress, signature, variance, self._rng,
+            region=region,
         )
 
         # Derive tier from the cluster symbol placed

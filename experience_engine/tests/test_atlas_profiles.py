@@ -181,6 +181,7 @@ def test_spatial_atlas_accepts_new_maps() -> None:
         arm_adjacencies={},
         fire_zones={},
         dormant_survivals={},
+        bridge_feasibilities={},
     )
     assert atlas.arm_adjacencies == {}
     assert atlas.fire_zones == {}

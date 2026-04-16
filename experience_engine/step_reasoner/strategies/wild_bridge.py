@@ -30,6 +30,7 @@ from ..services.seed_planner import SeedPlanner, build_cluster_exclusions
 from ..services.spatial_context import StepSpatialContext
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
+from ...planning.region_constraint import BridgeHint, bridge_hint_for_step, region_for_step
 from ...variance.hints import VarianceHints
 
 
@@ -190,6 +191,13 @@ class WildBridgeStrategy:
             list(phase.spawns) if phase is not None and phase.spawns else []
         )
 
+        # Atlas guidance — bridge hint steers candidate ranking, region
+        # constrains shortfall placement to pre-validated columns
+        region = region_for_step(progress.guidance, progress.steps_completed)
+        bridge_hint = bridge_hint_for_step(
+            progress.guidance, progress.steps_completed,
+        )
+
         # Scan the board — find what's already there
         candidates = self._scan_bridge_candidates(
             wild_pos, context, target_size, required_tier,
@@ -206,6 +214,11 @@ class WildBridgeStrategy:
                     f"No viable bridge symbols adjacent to wild at {wild_pos}"
                 )
 
+        # When bridge hint is present, prefer candidates whose reachable cells
+        # span atlas-expected group columns — secondary sort after needed
+        if bridge_hint is not None:
+            viable = _rank_by_bridge_alignment(viable, bridge_hint)
+
         best = viable[0]
         bridge_symbol = best.symbol
         bridge_tier = tier_of(bridge_symbol, self._config.symbols)
@@ -219,8 +232,8 @@ class WildBridgeStrategy:
         else:
             result = self._cluster_builder.find_positions(
                 context, best.needed, self._rng, variance,
-                # Expand from the full reachable set + wild, not just {wild_pos}
                 must_be_adjacent_to=best.reachable | {wild_pos},
+                region=region,
             )
             bridge_positions = result.planned_positions
 
@@ -315,3 +328,29 @@ class WildBridgeStrategy:
         if step_sizes:
             return step_sizes[0].min_val
         return self._config.board.min_cluster_size
+
+
+def _rank_by_bridge_alignment(
+    candidates: list[BridgeCandidate],
+    hint: BridgeHint,
+) -> list[BridgeCandidate]:
+    """Re-sort viable candidates so atlas-aligned bridges rank first.
+
+    Primary key remains needed (ascending). Secondary key is alignment:
+    fraction of reachable cells in the atlas-expected group columns.
+    Candidates whose cells span both groups score highest — that's the
+    topology the atlas pre-validated as bridgeable.
+    """
+    expected_columns = hint.left_columns | hint.right_columns
+
+    def alignment_score(candidate: BridgeCandidate) -> float:
+        if not candidate.reachable:
+            return 0.0
+        aligned = sum(
+            1 for p in candidate.reachable if p.reel in expected_columns
+        )
+        return aligned / len(candidate.reachable)
+
+    return sorted(
+        candidates, key=lambda c: (c.needed, -alignment_score(c)),
+    )

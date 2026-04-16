@@ -14,6 +14,20 @@ from typing import Protocol, runtime_checkable
 
 
 @dataclass(frozen=True, slots=True)
+class BridgeHint:
+    """Bridge-phase placement hint — where the wild should connect two sub-groups.
+
+    Strategies use this to prefer candidates whose reachable cells align with
+    the atlas-predicted group structure. gap_column is where the wild sits;
+    left/right_columns are where each sub-group should live.
+    """
+
+    gap_column: int
+    left_columns: frozenset[int]
+    right_columns: frozenset[int]
+
+
+@dataclass(frozen=True, slots=True)
 class RegionConstraint:
     """Soft placement preference for a single cascade step.
 
@@ -59,3 +73,20 @@ def region_for_step(
     if guidance is None:
         return None
     return guidance.region_at(step_index)
+
+
+def bridge_hint_for_step(
+    guidance: GuidanceSource | None,
+    step_index: int,
+) -> BridgeHint | None:
+    """Return the BridgeHint for the given step, or None if not a bridge phase.
+
+    Duck-typed: only AtlasConfiguration exposes bridge_hint_at(). Trajectory
+    planners (Tier 2) return None implicitly — no bridge support needed there.
+    """
+    if guidance is None:
+        return None
+    accessor = getattr(guidance, "bridge_hint_at", None)
+    if accessor is None:
+        return None
+    return accessor(step_index)

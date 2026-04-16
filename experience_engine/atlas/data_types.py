@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..planning.region_constraint import RegionConstraint
+from ..planning.region_constraint import BridgeHint, RegionConstraint
 from ..primitives.board import Position
 
 
@@ -111,6 +111,23 @@ class DormantSurvivalEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class BridgeFeasibilityEntry:
+    """Whether a column profile can support a wild-bridge placement.
+
+    A bridge requires a zero-count gap column with non-zero counts on both
+    sides. bridge_score gates on the weaker side's adjacency — min(left, right)
+    normalized by profile total — so score == 0 means structurally unbridgeable.
+    """
+
+    gap_column: int
+    left_columns: frozenset[int]
+    right_columns: frozenset[int]
+    left_adjacency_count: int
+    right_adjacency_count: int
+    bridge_score: float
+
+
+@dataclass(frozen=True, slots=True)
 class PhaseGuidance:
     """Placement guidance for a single arc phase, emitted by the atlas query.
 
@@ -125,6 +142,12 @@ class PhaseGuidance:
     booster_landing: BoosterLandingEntry | None
     dormant_survival: DormantSurvivalEntry | None
     chain_target_zone: frozenset[Position] | None
+    # Bridge-phase fields — None for non-bridge phases so existing callers
+    # are unaffected. ClusterBuilder (future PR) uses these to split BFS
+    # into two sub-growths connected by the wild at gap_column.
+    bridge_gap_column: int | None = None
+    left_group_columns: frozenset[int] | None = None
+    right_group_columns: frozenset[int] | None = None
 
     def as_region(self) -> RegionConstraint:
         """Project onto the shared RegionConstraint consumed by ClusterBuilder."""
@@ -163,6 +186,7 @@ class SpatialAtlas:
     arm_adjacencies: dict[tuple[ColumnProfile, str, int], ArmAdjacencyEntry]
     fire_zones: dict[tuple[str, Position, str | None], frozenset[Position]]
     dormant_survivals: dict[tuple[ColumnProfile, int], DormantSurvivalEntry]
+    bridge_feasibilities: dict[tuple[ColumnProfile, int], BridgeFeasibilityEntry]
 
     def topologies_for_size(self, size: int) -> tuple[ColumnProfile, ...]:
         """Every keyed profile whose cluster size equals `size`.
@@ -192,3 +216,20 @@ class AtlasConfiguration:
         if not 0 <= step_index < len(self.phases):
             return None
         return self.phases[step_index].as_region()
+
+    def bridge_hint_at(self, step_index: int) -> BridgeHint | None:
+        """Return bridge placement hint for the given step, or None.
+
+        Only bridge phases populate the three bridge fields on PhaseGuidance;
+        non-bridge phases return None so callers need no type checks.
+        """
+        if not 0 <= step_index < len(self.phases):
+            return None
+        phase = self.phases[step_index]
+        if phase.bridge_gap_column is None:
+            return None
+        return BridgeHint(
+            gap_column=phase.bridge_gap_column,
+            left_columns=phase.left_group_columns,
+            right_columns=phase.right_group_columns,
+        )

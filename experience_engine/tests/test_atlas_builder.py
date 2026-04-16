@@ -256,6 +256,67 @@ def test_storage_ignores_paytable_change(
     assert loaded is not None
 
 
+def test_bridge_indexed_for_wild_spawn_sizes(
+    atlas_builder: AtlasBuilder,
+) -> None:
+    """Sizes 7–8 fall in the W (wild) spawn band — bridge feasibilities must
+    be non-empty and every key's profile total must be in that range."""
+    atlas = atlas_builder.build(sizes=(7, 8))
+    assert atlas.bridge_feasibilities, "Expected bridge entries for wild-spawn sizes"
+    for (profile, _col), entry in atlas.bridge_feasibilities.items():
+        assert profile.total in (7, 8)
+        assert entry.bridge_score >= 0
+
+
+def test_bridge_not_indexed_below_wild_threshold(
+    atlas_builder: AtlasBuilder,
+) -> None:
+    """Size 5 is below the wild spawn threshold — no bridge entries expected."""
+    atlas = atlas_builder.build(sizes=(5,))
+    assert not atlas.bridge_feasibilities
+
+
+def test_bridge_score_positive_for_adjacent_gap(
+    atlas_builder: AtlasBuilder,
+) -> None:
+    """At least one size-7 profile must produce a bridgeable gap with
+    positive score — counts on both sides of the gap touch the gap column."""
+    atlas = atlas_builder.build(sizes=(7,))
+    positive = [
+        e for e in atlas.bridge_feasibilities.values()
+        if e.bridge_score > 0
+    ]
+    assert positive, "Expected at least one bridge entry with positive score"
+    for entry in positive:
+        assert entry.left_adjacency_count > 0
+        assert entry.right_adjacency_count > 0
+
+
+def test_bridge_feasibility_survives_storage_roundtrip(
+    tmp_path: Path, atlas_builder: AtlasBuilder, default_config: MasterConfig
+) -> None:
+    """Bridge feasibilities must survive a save/load cycle unchanged."""
+    atlas = atlas_builder.build(sizes=(7,))
+    path = tmp_path / "atlas_bridge.bin"
+    storage = AtlasStorage()
+    storage.save(atlas, default_config, path)
+    loaded = storage.load(default_config, path)
+    assert loaded is not None
+    assert set(loaded.bridge_feasibilities.keys()) == set(
+        atlas.bridge_feasibilities.keys()
+    )
+
+
+def test_build_progress_includes_bridge_count(
+    atlas_builder: AtlasBuilder,
+) -> None:
+    """The summary line must mention bridge count so operators can spot-check."""
+    lines: list[str] = []
+    atlas_builder.build(sizes=(7,), progress=lines.append)
+    summary = lines[-1]
+    assert "bridges" in summary
+
+
 def test_storage_returns_none_on_missing_file(
     tmp_path: Path, default_config: MasterConfig
 ) -> None:
