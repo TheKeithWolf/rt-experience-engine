@@ -167,6 +167,7 @@ population:
     chain: 1.0
     trigger: 1.0
     wincap: 1.0
+    reel: 1.0
   archetype_weights:
     dead:
       dead_empty: 1.0
@@ -267,6 +268,11 @@ population:
     wincap:
       near_wincap: 1.0
       wincap: 1.0
+    reel:
+      reel_base: 1.0
+
+reel_strip:
+  csv_path: "games/royal_tumble/experience_engine/data/reel_strip.csv"
 
 symbols:
   standard: ["L1", "L2", "L3", "L4", "H1", "H2", "H3"]
@@ -322,6 +328,39 @@ reasoner:
   arm_feasibility_threshold: 0.7
   # Maximum reshape attempts after the initial cluster fails the threshold
   arm_feasibility_retry_budget: 3
+
+  # Tier-2 trajectory planner — runtime sketch-fidelity forward simulation
+  # used when the spatial atlas (Tier 1) has no match. Omit this block to
+  # disable the planner and fall straight to unguided generation (Tier 3).
+  trajectory:
+    # Attempts per generation before giving up on a sketch match
+    max_sketch_retries: 5
+    # Per-waypoint landing score floor — below this the sketch is infeasible
+    waypoint_feasibility_threshold: 0.2
+    # Composite (product of waypoint scores) floor for the whole sketch
+    sketch_feasibility_threshold: 0.15
+
+# Spatial atlas (Tier 1) — offline pre-validated per-arc region guidance.
+# Omit this section to disable atlas queries; trajectory planner + unguided
+# generation continue to serve generation requests in that mode.
+atlas:
+  # Skip the atlas query when false (still loads the atlas if path exists)
+  enabled: true
+  # Serialized atlas location, relative to the config directory
+  path: "atlas.bin"
+  # Row-range buckets used as the second component of the atlas lookup key.
+  # Keys are band names; values are inclusive [min_row, max_row] pairs.
+  depth_bands:
+    low: [0, 2]
+    mid: [3, 4]
+    deep: [5, 6]
+  # Per-column penalty multiplier applied by RegionPreferenceFactor when a
+  # candidate cell lies outside the atlas-proposed columns. Lower values
+  # enforce the region more strictly; 1.0 would disable the preference.
+  region_falloff_per_column: 0.3
+  # Atlas configurations with composite_score below this are rejected, which
+  # forces the generator to fall through to the trajectory planner.
+  min_composite_score: 0.2
 
 # Refill strategy tuning — controls post-gravity symbol placement behavior
 # for both cluster-seeking (cascade booster phase) and terminal-safe (static cosmetic) refills

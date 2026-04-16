@@ -14,11 +14,13 @@ import random
 from typing import TYPE_CHECKING
 
 from ..archetypes.registry import ArchetypeRegistry, ArchetypeSignature
+from ..atlas.query import AtlasQuery
 from ..board_filler.wfc_solver import FillFailed
 from ..boosters.tracker import BoosterTracker
 from ..config.schema import ConfigValidationError, MasterConfig
+from ..trajectory.planner import TrajectoryPlanner
 from ..primitives.board import Board, Position
-from ..primitives.booster_rules import BoosterRules, place_booster
+from ..primitives.booster_rules import BoosterRules
 from ..primitives.gravity import GravityDAG
 from ..primitives.grid_multipliers import GridMultiplierGrid
 from ..primitives.paytable import Paytable
@@ -40,6 +42,7 @@ from .data_types import (
     TransitionData,
     merge_post_terminal_fires,
 )
+from .booster_spawning import spawn_boosters_from_clusters
 from .refill_strategy import ClusterSeekingRefill
 from .step_executor import StepExecutor
 from .step_validator import StepValidator, StepValidationFailed
@@ -69,6 +72,7 @@ class CascadeInstanceGenerator:
         "_config", "_registry", "_gravity_dag", "_paytable",
         "_booster_rules", "_reasoner", "_executor", "_validator",
         "_simulator", "_transition_rules", "_cluster_refill",
+        "_atlas_query", "_trajectory_planner",
     )
 
     def __init__(
@@ -80,6 +84,8 @@ class CascadeInstanceGenerator:
         executor: StepExecutor,
         validator: StepValidator,
         simulator: StepTransitionSimulator,
+        atlas_query: AtlasQuery | None = None,
+        trajectory_planner: TrajectoryPlanner | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -102,6 +108,11 @@ class CascadeInstanceGenerator:
         self._cluster_refill = ClusterSeekingRefill(
             config.board, tuple(config.symbols.standard), config.refill,
         )
+        # Tier-1 / Tier-2 planning is optional — None leaves the generator on
+        # the existing unguided path, preserving backward compatibility for
+        # games / tests that don't wire a planner.
+        self._atlas_query = atlas_query
+        self._trajectory_planner = trajectory_planner
 
     def generate(
         self,
@@ -156,6 +167,10 @@ class CascadeInstanceGenerator:
         )
         booster_tracker = BoosterTracker(self._config.board)
         progress = ProgressTracker(sig, self._config.centipayout.multiplier)
+        # Three-tier planning: atlas → trajectory → None. Strategies read
+        # progress.guidance via planning.region_for_step(); a None here means
+        # every strategy falls through to its existing unconstrained path.
+        progress.guidance = self._plan_trajectory(sig, board, rng)
 
         # Build a BoosterPhaseExecutor if the archetype requires booster fires
         phase_executor = (
@@ -232,6 +247,49 @@ class CascadeInstanceGenerator:
             cascade_steps=tuple(cascade_step_records),
         )
         return instance
+
+    # ------------------------------------------------------------------
+    # Tier 1 / Tier 2 planning
+    # ------------------------------------------------------------------
+
+    def _plan_trajectory(
+        self,
+        sig: ArchetypeSignature,
+        board: Board,
+        rng: random.Random,
+    ):
+        """Resolve planning guidance for this generation attempt.
+
+        Tier 1 (atlas) runs first; on miss Tier 2 (trajectory planner) gets
+        up to max_sketch_retries attempts. Returning None signals "unguided"
+        — the strategies preserve their historic behavior in that case.
+
+        Arcs shallower than 2 cascade steps skip planning entirely: the
+        single-step paths don't benefit from the joint-feasibility guarantees
+        the planning tiers provide, and the planning cost isn't recovered.
+        """
+        arc = getattr(sig, "narrative_arc", None)
+        if arc is None or sig.required_cascade_depth.max_val < 2:
+            return None
+
+        if self._atlas_query is not None:
+            # Pass the empty initial board so board-compatibility filters run;
+            # dormants come from the live ProgressTracker once integrated — at
+            # the very first planning point there are none.
+            atlas_configuration = self._atlas_query.query_arc(
+                arc, board=board, dormants=(),
+            )
+            if atlas_configuration is not None:
+                return atlas_configuration
+
+        if self._trajectory_planner is not None and self._config.reasoner.trajectory is not None:
+            budget = self._config.reasoner.trajectory.max_sketch_retries
+            for _ in range(budget):
+                sub_rng = random.Random(rng.getrandbits(32))
+                sketch = self._trajectory_planner.sketch(arc, board, sub_rng)
+                if sketch.is_feasible:
+                    return sketch
+        return None
 
     # ------------------------------------------------------------------
     # Post-terminal booster phase
@@ -654,46 +712,15 @@ class CascadeInstanceGenerator:
         tracker: BoosterTracker,
         board: Board,
     ) -> list[BoosterPlacement]:
-        """Spawn boosters from winning clusters in config spawn order.
-
-        Wilds are written directly to the board at the centroid position.
-        Non-wild boosters (R, B, LB, SLB) are added to the tracker.
-        Occupied tracking prevents position conflicts between spawned boosters.
-        """
-        rules = self._booster_rules
-        # Seed with existing tracker positions to avoid collisions with
-        # boosters from previous cascade steps
-        occupied: set[Position] = {b.position for b in tracker.all_boosters()}
-        placements: list[BoosterPlacement] = []
-
-        for booster_name in self._config.boosters.spawn_order:
-            booster_sym = symbol_from_name(booster_name)
-
-            for cluster_idx, cluster in enumerate(clusters):
-                candidate_type = rules.booster_type_for_size(cluster.size)
-                if candidate_type is not booster_sym:
-                    continue
-
-                centroid = rules.compute_centroid(cluster.positions)
-                position = rules.resolve_collision(
-                    centroid, cluster.positions, frozenset(occupied),
-                )
-
-                orientation: str | None = None
-                if booster_sym is Symbol.R:
-                    orientation = rules.compute_rocket_orientation(cluster.positions)
-                place_booster(
-                    booster_sym, position, board, tracker,
-                    orientation=orientation,
-                    source_cluster_index=cluster_idx,
-                )
-
-                occupied.add(position)
-                placements.append(BoosterPlacement(
-                    booster_type=booster_sym, position=position,
-                ))
-
-        return placements
+        """Adapt the shared spawn loop to this generator's BoosterPlacement output."""
+        events = spawn_boosters_from_clusters(
+            clusters, board, tracker, self._booster_rules,
+            self._config.boosters.spawn_order,
+        )
+        return [
+            BoosterPlacement(booster_type=e.booster_type, position=e.position)
+            for e in events
+        ]
 
     def _snapshot_grid_mults(self, grid_mults: GridMultiplierGrid) -> tuple[int, ...]:
         """Flatten grid multiplier values to a tuple in reel-major order."""

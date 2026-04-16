@@ -20,6 +20,7 @@ from typing import Callable
 
 from ...config.schema import BoardConfig, SymbolConfig
 from ...pipeline.protocols import Range, RangeFloat
+from ...planning.region_constraint import RegionConstraint
 from ...primitives.board import Position, orthogonal_neighbors
 from ...primitives.symbols import Symbol, SymbolTier, symbols_in_tier, tier_of
 from ...variance.hints import VarianceHints
@@ -54,6 +55,53 @@ class MultiClusterResult:
     total_payout_estimate: float
 
 
+def _apply_region_bias(
+    variance: VarianceHints,
+    region: RegionConstraint,
+    falloff: float,
+    board_config: BoardConfig,
+) -> VarianceHints:
+    """Multiply spatial_bias by a region preference factor per cell.
+
+    Cells inside region.viable_columns retain their existing weight.
+    Cells outside have their weight multiplied by falloff ** column_distance
+    (identical curve to RegionPreferenceFactor). preferred_row_range applies
+    a softer additional penalty: cells outside the preferred rows are
+    multiplied by sqrt(falloff) — enough to steer placement without
+    over-constraining the narrow BFS path.
+
+    Returns a fresh VarianceHints — the input is treated as immutable per
+    the existing SDK convention for variance updates.
+    """
+    if not region.viable_columns:
+        return variance
+    viable = region.viable_columns
+    row_range = region.preferred_row_range
+    row_penalty = falloff ** 0.5
+    new_bias: dict[Position, float] = dict(variance.spatial_bias)
+    for reel in range(board_config.num_reels):
+        if reel in viable:
+            column_multiplier = 1.0
+        else:
+            distance = min(abs(reel - c) for c in viable)
+            column_multiplier = falloff ** distance
+        for row in range(board_config.num_rows):
+            pos = Position(reel, row)
+            current = new_bias.get(pos, 1.0)
+            factor = column_multiplier
+            if row_range is not None and not (
+                row_range[0] <= row <= row_range[1]
+            ):
+                factor *= row_penalty
+            new_bias[pos] = current * factor
+    return VarianceHints(
+        spatial_bias=new_bias,
+        symbol_weights=variance.symbol_weights,
+        near_miss_symbol_preference=variance.near_miss_symbol_preference,
+        cluster_size_preference=variance.cluster_size_preference,
+    )
+
+
 class ClusterBuilder:
     """Selects cluster size, symbol, and connected positions.
 
@@ -69,7 +117,7 @@ class ClusterBuilder:
     __slots__ = (
         "_spawn_eval", "_payout_eval", "_board_config", "_symbol_config",
         "_boundary_analyzer", "_centipayout_multiplier", "_max_seed_retries",
-        "_multi_seed_threshold", "_multi_seed_count",
+        "_multi_seed_threshold", "_multi_seed_count", "_region_falloff",
     )
 
     def __init__(
@@ -83,6 +131,7 @@ class ClusterBuilder:
         max_seed_retries: int = 5,
         multi_seed_threshold: int = 11,
         multi_seed_count: int = 3,
+        region_falloff: float = 1.0,
     ) -> None:
         self._spawn_eval = spawn_evaluator
         self._payout_eval = payout_estimator
@@ -100,6 +149,13 @@ class ClusterBuilder:
         # initial frontier with multiple seeds fixes this.
         self._multi_seed_threshold = multi_seed_threshold
         self._multi_seed_count = multi_seed_count
+        # Per-column penalty applied when the find_positions caller supplies a
+        # RegionConstraint. 1.0 disables region biasing entirely (backward-
+        # compatible default); values in (0, 1) tighten the bias toward the
+        # constraint's viable_columns.
+        if not (0.0 < region_falloff <= 1.0):
+            raise ValueError("region_falloff must be in (0.0, 1.0]")
+        self._region_falloff = region_falloff
 
     # -- Public convenience -------------------------------------------------
 
@@ -305,6 +361,7 @@ class ClusterBuilder:
         centroid_target: Position | None = None,
         must_be_adjacent_to: frozenset[Position] | None = None,
         avoid_positions: frozenset[Position] | None = None,
+        region: RegionConstraint | None = None,
     ) -> ClusterPositionResult:
         """Find connected positions for a cluster, merge-aware.
 
@@ -316,6 +373,13 @@ class ClusterBuilder:
         """
         excluded = avoid_positions or frozenset()
         available = self._compute_available_cells(context, excluded)
+        # Fold the region constraint into variance.spatial_bias once, up front —
+        # this keeps every downstream BFS / seed / frontier path unchanged while
+        # still honoring the atlas / trajectory guidance through existing weights.
+        if region is not None:
+            variance = _apply_region_bias(
+                variance, region, self._region_falloff, self._board_config,
+            )
 
         # ACCEPT and EXPLOIT place fewer new cells (survivors contribute), so skip
         # the strict size check — the handlers compute reduced_size internally
@@ -903,6 +967,7 @@ class ClusterBuilder:
         variance: VarianceHints,
         rng: random.Random,
         extra_occupied: frozenset[Position] | None = None,
+        region: RegionConstraint | None = None,
     ) -> MultiClusterResult:
         """Place N non-overlapping, non-merging clusters on the board.
 
@@ -958,6 +1023,7 @@ class ClusterBuilder:
                 symbol=symbol, boundary=boundary,
                 merge_policy=MergePolicy.AVOID,
                 avoid_positions=occupied,
+                region=region,
             )
 
             # Accumulate — each cluster's positions become off-limits for the next

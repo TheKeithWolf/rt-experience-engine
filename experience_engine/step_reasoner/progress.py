@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from ..archetypes.registry import ArchetypeSignature
 from ..pipeline.protocols import Range, RangeFloat
+from ..planning.region_constraint import GuidanceSource
 from ..primitives.board import Board, Position
 from ..primitives.symbols import Symbol, SymbolTier, is_wild
 from .context import DormantBooster
@@ -71,6 +72,11 @@ class ProgressTracker:
     current_phase_repetitions: int = 0
     # Number of repetitions completed per phase (indexed by phase position)
     phases_completed: list[int] = field(default_factory=list)
+
+    # Tier-1/Tier-2 planning guidance attached by the CascadeInstanceGenerator.
+    # Strategies consume it via planning.region_for_step(); None leaves the
+    # strategy on its existing unconstrained path (backward-compatible default).
+    guidance: GuidanceSource | None = None
 
     # -- Query methods (read-only) -----------------------------------------
 

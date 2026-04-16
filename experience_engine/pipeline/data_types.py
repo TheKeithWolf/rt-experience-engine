@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Iterable, NamedTuple
 
 from ..primitives.board import Board, Position
 from ..primitives.symbols import Symbol
 from ..spatial_solver.data_types import ClusterAssignment, SpatialStep
 
 if TYPE_CHECKING:
+    from ..boosters.state_machine import BoosterInstance
     from ..step_reasoner.results import SpawnRecord, StepResult
 
 
@@ -50,6 +51,25 @@ class BoosterArmRecord:
     position_reel: int
     position_row: int
     orientation: str | None
+
+    @classmethod
+    def tuple_from_instances(
+        cls, armed: Iterable["BoosterInstance"],
+    ) -> tuple[tuple["BoosterArmRecord", ...], tuple[str, ...]]:
+        # Single source of truth for event-stream arm snapshots — reused by
+        # both the cascade simulator and the reel-strip generator so the two
+        # families emit boosterArmInfo with identical shape.
+        records = tuple(
+            cls(
+                booster_type=b.booster_type.name,
+                position_reel=b.position.reel,
+                position_row=b.position.row,
+                orientation=b.orientation,
+            )
+            for b in armed
+        )
+        types = tuple(r.booster_type for r in records)
+        return records, types
 
 
 @dataclass(frozen=True, slots=True)

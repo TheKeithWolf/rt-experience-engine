@@ -22,6 +22,7 @@ from .archetypes.bomb import register_bomb_archetypes
 from .archetypes.chain import register_chain_archetypes
 from .archetypes.dead import register_dead_archetypes
 from .archetypes.lb import register_lb_archetypes
+from .archetypes.reel import register_reel_archetypes
 from .archetypes.registry import ArchetypeRegistry, ArchetypeSignature
 from .archetypes.rocket import register_rocket_archetypes
 from .archetypes.slb import register_slb_archetypes
@@ -61,6 +62,7 @@ _FAMILY_REGISTRARS = (
     register_chain_archetypes,
     register_trigger_archetypes,
     register_wincap_archetypes,
+    register_reel_archetypes,
 )
 
 
@@ -191,8 +193,15 @@ def _apply_overrides(config: MasterConfig, args: argparse.Namespace) -> MasterCo
 def _build_pipeline(
     config: MasterConfig,
     registry: ArchetypeRegistry,
-) -> tuple[StaticInstanceGenerator, CascadeInstanceGenerator, InstanceValidator]:
-    """Construct the generation pipeline components — shared primitives built once."""
+    chain_eval=None,  # type: ignore[no-untyped-def]  # ChainEvaluator | None
+    atlas_query=None,  # type: ignore[no-untyped-def]  # AtlasQuery | None
+):
+    """Construct the generation pipeline components — shared primitives built once.
+
+    Returns (static_gen, cascade_gen, validator, reel_gen). The reel generator
+    is None when the registry has no reel-family archetypes — loading the CSV
+    for unused families would be wasted work.
+    """
     gravity_dag = GravityDAG(config.board, config.gravity)
 
     static_gen = StaticInstanceGenerator(config, registry, gravity_dag)
@@ -209,7 +218,8 @@ def _build_pipeline(
     from .spatial_solver.solver import CSPSpatialSolver
 
     spawn_eval = SpawnEvaluator(config.boosters)
-    chain_eval = ChainEvaluator(config.boosters)
+    if chain_eval is None:
+        chain_eval = ChainEvaluator(config.boosters)
     payout_eval = PayoutEstimator(
         config.paytable, config.centipayout, config.win_levels,
         config.symbols, config.grid_multiplier,
@@ -229,10 +239,27 @@ def _build_pipeline(
     cascade_gen = CascadeInstanceGenerator(
         config, registry, gravity_dag,
         reasoner, executor, step_validator, simulator,
+        atlas_query=atlas_query,
     )
     validator = InstanceValidator(config, registry)
 
-    return static_gen, cascade_gen, validator
+    reel_gen = None
+    has_reel = any(
+        registry.get(aid).family == "reel" for aid in registry.all_ids()
+    )
+    if has_reel:
+        if config.reel_strip is None:
+            raise RuntimeError(
+                "Reel archetype registered but config.reel_strip is None.",
+            )
+        from .pipeline.reel_generator import ReelStripGenerator
+        from .primitives.reel_strip import load_reel_strip
+        strip = load_reel_strip(
+            Path(config.reel_strip.csv_path), config.board,
+        )
+        reel_gen = ReelStripGenerator(config, registry, gravity_dag, strip)
+
+    return static_gen, cascade_gen, validator, reel_gen
 
 
 def _generate_books(
@@ -314,13 +341,26 @@ def main(argv: list[str] | None = None) -> int:
     start = time.monotonic()
 
     # 5. Generate population (serial or parallel)
+    # ChainEvaluator is shared by Tier-1 (atlas) and the StepReasoner pipeline;
+    # build it once here so both consumers see the same instance and the
+    # AtlasQuery factory has the dependency it needs.
+    from .step_reasoner.evaluators import ChainEvaluator
+    from .atlas.query import AtlasQuery
+    chain_eval = ChainEvaluator(config.boosters)
+    atlas_query = AtlasQuery.from_config(config, config_path, chain_eval)
+
     if num_workers > 1:
         from .parallel import run_parallel_generation
-        result = run_parallel_generation(config, registry, num_workers, args.seed)
+        result = run_parallel_generation(
+            config, registry, num_workers, args.seed, config_path,
+        )
     else:
-        static_gen, cascade_gen, validator = _build_pipeline(config, registry)
+        static_gen, cascade_gen, validator, reel_gen = _build_pipeline(
+            config, registry, chain_eval, atlas_query,
+        )
         controller = PopulationController(
             config, registry, static_gen, cascade_gen, validator,
+            reel_generator=reel_gen,
         )
         result = controller.run(args.seed)
 

@@ -442,6 +442,120 @@ class OutputConfig:
 
 
 # ---------------------------------------------------------------------------
+# Trajectory Planner (Tier 2)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class TrajectoryConfig:
+    """Tier-2 trajectory planner thresholds.
+
+    max_sketch_retries — how many sketch attempts the CascadeInstanceGenerator
+      makes per generation before falling back to unguided (Tier 3). A single
+      miss is common when variance draws an incompatible cluster size; the
+      budget gives the planner another roll before giving up.
+    waypoint_feasibility_threshold — per-waypoint landing score floor. Below
+      this, the planner marks the sketch infeasible and exits early. Lower
+      values accept riskier plans; higher values demand tight alignment at
+      every step.
+    sketch_feasibility_threshold — composite (product of waypoint scores)
+      floor the whole sketch must clear. Independent from per-waypoint so a
+      single marginal step can still pass if later steps are strong.
+    """
+
+    max_sketch_retries: int
+    waypoint_feasibility_threshold: float
+    sketch_feasibility_threshold: float
+
+    def __post_init__(self) -> None:
+        if self.max_sketch_retries < 1:
+            raise ConfigValidationError(
+                "reasoner.trajectory.max_sketch_retries", "must be >= 1"
+            )
+        if not (0.0 < self.waypoint_feasibility_threshold <= 1.0):
+            raise ConfigValidationError(
+                "reasoner.trajectory.waypoint_feasibility_threshold",
+                "must be in (0.0, 1.0]",
+            )
+        if not (0.0 < self.sketch_feasibility_threshold <= 1.0):
+            raise ConfigValidationError(
+                "reasoner.trajectory.sketch_feasibility_threshold",
+                "must be in (0.0, 1.0]",
+            )
+
+
+# ---------------------------------------------------------------------------
+# Spatial Atlas (Tier 1)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class AtlasDepthBand:
+    """One named row-range bucket used for column profile indexing.
+
+    The atlas keys profiles by (counts, depth_band_name). Depth bands coarsen
+    the row dimension so the key space stays tractable while preserving the
+    gravity differences between top-of-column and bottom-of-column explosions.
+    """
+
+    name: str
+    min_row: int
+    max_row: int
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ConfigValidationError("atlas.depth_bands[].name", "must not be empty")
+        if self.min_row < 0:
+            raise ConfigValidationError(
+                f"atlas.depth_bands[{self.name}].min_row", "must be >= 0"
+            )
+        if self.max_row < self.min_row:
+            raise ConfigValidationError(
+                f"atlas.depth_bands[{self.name}]",
+                "max_row must be >= min_row",
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class AtlasConfig:
+    """Spatial atlas (Tier 1) configuration.
+
+    enabled — atlas query is skipped when False (falls straight to Tier 2).
+    path — file location of the serialized atlas, relative to the config dir.
+    depth_bands — tuple in row-order; AtlasBuilder assigns each simulated
+      settle to the band whose [min_row, max_row] contains its centroid row.
+    region_falloff_per_column — multiplicative penalty per column of distance
+      applied by RegionPreferenceFactor to cells outside the atlas region.
+      Keeps the constraint soft (placement still possible outside) while
+      biasing cluster shape toward the pre-validated columns.
+    min_composite_score — atlas configurations below this score are rejected
+      at query time; forces a fall-through to the trajectory planner when
+      the atlas can only produce low-confidence guidance.
+    """
+
+    enabled: bool
+    path: str
+    depth_bands: tuple[AtlasDepthBand, ...]
+    region_falloff_per_column: float
+    min_composite_score: float
+
+    def __post_init__(self) -> None:
+        if not self.depth_bands:
+            raise ConfigValidationError("atlas.depth_bands", "must not be empty")
+        if not (0.0 < self.region_falloff_per_column <= 1.0):
+            raise ConfigValidationError(
+                "atlas.region_falloff_per_column", "must be in (0.0, 1.0]"
+            )
+        if not (0.0 < self.min_composite_score <= 1.0):
+            raise ConfigValidationError(
+                "atlas.min_composite_score", "must be in (0.0, 1.0]"
+            )
+        names = [band.name for band in self.depth_bands]
+        if len(set(names)) != len(names):
+            raise ConfigValidationError(
+                "atlas.depth_bands", "band names must be unique"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Reasoner
 # ---------------------------------------------------------------------------
 
@@ -485,6 +599,9 @@ class ReasonerConfig:
     # Maximum reshape attempts after the first cluster placement fails the
     # arm_feasibility_threshold. Each attempt re-rolls via compute_reshape_bias.
     arm_feasibility_retry_budget: int
+    # Tier-2 trajectory planner tuning. None disables the planner fallback;
+    # the atlas (Tier 1) and unguided generation (Tier 3) remain available.
+    trajectory: TrajectoryConfig | None = None
 
     def __post_init__(self) -> None:
         if not (0.0 <= self.payout_low_fraction <= 1.0):
@@ -1015,6 +1132,26 @@ class RLArchiveConfig:
 
 
 # ---------------------------------------------------------------------------
+# Reel Strip
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ReelStripConfig:
+    """Points at the CSV that backs the `reel` archetype family.
+
+    Optional top-level section — absent when no reel archetypes are
+    registered. The CSV itself is parsed and validated by
+    `primitives.reel_strip.load_reel_strip` against `BoardConfig`.
+    """
+
+    csv_path: str  # Path relative to repo root (or absolute)
+
+    def __post_init__(self) -> None:
+        if not self.csv_path:
+            raise ConfigValidationError("reel_strip.csv_path", "must not be empty")
+
+
+# ---------------------------------------------------------------------------
 # Master Config
 # ---------------------------------------------------------------------------
 
@@ -1052,3 +1189,9 @@ class MasterConfig:
     rl_archive: RLArchiveConfig | None = None
     # Refill strategy tuning — optional to preserve backward compatibility
     refill: RefillConfig | None = None
+    # Reel strip — optional; present when the `reel` archetype family is in use
+    reel_strip: ReelStripConfig | None = None
+    # Spatial atlas (Tier 1) — offline pre-validated per-arc region guidance.
+    # Optional: when absent or disabled the generator skips the atlas tier and
+    # uses only the trajectory planner (Tier 2) and unguided fallback (Tier 3).
+    atlas: AtlasConfig | None = None

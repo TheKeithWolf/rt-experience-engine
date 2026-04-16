@@ -13,6 +13,8 @@ import yaml
 
 from .schema import (
     AnticipationConfig,
+    AtlasConfig,
+    AtlasDepthBand,
     BoardConfig,
     BoosterConfig,
     CentipayoutConfig,
@@ -39,12 +41,14 @@ from .schema import (
     PaytableEntry,
     PopulationConfig,
     RefillConfig,
+    ReelStripConfig,
     RLArchiveConfig,
     ReasonerConfig,
     SolverConfig,
     SpatialIntelligenceConfig,
     SpawnThreshold,
     SymbolConfig,
+    TrajectoryConfig,
     WincapConfig,
     WinLevelConfig,
     WinLevelTier,
@@ -89,6 +93,8 @@ def load_config(path: Path) -> MasterConfig:
     )
     rl_archive = _build_rl_archive(raw.get("rl_archive"))
     refill = _build_refill(raw.get("refill"))
+    reel_strip = _build_reel_strip(raw.get("reel_strip"))
+    atlas = _build_atlas(raw.get("atlas"))
 
     # Cross-field validations
     _validate_spawn_thresholds(boosters.spawn_thresholds)
@@ -115,6 +121,8 @@ def load_config(path: Path) -> MasterConfig:
         spatial_intelligence=spatial_intelligence,
         rl_archive=rl_archive,
         refill=refill,
+        reel_strip=reel_strip,
+        atlas=atlas,
     )
 
 
@@ -381,6 +389,74 @@ def _build_reasoner(data: dict[str, Any]) -> ReasonerConfig:
             _require(data, "arm_feasibility_retry_budget",
                      "reasoner.arm_feasibility_retry_budget")
         ),
+        trajectory=_build_trajectory(data.get("trajectory")),
+    )
+
+
+def _build_trajectory(data: dict[str, Any] | None) -> TrajectoryConfig | None:
+    """Build TrajectoryConfig from the reasoner.trajectory YAML subsection.
+
+    Optional — omitting reasoner.trajectory disables the Tier-2 planner while
+    leaving the rest of the reasoner config untouched.
+    """
+    if data is None:
+        return None
+    return TrajectoryConfig(
+        max_sketch_retries=int(
+            _require(data, "max_sketch_retries",
+                     "reasoner.trajectory.max_sketch_retries")
+        ),
+        waypoint_feasibility_threshold=float(
+            _require(data, "waypoint_feasibility_threshold",
+                     "reasoner.trajectory.waypoint_feasibility_threshold")
+        ),
+        sketch_feasibility_threshold=float(
+            _require(data, "sketch_feasibility_threshold",
+                     "reasoner.trajectory.sketch_feasibility_threshold")
+        ),
+    )
+
+
+def _build_atlas(data: dict[str, Any] | None) -> AtlasConfig | None:
+    """Build AtlasConfig from the top-level atlas YAML section.
+
+    Optional — omitting atlas disables Tier-1 guidance; depth_bands are
+    consumed as an ordered tuple so AtlasBuilder can iterate in declaration
+    order when assigning depth bands to simulated settles.
+    """
+    if data is None:
+        return None
+    raw_bands = _require(data, "depth_bands", "atlas.depth_bands")
+    if not isinstance(raw_bands, dict):
+        raise ConfigValidationError(
+            "atlas.depth_bands", "must be a mapping of name to [min_row, max_row]"
+        )
+    bands: list[AtlasDepthBand] = []
+    for band_name, bounds in raw_bands.items():
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
+            raise ConfigValidationError(
+                f"atlas.depth_bands.{band_name}",
+                "must be a two-element [min_row, max_row] sequence",
+            )
+        bands.append(
+            AtlasDepthBand(
+                name=str(band_name),
+                min_row=int(bounds[0]),
+                max_row=int(bounds[1]),
+            )
+        )
+    return AtlasConfig(
+        enabled=bool(_require(data, "enabled", "atlas.enabled")),
+        path=str(_require(data, "path", "atlas.path")),
+        depth_bands=tuple(bands),
+        region_falloff_per_column=float(
+            _require(data, "region_falloff_per_column",
+                     "atlas.region_falloff_per_column")
+        ),
+        min_composite_score=float(
+            _require(data, "min_composite_score",
+                     "atlas.min_composite_score")
+        ),
     )
 
 
@@ -417,6 +493,20 @@ def _build_gravity_wfc(data: dict[str, Any] | None) -> GravityWfcConfig | None:
             _require(data, "min_symbol_weight",
                      "gravity_wfc.min_symbol_weight")
         ),
+    )
+
+
+def _build_reel_strip(data: dict[str, Any] | None) -> ReelStripConfig | None:
+    """Build ReelStripConfig from YAML data, or None if section is absent.
+
+    Optional section — games that do not register the reel archetype family
+    omit this entirely and get None, preserving backward compatibility with
+    WFC/CSP-only configurations.
+    """
+    if data is None:
+        return None
+    return ReelStripConfig(
+        csv_path=_require(data, "csv_path", "reel_strip.csv_path"),
     )
 
 

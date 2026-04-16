@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterable, Protocol, runtime_checkable
 
+from ...planning.region_constraint import RegionConstraint
 from ...primitives.board import Position, orthogonal_neighbors
 
 if TYPE_CHECKING:
@@ -28,6 +29,11 @@ class ScoringContext:
 
     Assembled once per seed-planning call. Factors read from this;
     none of them mutate it.
+
+    region — optional Tier-1/Tier-2 planning guidance. RegionPreferenceFactor
+      consumes it to steer seed placement toward the pre-validated columns;
+      all other factors ignore it. Leaving it None preserves the historic
+      unconstrained behavior for call sites that don't inject guidance.
     """
 
     influence: dict[Position, float]
@@ -36,6 +42,7 @@ class ScoringContext:
     cluster_positions: frozenset[Position]
     board_config: BoardConfig
     booster_landing: Position | None
+    region: RegionConstraint | None = None
 
 
 @runtime_checkable
@@ -124,6 +131,37 @@ class MergeRiskFactor:
             if neighbor in ctx.cluster_positions:
                 return 1.0
         return 0.0
+
+
+class RegionPreferenceFactor:
+    """Score = membership in the atlas/trajectory region, with column falloff.
+
+    Cells inside region.viable_columns score 1.0. Cells outside score a
+    configurable per-column falloff (falloff ** column_distance), smoothly
+    biasing seed placement toward the pre-validated columns without forcing
+    exclusion. When the scoring context has no region attached the factor
+    returns 1.0 — neutral weight, preserving un-guided behavior.
+    """
+
+    name = "region"
+
+    __slots__ = ("_falloff",)
+
+    def __init__(self, falloff: float) -> None:
+        if not (0.0 < falloff <= 1.0):
+            raise ValueError("falloff must be in (0.0, 1.0]")
+        self._falloff = falloff
+
+    def evaluate(self, pos: Position, ctx: ScoringContext) -> float:
+        region = ctx.region
+        if region is None:
+            return 1.0
+        if pos.reel in region.viable_columns:
+            return 1.0
+        # Distance measured as column gap to the nearest viable column — the
+        # atlas only constrains columns, so row distance doesn't factor in.
+        distance = min(abs(pos.reel - c) for c in region.viable_columns)
+        return self._falloff ** distance
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ from ..config.schema import MasterConfig
 from ..pipeline.cascade_generator import CascadeInstanceGenerator
 from ..pipeline.data_types import GeneratedInstance, GenerationResult
 from ..pipeline.instance_generator import StaticInstanceGenerator
+from ..pipeline.reel_generator import ReelStripGenerator
 from ..validation.metrics import InstanceMetrics
 from ..validation.validator import InstanceValidator
 from ..variance.accumulators import PopulationAccumulators
@@ -55,6 +56,7 @@ class PopulationController:
     __slots__ = (
         "_config", "_registry", "_static_generator", "_cascade_generator",
         "_validator", "_accumulators", "_rl_archive_generator",
+        "_reel_generator",
     )
 
     def __init__(
@@ -65,6 +67,7 @@ class PopulationController:
         cascade_generator: CascadeInstanceGenerator | None,
         validator: InstanceValidator,
         rl_archive_generator: RLArchiveGenerator | None = None,
+        reel_generator: ReelStripGenerator | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -73,18 +76,34 @@ class PopulationController:
         self._validator = validator
         self._accumulators = PopulationAccumulators.create(config)
         self._rl_archive_generator = rl_archive_generator
+        self._reel_generator = reel_generator
 
     def _select_generator(
         self, archetype_id: str,
-    ) -> StaticInstanceGenerator | CascadeInstanceGenerator | RLArchiveGenerator:
-        """Route to static, cascade, or RL archive generator based on cascade depth.
+    ) -> StaticInstanceGenerator | CascadeInstanceGenerator | RLArchiveGenerator | ReelStripGenerator:
+        """Route archetypes to generators along two independent dimensions.
 
-        Three-tier routing:
-        - depth == 0 → static pipeline
-        - depth 1 → cascade pipeline (rule-based StepReasoner)
-        - depth >= 2 → RL archive if available, else cascade fallback
+        Dimension 1 — family-based: the reel family is strip-driven, not
+        solver-driven, and always routes to the ReelStripGenerator regardless
+        of cascade depth. This is a distinct dispatch axis, not an extension
+        of the depth chain below.
+
+        Dimension 2 — cascade depth (unchanged):
+          depth == 0 → static pipeline
+          depth 1    → cascade pipeline (rule-based StepReasoner)
+          depth >= 2 → RL archive if available, else cascade fallback
         """
         sig = self._registry.get(archetype_id)
+
+        if sig.family == "reel":
+            if self._reel_generator is None:
+                raise RuntimeError(
+                    f"Archetype '{archetype_id}' is in the reel family "
+                    f"but no ReelStripGenerator was provided to "
+                    f"PopulationController.",
+                )
+            return self._reel_generator
+
         depth = sig.required_cascade_depth.max_val
 
         if depth == 0:

@@ -11,6 +11,7 @@ import random
 
 from ...board_filler.propagators import NoClusterPropagator, NoSpecialSymbolPropagator
 from ...config.schema import MasterConfig
+from ...planning.region_constraint import region_for_step
 from ...primitives.board import Position
 from ...primitives.booster_rules import BoosterRules
 from ...primitives.symbols import Symbol, SymbolTier
@@ -119,6 +120,7 @@ class BoosterSetupStrategy:
             result = self._find_viable_cluster(
                 context, cluster_size, cluster_symbol,
                 boundary, policy, constrained, variance, booster_type,
+                progress,
             )
 
             for pos in result.planned_positions:
@@ -165,6 +167,7 @@ class BoosterSetupStrategy:
         constrained: dict[Position, Symbol],
         variance: VarianceHints,
         booster_type: str,
+        progress: ProgressTracker,
     ) -> ClusterPositionResult:
         """Place a spawn cluster whose post-gravity landing can support the
         next step's arming cluster.
@@ -187,6 +190,10 @@ class BoosterSetupStrategy:
         best_result: ClusterPositionResult | None = None
         best_score = -1.0
 
+        # Planning guidance (atlas/trajectory) — region_for_step returns None
+        # for unguided arcs, so the None path preserves the old behavior.
+        region = region_for_step(progress.guidance, progress.steps_completed)
+
         # attempt 0 is the unbiased placement; each subsequent attempt
         # progressively concentrates vertically via compute_reshape_bias.
         # Total attempts = 1 + budget (original + retries).
@@ -202,6 +209,7 @@ class BoosterSetupStrategy:
                     context, cluster_size, self._rng, attempt_variance,
                     symbol=cluster_symbol, boundary=boundary, merge_policy=policy,
                     avoid_positions=avoid,
+                    region=region,
                 )
             except ValueError:
                 if best_result is None:

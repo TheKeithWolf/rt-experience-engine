@@ -21,12 +21,13 @@ from typing import TYPE_CHECKING
 from ..boosters.tracker import BoosterTracker
 from ..config.schema import MasterConfig
 from ..primitives.board import Board, Position
-from ..primitives.booster_rules import BoosterRules, place_booster
+from ..primitives.booster_rules import BoosterRules
 from ..primitives.gravity import GravityDAG, settle
 from ..primitives.grid_multipliers import GridMultiplierGrid
-from ..primitives.symbols import Symbol, symbol_from_name
+from ..primitives.symbols import Symbol
 from ..step_reasoner.progress import ClusterRecord
 from ..step_reasoner.results import SpawnRecord, StepResult
+from .booster_spawning import spawn_boosters_from_clusters
 from .data_types import (
     BoosterArmRecord,
     BoosterFireRecord,
@@ -194,15 +195,10 @@ class StepTransitionSimulator:
         # Build cluster gravity record
         gravity_record = build_gravity_record(all_cluster_positions, settle_result)
 
-        # Build arm records for event stream replay
-        arm_records = tuple(
-            BoosterArmRecord(
-                booster_type=b.booster_type.name,
-                position_reel=b.position.reel,
-                position_row=b.position.row,
-                orientation=b.orientation,
-            )
-            for b in armed_instances
+        # Build arm records for event stream replay (shared helper keeps the
+        # reel-strip family in lockstep with this cascade family)
+        arm_records, arm_types = BoosterArmRecord.tuple_from_instances(
+            armed_instances,
         )
 
         # Armed boosters sit until the post-terminal booster phase fires them
@@ -210,7 +206,7 @@ class StepTransitionSimulator:
             board=result_board,
             spawns=tuple(spawn_records),
             gravity_record=gravity_record,
-            booster_arm_types=tuple(b.booster_type.name for b in armed_instances),
+            booster_arm_types=arm_types,
             booster_arm_records=arm_records,
         )
 
@@ -315,53 +311,21 @@ class StepTransitionSimulator:
         step_index: int,
         board: Board,
     ) -> list[SpawnRecord]:
-        """Spawn boosters from qualifying clusters in config spawn order.
-
-        Wilds are written directly to the board at the centroid position.
-        Non-wild boosters (R, B, LB, SLB) are added to the tracker.
-        Occupied tracking prevents position conflicts between spawned boosters.
-        """
-        rules = self._booster_rules
-        # Seed occupied set with existing tracker positions to avoid collisions
-        occupied: set[Position] = {
-            b.position for b in tracker.all_boosters()
-        }
-        spawn_records: list[SpawnRecord] = []
-
-        for booster_name in self._config.boosters.spawn_order:
-            booster_sym = symbol_from_name(booster_name)
-
-            for cluster_idx, cluster in enumerate(clusters):
-                candidate_type = rules.booster_type_for_size(cluster.size)
-                if candidate_type is not booster_sym:
-                    continue
-
-                centroid = rules.compute_centroid(cluster.positions)
-                position = rules.resolve_collision(
-                    centroid, cluster.positions, frozenset(occupied),
-                )
-
-                orientation: str | None = None
-                if booster_sym is Symbol.R:
-                    orientation = rules.compute_rocket_orientation(
-                        cluster.positions,
-                    )
-                place_booster(
-                    booster_sym, position, board, tracker,
-                    orientation=orientation,
-                    source_cluster_index=cluster_idx,
-                )
-
-                occupied.add(position)
-                spawn_records.append(SpawnRecord(
-                    booster_type=booster_name,
-                    position=position,
-                    source_cluster_index=cluster_idx,
-                    step_index=step_index,
-                    orientation=orientation,
-                ))
-
-        return spawn_records
+        """Adapt the shared spawn loop to this simulator's SpawnRecord output."""
+        events = spawn_boosters_from_clusters(
+            clusters, board, tracker, self._booster_rules,
+            self._config.boosters.spawn_order,
+        )
+        return [
+            SpawnRecord(
+                booster_type=e.booster_type.name,
+                position=e.position,
+                source_cluster_index=e.source_cluster_index,
+                step_index=step_index,
+                orientation=e.orientation,
+            )
+            for e in events
+        ]
 
 
 def _build_position_map(

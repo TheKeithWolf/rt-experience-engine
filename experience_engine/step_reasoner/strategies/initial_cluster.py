@@ -15,6 +15,7 @@ from ...board_filler.propagators import (
     NoClusterPropagator, NoSpecialSymbolPropagator,
 )
 from ...config.schema import MasterConfig
+from ...planning.region_constraint import region_for_step
 from ...primitives.board import Position
 from ...primitives.symbols import Symbol, SymbolTier
 from ..context import BoardContext
@@ -93,9 +94,14 @@ class InitialClusterStrategy:
             wild_budget = progress.remaining_booster_spawns().get("W")
             if wild_budget is not None:
                 cluster_count = min(cluster_count, wild_budget.max_val)
+        # Planning guidance steers the first-step cluster when the atlas /
+        # trajectory planner resolved a configuration for this arc. None for
+        # unguided arcs, leaving placement unchanged from pre-guidance behavior.
+        region = region_for_step(progress.guidance, progress.steps_completed)
         multi_result = self._cluster_builder.build_multi_cluster(
             context, cluster_count, list(step_sizes),
             progress, signature, variance, self._rng,
+            region=region,
         )
 
         # Derive tier from the first cluster symbol placed

@@ -26,7 +26,7 @@ from ..primitives.symbols import SymbolTier
 
 REGISTERED_FAMILIES: frozenset[str] = frozenset({
     "dead", "t1", "wild", "rocket", "bomb",
-    "lb", "slb", "chain", "trigger", "wincap",
+    "lb", "slb", "chain", "trigger", "wincap", "reel",
 })
 
 FAMILY_CRITERIA: dict[str, str] = {
@@ -40,6 +40,9 @@ FAMILY_CRITERIA: dict[str, str] = {
     "chain": "basegame",
     "trigger": "freegame",
     "wincap": "wincap",
+    # Reel-strip-driven basegame — the strip determines the outcome;
+    # signatures are wide envelopes validated by InstanceValidator.
+    "reel": "basegame",
 }
 
 

@@ -17,6 +17,7 @@ from .archetypes.bomb import register_bomb_archetypes
 from .archetypes.chain import register_chain_archetypes
 from .archetypes.dead import register_dead_archetypes
 from .archetypes.lb import register_lb_archetypes
+from .archetypes.reel import register_reel_archetypes
 from .archetypes.registry import ArchetypeRegistry
 from .archetypes.rocket import register_rocket_archetypes
 from .archetypes.slb import register_slb_archetypes
@@ -43,6 +44,7 @@ _FAMILY_REGISTRARS = (
     register_chain_archetypes,
     register_trigger_archetypes,
     register_wincap_archetypes,
+    register_reel_archetypes,
 )
 
 
@@ -58,6 +60,9 @@ class WorkerTask:
     config: MasterConfig
     # Starting sim_id for this worker's instances (contiguous assignment)
     sim_id_offset: int
+    # YAML config path — workers resolve atlas.bin relative to this so the
+    # 173 MB atlas never travels through the task queue.
+    config_path: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +92,35 @@ def _build_worker_registry(config: MasterConfig, archetype_ids: frozenset[str]) 
         sig = full.get(arch_id)
         filtered.register(sig)
     return filtered
+
+
+def _build_reel_generator(
+    config: MasterConfig,
+    registry: ArchetypeRegistry,
+    gravity_dag,  # type: ignore[no-untyped-def]  # GravityDAG — local import in worker
+    archetype_ids: frozenset[str],
+):
+    """Return a ReelStripGenerator if any assigned archetype is in the reel family.
+
+    Returns None otherwise so workers that don't need the strip never pay the
+    CSV-load cost. Built at module scope (rather than as a closure inside
+    `_worker_fn`) so unit tests can exercise the construction logic directly.
+    """
+    has_reel = any(
+        registry.get(aid).family == "reel" for aid in archetype_ids
+    )
+    if not has_reel:
+        return None
+    if config.reel_strip is None:
+        raise RuntimeError(
+            "Reel family archetype assigned but config.reel_strip is None — "
+            "add a `reel_strip:` section to the YAML config.",
+        )
+    from pathlib import Path
+    from .pipeline.reel_generator import ReelStripGenerator
+    from .primitives.reel_strip import load_reel_strip
+    strip = load_reel_strip(Path(config.reel_strip.csv_path), config.board)
+    return ReelStripGenerator(config, registry, gravity_dag, strip)
 
 
 def _worker_fn(task: WorkerTask) -> WorkerResult:
@@ -146,13 +180,25 @@ def _worker_fn(task: WorkerTask) -> WorkerResult:
     step_validator = StepValidator(config)
     simulator = StepTransitionSimulator(gravity_dag, config)
 
+    from pathlib import Path
+    from .atlas.query import AtlasQuery
+    atlas_query = AtlasQuery.from_config(config, Path(task.config_path), chain_eval)
+
     cascade_gen = CascadeInstanceGenerator(
         config, registry, gravity_dag,
         reasoner, executor, step_validator, simulator,
+        atlas_query=atlas_query,
     )
     validator = InstanceValidator(config, registry)
 
-    controller = PopulationController(config, registry, static_gen, cascade_gen, validator)
+    # Construct ReelStripGenerator only when a reel archetype is in scope and
+    # a reel_strip section is present — otherwise the strip CSV isn't needed.
+    reel_gen = _build_reel_generator(config, registry, gravity_dag, archetype_ids)
+
+    controller = PopulationController(
+        config, registry, static_gen, cascade_gen, validator,
+        reel_generator=reel_gen,
+    )
     result = controller.run(task.seed)
 
     # Remap sim_ids to the assigned contiguous range
@@ -196,6 +242,7 @@ def run_parallel_generation(
     registry: ArchetypeRegistry,
     num_workers: int,
     seed: int = 42,
+    config_path=None,  # type: ignore[no-untyped-def]  # Path | None
 ) -> PopulationResult:
     """Distribute archetype generation across worker processes.
 
@@ -222,6 +269,7 @@ def run_parallel_generation(
             seed=seed + i,
             config=config,
             sim_id_offset=sim_id_offset,
+            config_path=str(config_path) if config_path is not None else "",
         ))
         sim_id_offset += partition_count
 

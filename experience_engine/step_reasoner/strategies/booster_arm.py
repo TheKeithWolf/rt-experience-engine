@@ -15,6 +15,7 @@ from ...board_filler.propagators import (
     NoSpecialSymbolPropagator,
 )
 from ...config.schema import MasterConfig
+from ...planning.region_constraint import region_for_step
 from ...primitives.board import Position, orthogonal_neighbors
 from ...primitives.symbols import Symbol, SymbolTier
 from ..context import BoardContext, DormantBooster
@@ -134,10 +135,15 @@ class BoosterArmStrategy:
             else MergePolicy.AVOID
         )
 
+        # Planning guidance (atlas/trajectory) biases cluster shape toward
+        # the pre-validated columns when present; region_for_step returns
+        # None for unguided arcs, preserving the historic placement.
+        region = region_for_step(progress.guidance, progress.steps_completed)
         result = self._cluster_builder.find_positions(
             context, cluster_size, self._rng, variance,
             symbol=cluster_symbol, boundary=boundary, merge_policy=policy,
             must_be_adjacent_to=frozenset({booster_pos}),
+            region=region,
         )
         cluster_positions = result.planned_positions
 
