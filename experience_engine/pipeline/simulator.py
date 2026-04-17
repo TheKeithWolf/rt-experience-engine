@@ -68,6 +68,7 @@ class StepTransitionSimulator:
         step_result: StepResult,
         booster_tracker: BoosterTracker,
         grid_mults: GridMultiplierGrid,
+        preferred_landings: dict[int, Position] | None = None,
     ) -> TransitionResult:
         """Execute the transition after a validated step.
 
@@ -77,6 +78,10 @@ class StepTransitionSimulator:
         4. Run gravity settle
         5. Update booster tracker positions after gravity
         6. Return post-transition board + records
+
+        `preferred_landings` — atlas-derived landings keyed by cluster index,
+        forwarded into booster spawning so post-gravity placement aligns with
+        armable cells AtlasQuery already validated.
         """
         result_board = board.copy()
 
@@ -98,6 +103,7 @@ class StepTransitionSimulator:
         spawn_records = self._spawn_boosters(
             step_result.clusters, booster_tracker, step_result.step_index,
             result_board,
+            preferred_landings=preferred_landings,
         )
 
         # Exclude positions where boosters were just placed — settle() re-marks
@@ -136,12 +142,16 @@ class StepTransitionSimulator:
         booster_tracker: BoosterTracker,
         grid_mults: GridMultiplierGrid,
         phase_executor: BoosterPhaseExecutor,
+        preferred_landings: dict[int, Position] | None = None,
     ) -> TransitionResult:
         """Execute transition with booster spawn and arming — fires are deferred.
 
         Handles cluster explosion, booster spawning, gravity settle, and arming
         of dormant boosters adjacent to the exploding cluster. Armed boosters
         sit on the board until the post-terminal booster phase fires them.
+
+        `preferred_landings` — atlas-derived landings keyed by cluster index,
+        used by `_spawn_boosters` to place bomb/rocket at armable cells.
         """
         result_board = board.copy()
 
@@ -162,6 +172,7 @@ class StepTransitionSimulator:
         spawn_records = self._spawn_boosters(
             step_result.clusters, booster_tracker, step_result.step_index,
             result_board,
+            preferred_landings=preferred_landings,
         )
 
         # Exclude booster spawn positions from gravity — they'd be destroyed
@@ -310,11 +321,18 @@ class StepTransitionSimulator:
         tracker: BoosterTracker,
         step_index: int,
         board: Board,
+        preferred_landings: dict[int, Position] | None = None,
     ) -> list[SpawnRecord]:
-        """Adapt the shared spawn loop to this simulator's SpawnRecord output."""
+        """Adapt the shared spawn loop to this simulator's SpawnRecord output.
+
+        `preferred_landings` — atlas-derived landings keyed by cluster index.
+        Forwarded into `spawn_boosters_from_clusters` so bomb/rocket spawn
+        at positions that AtlasQuery already validated as armable.
+        """
         events = spawn_boosters_from_clusters(
             clusters, board, tracker, self._booster_rules,
             self._config.boosters.spawn_order,
+            preferred_landings=preferred_landings,
         )
         return [
             SpawnRecord(

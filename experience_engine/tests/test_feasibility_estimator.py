@@ -433,3 +433,69 @@ class TestCategoryRegression:
             f"Category A/B archetype '{archetype_label}' at phase {phase_index} "
             f"should now be feasible with {empties} empties"
         )
+
+
+# ---------------------------------------------------------------------------
+# Category D — A2 bottleneck-phase rejection
+# ---------------------------------------------------------------------------
+
+class TestBottleneckRejection:
+    """A2: an arc where a *later* phase exceeds the steady-state floor must
+    be rejected by estimate(), even when the immediately-next phase fits.
+    """
+
+    def test_a2_late_phase_bottleneck_rejected(
+        self, default_config: MasterConfig,
+    ) -> None:
+        """Arc with a small phase-1 (fits current empties) followed by a
+        phase requiring more cells than the steady-state floor (current +
+        min_cluster_size) — must reject without summing requirements.
+        """
+        # min_cluster_size for royal_tumble is 5 → steady-state floor when
+        # current empties is 8 = 8 + 5 = 13. A late phase needing 14 must
+        # trip the bottleneck.
+        small_phase = _make_phase(
+            id="small", cluster_sizes=(Range(5, 6),), cluster_count=Range(1, 1),
+        )
+        # 14 cells: cluster_sizes 14 × count 1 — exceeds 13 floor
+        bottleneck_phase = _make_phase(
+            id="huge", cluster_sizes=(Range(14, 14),), cluster_count=Range(1, 1),
+        )
+        arc = _make_arc((small_phase, bottleneck_phase))
+        sig = _make_signature(narrative_arc=arc)
+        progress = ProgressTracker(signature=sig, centipayout_multiplier=100)
+
+        board = _board_with_n_empties(8, default_config)
+        context = _make_context(board, default_config)
+
+        est = _make_estimator(default_config)
+        assert est.estimate(progress, context) is False, (
+            "Late-phase bottleneck (needs 14 cells; floor is 13) must "
+            "trigger A2 rejection, even though phase 1 fits the 8 empties"
+        )
+
+    def test_a2_within_floor_is_feasible(
+        self, default_config: MasterConfig,
+    ) -> None:
+        """Same shape, but the late phase fits the steady-state floor —
+        confirms the bottleneck check doesn't over-reject.
+        """
+        small_phase = _make_phase(
+            id="small", cluster_sizes=(Range(5, 6),), cluster_count=Range(1, 1),
+        )
+        # 13 cells: exactly at the floor (8 empties + 5 min_cluster_size)
+        edge_phase = _make_phase(
+            id="edge", cluster_sizes=(Range(13, 13),), cluster_count=Range(1, 1),
+        )
+        arc = _make_arc((small_phase, edge_phase))
+        sig = _make_signature(narrative_arc=arc)
+        progress = ProgressTracker(signature=sig, centipayout_multiplier=100)
+
+        board = _board_with_n_empties(8, default_config)
+        context = _make_context(board, default_config)
+
+        est = _make_estimator(default_config)
+        assert est.estimate(progress, context) is True, (
+            "Late phase at exactly the steady-state floor must remain "
+            "feasible — bottleneck must not be off-by-one strict"
+        )

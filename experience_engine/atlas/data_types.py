@@ -115,8 +115,13 @@ class BridgeFeasibilityEntry:
     """Whether a column profile can support a wild-bridge placement.
 
     A bridge requires a zero-count gap column with non-zero counts on both
-    sides. bridge_score gates on the weaker side's adjacency — min(left, right)
-    normalized by profile total — so score == 0 means structurally unbridgeable.
+    sides. After A3, bridge_score is computed by BFS from the wild's
+    candidate position through the post-settle empty cells, partitioning
+    reachable empties into left and right of the wild's column.
+    `bridge_score = min(reachable_left, reachable_right) / min_cluster_size`
+    clipped to [0.0, 1.0]; `structurally_unbridgeable` is True when the
+    BFS finds no reachable empties on one or both sides — i.e. a wall in
+    the post-settle topology that no WFC + gravity refill can cross.
     """
 
     gap_column: int
@@ -125,6 +130,11 @@ class BridgeFeasibilityEntry:
     left_adjacency_count: int
     right_adjacency_count: int
     bridge_score: float
+    # A3: BFS-derived reachability — supersedes the column-count heuristic
+    # for filtering structurally impossible bridges.
+    reachable_left: int = 0
+    reachable_right: int = 0
+    structurally_unbridgeable: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,3 +243,17 @@ class AtlasConfiguration:
             left_columns=phase.left_group_columns,
             right_columns=phase.right_group_columns,
         )
+
+    def landing_at(self, step_index: int) -> Position | None:
+        """Return the atlas-predicted booster landing for a step, or None.
+
+        Routes to `PhaseGuidance.booster_landing.landing_position`. Consumed
+        by strategies populating `StepIntent.predicted_landings` so post-gravity
+        booster placement lands on armable cells already validated by AtlasQuery.
+        """
+        if not 0 <= step_index < len(self.phases):
+            return None
+        landing = self.phases[step_index].booster_landing
+        if landing is None:
+            return None
+        return landing.landing_position

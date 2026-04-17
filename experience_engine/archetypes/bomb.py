@@ -9,6 +9,7 @@ in its blast zone.
 from __future__ import annotations
 
 from ..narrative.arc import NarrativeArc, NarrativePhase
+from ..narrative.phase_builders import arm_and_fire_phase, spawn_phase
 from ..pipeline.protocols import Range, RangeFloat
 from ..primitives.symbols import SymbolTier
 from .registry import (
@@ -42,6 +43,13 @@ def _bomb_arc_base(**overrides: object) -> dict:
 # bomb experience arc.
 # ---------------------------------------------------------------------------
 
+# B4: bomb spawn/fire phases now compose the shared phase_builders.
+# Bomb spawn cluster_sizes (11-12) come from boosters.spawn_thresholds.B —
+# pinned here as the family-specific defaults.
+
+_BOMB_SPAWN_SIZES: tuple[Range, ...] = (Range(11, 12),)
+
+
 def _bomb_spawn_phase(
     cluster_count: Range = Range(1, 2),
     *,
@@ -49,18 +57,12 @@ def _bomb_spawn_phase(
     intent: str = "Cluster spawns a bomb",
 ) -> NarrativePhase:
     """Phase where an 11-12 cluster spawns a bomb."""
-    return NarrativePhase(
-        id=phase_id,
-        intent=intent,
-        repetitions=Range(1, 1),
+    return spawn_phase(
+        booster_type="B",
+        cluster_sizes=_BOMB_SPAWN_SIZES,
         cluster_count=cluster_count,
-        cluster_sizes=(Range(11, 12),),
-        cluster_symbol_tier=None,
-        spawns=("B",),
-        arms=None,
-        fires=None,
-        wild_behavior=None,
-        ends_when="always",
+        phase_id=phase_id,
+        intent=intent,
     )
 
 
@@ -72,18 +74,12 @@ def _bomb_fire_phase(
     intent: str = "Cluster arms the bomb, which fires",
 ) -> NarrativePhase:
     """Phase where a new cluster arms and fires the bomb."""
-    return NarrativePhase(
-        id=phase_id,
-        intent=intent,
-        repetitions=Range(1, 1),
-        cluster_count=cluster_count,
+    return arm_and_fire_phase(
+        booster_type="B",
         cluster_sizes=cluster_sizes,
-        cluster_symbol_tier=None,
-        spawns=None,
-        arms=("B",),
-        fires=("B",),
-        wild_behavior=None,
-        ends_when="always",
+        cluster_count=cluster_count,
+        phase_id=phase_id,
+        intent=intent,
     )
 
 

@@ -9,6 +9,7 @@ They are chain initiators — a fired rocket can trigger other boosters in its p
 from __future__ import annotations
 
 from ..narrative.arc import NarrativeArc, NarrativePhase
+from ..narrative.phase_builders import arm_and_fire_phase, spawn_phase
 from ..pipeline.protocols import Range, RangeFloat
 from ..primitives.symbols import SymbolTier
 from .registry import (
@@ -54,10 +55,15 @@ def _rocket_arc_base(**overrides: object) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Reusable phase factories — avoid repeating identical NarrativePhase defs
-# across the 22 archetypes. Each factory encodes one canonical beat in the
-# rocket experience arc.
+# Reusable phase factories — thin wrappers around the shared phase_builders
+# (B4). Defaults pinned to rocket-family game rules (cluster_sizes 9-10
+# from boosters.spawn_thresholds.R). Storm archetypes tighten the spawn
+# range to (9, 9) — the minimum — because their second-spawn phase runs
+# on a post-gravity board with less free space than the initial 49 cells.
 # ---------------------------------------------------------------------------
+
+_ROCKET_SPAWN_SIZES: tuple[Range, ...] = (Range(9, 10),)
+
 
 def _rocket_spawn_phase(
     cluster_count: Range = Range(1, 2),
@@ -65,27 +71,16 @@ def _rocket_spawn_phase(
     *,
     phase_id: str = "spawn_rocket",
     intent: str = "Cluster spawns a rocket",
-    cluster_sizes: tuple[Range, ...] = (Range(9, 10),),
+    cluster_sizes: tuple[Range, ...] = _ROCKET_SPAWN_SIZES,
 ) -> NarrativePhase:
-    """Phase where a cluster at the rocket spawn threshold spawns a rocket.
-
-    cluster_sizes defaults to the full spawn range (9-10 from
-    boosters.spawn_thresholds.R). Storm archetypes tighten to (9, 9) — the
-    minimum — because their second-spawn phase runs on a post-gravity board
-    with less free space than the initial 49 cells.
-    """
-    return NarrativePhase(
-        id=phase_id,
-        intent=intent,
-        repetitions=Range(1, 1),
-        cluster_count=cluster_count,
+    """Phase where a cluster at the rocket spawn threshold spawns a rocket."""
+    return spawn_phase(
+        booster_type="R",
         cluster_sizes=cluster_sizes,
+        cluster_count=cluster_count,
         cluster_symbol_tier=cluster_symbol_tier,
-        spawns=("R",),
-        arms=None,
-        fires=None,
-        wild_behavior=None,
-        ends_when="always",
+        phase_id=phase_id,
+        intent=intent,
     )
 
 
@@ -97,18 +92,12 @@ def _rocket_fire_phase(
     intent: str = "Cluster arms the rocket, which fires",
 ) -> NarrativePhase:
     """Phase where a new cluster arms and fires the rocket."""
-    return NarrativePhase(
-        id=phase_id,
-        intent=intent,
-        repetitions=Range(1, 1),
-        cluster_count=cluster_count,
+    return arm_and_fire_phase(
+        booster_type="R",
         cluster_sizes=cluster_sizes,
-        cluster_symbol_tier=None,
-        spawns=None,
-        arms=("R",),
-        fires=("R",),
-        wild_behavior=None,
-        ends_when="always",
+        cluster_count=cluster_count,
+        phase_id=phase_id,
+        intent=intent,
     )
 
 

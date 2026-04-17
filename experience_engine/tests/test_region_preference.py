@@ -112,6 +112,8 @@ def cluster_builder(default_config: MasterConfig) -> ClusterBuilder:
         payout_estimator=payout_eval,
         board_config=default_config.board,
         symbol_config=default_config.symbols,
+        multi_seed_threshold=default_config.solvers.multi_seed_threshold,
+        reasoner_config=default_config.reasoner,
         region_falloff=0.1,
     )
 
@@ -162,6 +164,8 @@ def test_cluster_builder_rejects_invalid_falloff(
             payout_estimator=payout_eval,
             board_config=default_config.board,
             symbol_config=default_config.symbols,
+            multi_seed_threshold=default_config.solvers.multi_seed_threshold,
+            reasoner_config=default_config.reasoner,
             region_falloff=0.0,
         )
 

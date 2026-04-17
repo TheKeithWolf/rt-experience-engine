@@ -280,7 +280,15 @@ def test_bridge_score_positive_for_adjacent_gap(
     atlas_builder: AtlasBuilder,
 ) -> None:
     """At least one size-7 profile must produce a bridgeable gap with
-    positive score — counts on both sides of the gap touch the gap column."""
+    positive score.
+
+    A3 redefined bridge_score from a column-count heuristic to BFS-based
+    reachability, so the post-condition for a positive score is that the
+    BFS reaches empties on BOTH sides of the wild column (i.e. not
+    structurally unbridgeable). The immediate-adjacency counts may be 0
+    even when reachable_* is positive — BFS can reach farther than just
+    the column directly flanking the gap.
+    """
     atlas = atlas_builder.build(sizes=(7,))
     positive = [
         e for e in atlas.bridge_feasibilities.values()
@@ -288,8 +296,9 @@ def test_bridge_score_positive_for_adjacent_gap(
     ]
     assert positive, "Expected at least one bridge entry with positive score"
     for entry in positive:
-        assert entry.left_adjacency_count > 0
-        assert entry.right_adjacency_count > 0
+        assert not entry.structurally_unbridgeable
+        assert entry.reachable_left > 0
+        assert entry.reachable_right > 0
 
 
 def test_bridge_feasibility_survives_storage_roundtrip(

@@ -52,7 +52,7 @@ from ..narrative.transitions import build_transition_rules, try_advance_phase
 if TYPE_CHECKING:
     from ..boosters.phase_executor import BoosterPhaseExecutor
 
-from ..primitives.cluster_detection import Cluster, detect_clusters
+from ..primitives.cluster_detection import Cluster, detect_clusters, max_component_size
 
 from ..spatial_solver.data_types import BoosterPlacement, SpatialStep
 
@@ -349,9 +349,15 @@ class CascadeInstanceGenerator:
             all_booster_grav = fire_result.booster_gravity_record
 
             # 2. Refill empty cells — cluster-seeking bias extends existing
-            # formations to increase re-cascade probability
+            # formations to increase re-cascade probability. Gate via
+            # signature-aware filter so the refill cannot create components
+            # that would spawn an out-of-budget booster — closes the
+            # `wild_count=N outside [X, Y]` leak the post-terminal ClusterSeeking
+            # path opened when wilds remained on the board across re-cascades.
+            refill_filter = self._build_refill_symbol_filter(progress)
             refill_entries = self._cluster_refill.fill(
                 board, board.empty_positions(), rng,
+                symbol_filter=refill_filter,
             )
             for reel, row, sym_name in refill_entries:
                 board.set(Position(reel, row), symbol_from_name(sym_name))
@@ -539,15 +545,19 @@ class CascadeInstanceGenerator:
         transition_data = None
         next_board = filled
         if not intent.is_terminal:
-            # Route to booster-aware transition when the archetype fires boosters
+            # Route to booster-aware transition when the archetype fires boosters.
+            # Forward the atlas-derived landings so post-gravity booster placement
+            # lands on armable cells AtlasQuery already validated.
             if phase_executor is not None:
                 transition_result = self._simulator.transition_and_arm(
                     filled, step_result, booster_tracker, grid_mults,
                     phase_executor,
+                    preferred_landings=intent.predicted_landings,
                 )
             else:
                 transition_result = self._simulator.transition(
                     filled, step_result, booster_tracker, grid_mults,
+                    preferred_landings=intent.predicted_landings,
                 )
 
             transition_data = TransitionData(
@@ -730,3 +740,39 @@ class CascadeInstanceGenerator:
             for row in range(self._config.board.num_rows):
                 values.append(grid_mults.get(Position(reel, row)))
         return tuple(values)
+
+    def _build_refill_symbol_filter(self, progress):
+        """Build a signature-aware predicate for ClusterSeekingRefill.
+
+        Returns `(board, pos, sym) -> bool` — True when placing `sym` at
+        `pos` would NOT form a component large enough to spawn a booster
+        with zero remaining budget. Wild-aware via `progress.active_wilds`
+        so wild-bridged merges count toward the projected size. Mirrors
+        `BoosterSpawnCapPropagator`'s logic for use in the refill path,
+        which runs outside WFC and thus cannot use propagators directly.
+
+        Returning None when no budget is exhausted would save a loop, but
+        the filter is cheap (one BFS per candidate symbol) and keeps the
+        callsite branch-free.
+        """
+        remaining = progress.remaining_booster_spawns()
+        wild_positions = (
+            frozenset(progress.active_wilds)
+            if progress.active_wilds else frozenset()
+        )
+
+        def symbol_filter(board: Board, pos: Position, sym: Symbol) -> bool:
+            projected_size = max_component_size(
+                board, sym, self._config.board,
+                extra=frozenset({pos}),
+                wild_positions=wild_positions,
+            )
+            booster_sym = self._booster_rules.booster_type_for_size(projected_size)
+            if booster_sym is None:
+                return True
+            budget = remaining.get(booster_sym.name)
+            if budget is None:
+                return True
+            return budget.max_val > 0
+
+        return symbol_filter

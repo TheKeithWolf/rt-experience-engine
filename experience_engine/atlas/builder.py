@@ -13,6 +13,7 @@ existing services. The builder's only responsibility is *composition* and
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterable
 
 import time
@@ -82,9 +83,13 @@ def build_atlas_services(config: MasterConfig) -> AtlasServices:
     forward = ForwardSimulator(dag, config.board, config.gravity)
     booster_rules = BoosterRules(config.boosters, config.board, config.symbols)
     criteria = {
-        "W": WildBridgeCriterion(config.board),
-        "R": RocketArmCriterion(booster_rules, config.board),
-        "B": BombArmCriterion(booster_rules, config.board),
+        "W": WildBridgeCriterion(config.board, config.landing_criteria),
+        "R": RocketArmCriterion(
+            booster_rules, config.board, config.landing_criteria,
+        ),
+        "B": BombArmCriterion(
+            booster_rules, config.board, config.landing_criteria,
+        ),
         "LB": LightballArmCriterion(config.board),
         "SLB": LightballArmCriterion(config.board),
     }
@@ -202,7 +207,7 @@ class AtlasBuilder:
                     profile, exploded, topology, dormant_survivals,
                 )
                 self._index_bridge_feasibility(
-                    profile, bridge_feasibilities,
+                    profile, topology, bridge_feasibilities,
                 )
             elapsed = time.perf_counter() - size_start
             report(
@@ -498,6 +503,7 @@ class AtlasBuilder:
     def _index_bridge_feasibility(
         self,
         profile: ColumnProfile,
+        topology: SettleTopology,
         bridge_feasibilities: dict[
             tuple[ColumnProfile, int], BridgeFeasibilityEntry
         ],
@@ -508,6 +514,13 @@ class AtlasBuilder:
         Eligibility is gated on booster_type_for_size returning the wild
         symbol, so the set of bridge-eligible sizes derives from
         config.boosters.spawn_thresholds — no hardcoded size check.
+
+        A3: Reachability is computed by BFS from the wild's candidate
+        position through `topology.empty_positions`. Cells reachable from
+        the wild are partitioned into left/right of the gap column. A
+        wall in the post-settle empties (BFS reaches only one side, or
+        neither) marks the gap as `structurally_unbridgeable` — no WFC
+        refill can ever form a continuation cluster across the wild.
         """
         booster_symbol = self._booster_rules.booster_type_for_size(profile.total)
         if booster_symbol is None or booster_symbol.name != "W":
@@ -526,7 +539,16 @@ class AtlasBuilder:
             # Adjacency counts from the columns immediately flanking the gap
             left_adj = counts[col - 1]
             right_adj = counts[col + 1] if col + 1 < num_reels else 0
-            score = min(left_adj, right_adj) / profile.total
+            reachable_left, reachable_right = self._bfs_reachable_sides(
+                topology, col,
+            )
+            structurally_unbridgeable = (
+                reachable_left == 0 or reachable_right == 0
+            )
+            # Score normalized by min_cluster_size — the smallest cluster a
+            # bridge can form on either side. Clipped to [0.0, 1.0].
+            min_size = self._config.board.min_cluster_size
+            score = min(1.0, min(reachable_left, reachable_right) / min_size)
             bridge_feasibilities[(profile, col)] = BridgeFeasibilityEntry(
                 gap_column=col,
                 left_columns=left,
@@ -534,7 +556,45 @@ class AtlasBuilder:
                 left_adjacency_count=left_adj,
                 right_adjacency_count=right_adj,
                 bridge_score=score,
+                reachable_left=reachable_left,
+                reachable_right=reachable_right,
+                structurally_unbridgeable=structurally_unbridgeable,
             )
+
+    def _bfs_reachable_sides(
+        self,
+        topology: SettleTopology,
+        gap_column: int,
+    ) -> tuple[int, int]:
+        """BFS through topology.empty_positions seeded at the gap column.
+
+        Returns (reachable_left_count, reachable_right_count). The wild's
+        own column is excluded from both counts — it acts as the bridge,
+        not as a side member.
+        """
+        empty_set = topology.empty_positions
+        # Seed from any empty cell in the gap column — the wild lands there
+        # and bridges through to the reachable adjacents.
+        seeds = [p for p in empty_set if p.reel == gap_column]
+        if not seeds:
+            return (0, 0)
+        visited: set[Position] = set()
+        queue: deque[Position] = deque()
+        for seed in seeds:
+            if seed not in visited:
+                visited.add(seed)
+                queue.append(seed)
+        while queue:
+            pos = queue.popleft()
+            for nbr in orthogonal_neighbors(pos, self._config.board):
+                if nbr in empty_set and nbr not in visited:
+                    visited.add(nbr)
+                    queue.append(nbr)
+        # Partition reachable cells by column relative to the gap. The gap
+        # column itself is excluded so we count only true bridge sides.
+        reachable_left = sum(1 for p in visited if p.reel < gap_column)
+        reachable_right = sum(1 for p in visited if p.reel > gap_column)
+        return (reachable_left, reachable_right)
 
 
 # ----------------------------------------------------------------------

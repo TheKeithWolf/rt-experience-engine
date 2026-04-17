@@ -13,7 +13,7 @@ if/else dispatch inside this module.
 from __future__ import annotations
 
 import random
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Protocol, runtime_checkable
 
 from ..config.schema import BoardConfig, RefillConfig
@@ -71,7 +71,21 @@ class ClusterSeekingRefill:
         board: Board,
         empty_positions: Iterable[Position],
         rng: random.Random,
+        symbol_filter: Callable[[Board, Position, Symbol], bool] | None = None,
     ) -> tuple[tuple[int, int, str], ...]:
+        """Refill empty cells with adjacency-biased weighted selection.
+
+        `symbol_filter` — optional predicate (board, pos, sym) -> bool. When
+        supplied, only symbols passing the filter are eligible at each
+        position; the caller typically binds this to a signature-aware
+        `BoosterSpawnCapPropagator`-style check so post-terminal refill
+        cannot create components that would spawn an exhausted booster.
+
+        If the filter rejects every weighted candidate at a position,
+        falls back to the symbol with the smallest projected component
+        (matches TerminalRefill's deterministic fallback pattern — both
+        guarantee termination without hardcoding a retry budget).
+        """
         empties = sorted(empty_positions, key=lambda p: -p.row)
         if not empties:
             return ()
@@ -90,11 +104,54 @@ class ClusterSeekingRefill:
             )
             symbols = list(weights.keys())
             symbol_weights = [weights[s] for s in symbols]
+
+            # Apply signature-aware filter — drop candidates that would
+            # violate the live booster-spawn budget (wild-aware). Filter
+            # returns True when the symbol is safe at `pos`.
+            if symbol_filter is not None:
+                filtered = [
+                    (s, w) for s, w in zip(symbols, symbol_weights)
+                    if symbol_filter(working, pos, s)
+                ]
+                if filtered:
+                    symbols = [s for s, _ in filtered]
+                    symbol_weights = [w for _, w in filtered]
+                else:
+                    # No candidate passes — pick the one producing the
+                    # smallest projected component (wild-unaware here is OK:
+                    # wilds on the board are already accounted for via
+                    # max_component_size's board scan)
+                    chosen = self._pick_smallest_component(working, pos)
+                    working.set(pos, chosen)
+                    result.append((pos.reel, pos.row, chosen.name))
+                    continue
+
             chosen = rng.choices(symbols, weights=symbol_weights, k=1)[0]
             working.set(pos, chosen)
             result.append((pos.reel, pos.row, chosen.name))
 
         return tuple(result)
+
+    def _pick_smallest_component(
+        self, board: Board, pos: Position,
+    ) -> Symbol:
+        """Deterministic fallback — pick symbol forming the smallest component.
+
+        Invoked when `symbol_filter` rejects every weighted candidate at
+        `pos`. Mirrors `TerminalRefill._pick_safe_symbol`'s exhaustion path:
+        scan every standard symbol, measure its projected component size,
+        pick the smallest. Guarantees forward progress with no budget knob.
+        """
+        best_sym = self._standard_symbols[0]
+        best_size = None
+        for candidate in self._standard_symbols:
+            board.set(pos, candidate)
+            size = max_component_size(board, candidate, self._board_config)
+            board.set(pos, None)
+            if best_size is None or size < best_size:
+                best_size = size
+                best_sym = candidate
+        return best_sym
 
 
 class TerminalRefill:

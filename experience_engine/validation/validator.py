@@ -29,6 +29,7 @@ from ..primitives.symbols import (
     symbols_in_tier,
     tier_of,
 )
+from .family_validators import DEFAULT_FAMILY_VALIDATOR, FAMILY_VALIDATORS
 from .metrics import InstanceMetrics
 
 
@@ -234,18 +235,19 @@ class InstanceValidator:
                     f"!= max_payout={expected}"
                 )
 
-        # 11. No booster or wild symbols on board (dead/t1 families only)
-        # Wild family legitimately uses wilds; later phases add booster families
-        if sig.family in ("dead", "t1"):
-            for check_board in ([initial_board, terminal_board] if is_cascade else [terminal_board]):
-                for pos in check_board.all_positions():
-                    sym = check_board.get(pos)
-                    if sym is not None:
-                        if is_wild(sym) or is_booster(sym):
-                            errors.append(
-                                f"unexpected {sym.name} at ({pos.reel}, {pos.row}) — "
-                                f"{sig.family} boards must not contain wilds or boosters"
-                            )
+        # 11. Family-specific board-content rules (B1: protocol dispatch).
+        # The dead/t1 families share the no-wilds/no-boosters invariant;
+        # other families register their own validators or fall through to
+        # the no-op default. Wild-family rules remain inline below because
+        # they share computed state with the booster spawn/fire block.
+        family_validator = FAMILY_VALIDATORS.get(
+            sig.family, DEFAULT_FAMILY_VALIDATOR,
+        )
+        errors.extend(
+            family_validator.validate(
+                sig, initial_board, terminal_board, is_cascade,
+            )
+        )
 
         # 11b. Wild-family — count wilds on terminal board (validated after 11d
         # once booster_spawn_counts is available for the spawned−consumed formula)

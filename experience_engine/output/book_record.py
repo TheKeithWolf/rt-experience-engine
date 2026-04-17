@@ -2,11 +2,15 @@
 
 Each generated instance is converted to a BookRecord for JSONL output. The
 criteria field determines how total payout is split between base and free wins.
+B5: criteria-based split is dispatched through a small WinSplitter Protocol
+registry instead of an if/elif chain so adding a new criteria split rule
+requires only registering a new splitter.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 from ..pipeline.data_types import GeneratedInstance
 
@@ -38,27 +42,59 @@ class BookRecord:
         }
 
 
+# ---------------------------------------------------------------------------
+# B5 — WinSplitter protocol + per-criteria splitters
+# ---------------------------------------------------------------------------
+
+
+class WinSplitter(Protocol):
+    """Splits a payout into (base_wins, free_wins) for a given criteria."""
+
+    def split(self, payout: float) -> tuple[float, float]: ...
+
+
+class _ZeroSplitter:
+    """Dead spins (criteria == '0') — neither base nor free wins."""
+
+    def split(self, payout: float) -> tuple[float, float]:
+        return (0.0, 0.0)
+
+
+class _FreeGameSplitter:
+    """Free-game spins — entire payout attributed to free wins."""
+
+    def split(self, payout: float) -> tuple[float, float]:
+        return (0.0, payout)
+
+
+class _BaseGameSplitter:
+    """Default (basegame, wincap, …) — entire payout in base wins."""
+
+    def split(self, payout: float) -> tuple[float, float]:
+        return (payout, 0.0)
+
+
+# Registry — adding a new criteria split rule requires only an entry here.
+_SPLITTERS: dict[str, WinSplitter] = {
+    "0": _ZeroSplitter(),
+    "freegame": _FreeGameSplitter(),
+}
+_DEFAULT_SPLITTER: WinSplitter = _BaseGameSplitter()
+
+
 def book_record_from_instance(
     instance: GeneratedInstance,
     events: list[dict],
 ) -> BookRecord:
     """Build a BookRecord from a generated instance and its event stream.
 
-    Base/free split logic by criteria:
-    - "0" (dead spin): both baseGameWins and freeGameWins are 0
-    - "freegame": entire payout attributed to freeGameWins
-    - "basegame", "wincap", or any other: entire payout to baseGameWins
+    Base/free split is dispatched via the WinSplitter registry (B5):
+    - "0" (dead spin)  → ZeroSplitter      → (0, 0)
+    - "freegame"       → FreeGameSplitter  → (0, payout)
+    - any other        → BaseGameSplitter  → (payout, 0)  [basegame, wincap, …]
     """
-    if instance.criteria == "0":
-        base_wins = 0.0
-        free_wins = 0.0
-    elif instance.criteria == "freegame":
-        base_wins = 0.0
-        free_wins = instance.payout
-    else:
-        # basegame, wincap — all value in base game
-        base_wins = instance.payout
-        free_wins = 0.0
+    splitter = _SPLITTERS.get(instance.criteria, _DEFAULT_SPLITTER)
+    base_wins, free_wins = splitter.split(instance.payout)
 
     return BookRecord(
         id=instance.sim_id,

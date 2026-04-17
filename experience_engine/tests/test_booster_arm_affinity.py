@@ -10,7 +10,7 @@ from collections import Counter
 
 import pytest
 
-from ..config.schema import ConfigValidationError, MasterConfig, ReasonerConfig
+from ..config.schema import BoosterArmConfig, ConfigValidationError, MasterConfig
 from ..pipeline.protocols import Range, RangeFloat
 from ..primitives.board import Board, Position, orthogonal_neighbors
 from ..primitives.symbols import Symbol, SymbolTier, symbols_in_tier
@@ -144,6 +144,8 @@ def cluster_builder(
         spawn_evaluator, payout_estimator,
         default_config.board, default_config.symbols,
         boundary_analyzer,
+        multi_seed_threshold=default_config.solvers.multi_seed_threshold,
+        reasoner_config=default_config.reasoner,
     )
 
 
@@ -175,10 +177,11 @@ def landing_evaluator(forward_simulator, default_config: MasterConfig):
     )
     from ..step_reasoner.services.landing_evaluator import BoosterLandingEvaluator
     booster_rules = BoosterRules(default_config.boosters, default_config.board, default_config.symbols)
+    lc = default_config.landing_criteria
     criteria = {
-        "W": WildBridgeCriterion(default_config.board),
-        "R": RocketArmCriterion(booster_rules, default_config.board),
-        "B": BombArmCriterion(booster_rules, default_config.board),
+        "W": WildBridgeCriterion(default_config.board, lc),
+        "R": RocketArmCriterion(booster_rules, default_config.board, lc),
+        "B": BombArmCriterion(booster_rules, default_config.board, lc),
         "LB": LightballArmCriterion(default_config.board),
         "SLB": LightballArmCriterion(default_config.board),
     }
@@ -491,19 +494,14 @@ class TestConfigValidation:
     def test_arm_aff_007_config_rejects_negative_affinity(
         self, default_config: MasterConfig,
     ) -> None:
-        """ARM-AFF-007: survivor_affinity_per_cell < 0 raises ConfigValidationError."""
-        # Extract current values from the loaded config to build a valid base
-        r = default_config.reasoner
+        """ARM-AFF-007: survivor_affinity_per_cell < 0 raises ConfigValidationError.
+
+        After A7 the field lives on BoosterArmConfig — the test follows.
+        """
+        ba = default_config.booster_arm
         with pytest.raises(ConfigValidationError, match="survivor_affinity_per_cell"):
-            ReasonerConfig(
-                payout_low_fraction=r.payout_low_fraction,
-                payout_high_fraction=r.payout_high_fraction,
-                arming_urgency_horizon=r.arming_urgency_horizon,
-                terminal_dead_default_max_component=r.terminal_dead_default_max_component,
-                max_forward_simulations_per_step=r.max_forward_simulations_per_step,
-                max_strategic_cells_per_step=r.max_strategic_cells_per_step,
-                lookahead_depth=r.lookahead_depth,
+            BoosterArmConfig(
                 survivor_affinity_per_cell=-1.0,
-                arm_feasibility_threshold=r.arm_feasibility_threshold,
-                arm_feasibility_retry_budget=r.arm_feasibility_retry_budget,
+                arm_feasibility_threshold=ba.arm_feasibility_threshold,
+                arm_feasibility_retry_budget=ba.arm_feasibility_retry_budget,
             )

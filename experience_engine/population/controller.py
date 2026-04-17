@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from ..archetypes.registry import ArchetypeRegistry
 from ..config.schema import MasterConfig
@@ -27,9 +26,6 @@ from ..variance.accumulators import PopulationAccumulators
 from ..variance.bias_computation import compute_hints
 from ..variance.hints import VarianceHints
 from .allocator import BudgetAllocation, allocate_budget
-
-if TYPE_CHECKING:
-    from ..rl_archive.generator import RLArchiveGenerator
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,8 +51,7 @@ class PopulationController:
 
     __slots__ = (
         "_config", "_registry", "_static_generator", "_cascade_generator",
-        "_validator", "_accumulators", "_rl_archive_generator",
-        "_reel_generator",
+        "_validator", "_accumulators", "_reel_generator",
     )
 
     def __init__(
@@ -66,7 +61,6 @@ class PopulationController:
         static_generator: StaticInstanceGenerator,
         cascade_generator: CascadeInstanceGenerator | None,
         validator: InstanceValidator,
-        rl_archive_generator: RLArchiveGenerator | None = None,
         reel_generator: ReelStripGenerator | None = None,
     ) -> None:
         self._config = config
@@ -75,12 +69,11 @@ class PopulationController:
         self._cascade_generator = cascade_generator
         self._validator = validator
         self._accumulators = PopulationAccumulators.create(config)
-        self._rl_archive_generator = rl_archive_generator
         self._reel_generator = reel_generator
 
     def _select_generator(
         self, archetype_id: str,
-    ) -> StaticInstanceGenerator | CascadeInstanceGenerator | RLArchiveGenerator | ReelStripGenerator:
+    ) -> StaticInstanceGenerator | CascadeInstanceGenerator | ReelStripGenerator:
         """Route archetypes to generators along two independent dimensions.
 
         Dimension 1 — family-based: the reel family is strip-driven, not
@@ -88,10 +81,9 @@ class PopulationController:
         of cascade depth. This is a distinct dispatch axis, not an extension
         of the depth chain below.
 
-        Dimension 2 — cascade depth (unchanged):
+        Dimension 2 — cascade depth:
           depth == 0 → static pipeline
-          depth 1    → cascade pipeline (rule-based StepReasoner)
-          depth >= 2 → RL archive if available, else cascade fallback
+          depth >= 1 → cascade pipeline (rule-based StepReasoner)
         """
         sig = self._registry.get(archetype_id)
 
@@ -109,19 +101,6 @@ class PopulationController:
         if depth == 0:
             return self._static_generator
 
-        # Deep cascades: prefer RL archive if available
-        #if depth >= 2 and self._rl_archive_generator is not None:
-        #    return self._rl_archive_generator
-
-        # Shallow cascades or fallback when no archive
-        
-        #if self._cascade_generator is None:
-        #    raise RuntimeError(
-        #        f"Archetype '{archetype_id}' requires cascade_depth "
-        #        f"{depth} but no cascade generator was provided. "
-        #        f"Initialize PopulationController with a CascadeInstanceGenerator."
-        #    )
-        
         return self._cascade_generator
 
     def run(self, seed: int = 42) -> PopulationResult:

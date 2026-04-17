@@ -160,6 +160,8 @@ def cluster_builder(
         spawn_evaluator, payout_estimator,
         default_config.board, default_config.symbols,
         boundary_analyzer,
+        multi_seed_threshold=default_config.solvers.multi_seed_threshold,
+        reasoner_config=default_config.reasoner,
     )
 
 

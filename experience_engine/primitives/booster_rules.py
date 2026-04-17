@@ -124,12 +124,24 @@ class BoosterRules:
         centroid: Position,
         cluster_positions: frozenset[Position],
         occupied: frozenset[Position],
+        preferred_landing: Position | None = None,
     ) -> Position:
         """Place the booster at centroid if unoccupied, else next-nearest cluster member.
 
-        Iterates cluster members by distance from centroid to find the
-        first unoccupied position.
+        When `preferred_landing` is supplied (typically from the atlas
+        `BoosterLandingEntry` that already filtered on armability), it wins
+        over centroid-distance logic — the atlas has already confirmed this
+        cell has enough post-gravity adjacent refill space to host the next
+        arming cluster. Falls back to centroid logic when the preferred
+        landing is outside the cluster or already occupied.
         """
+        if (
+            preferred_landing is not None
+            and preferred_landing in cluster_positions
+            and preferred_landing not in occupied
+        ):
+            return preferred_landing
+
         if centroid not in occupied:
             return centroid
 

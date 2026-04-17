@@ -11,7 +11,8 @@ import random
 
 from ...board_filler.propagators import NoClusterPropagator, NoSpecialSymbolPropagator
 from ...config.schema import MasterConfig
-from ...planning.region_constraint import region_for_step
+from ...planning.region_constraint import landing_for_step, region_for_step
+from ..services.constraint_helpers import build_spawn_cap_propagator
 from ...primitives.board import Position
 from ...primitives.booster_rules import BoosterRules
 from ...primitives.symbols import Symbol, SymbolTier
@@ -133,6 +134,17 @@ class BoosterSetupStrategy:
             first_sym = next(iter(constrained.values()))
             cluster_tier = SymbolTier.LOW if first_sym.value <= 4 else SymbolTier.HIGH
 
+        # Atlas-derived landing for the first booster this step sets up.
+        # Booster-setup phases produce ≥1 cluster; the atlas has one landing
+        # per phase so we map it to cluster_index=0. Missing atlas coverage
+        # falls back to centroid placement via None.
+        atlas_landing = landing_for_step(progress.guidance, progress.steps_completed)
+        predicted_landings = (
+            {0: atlas_landing}
+            if atlas_landing is not None and expected_spawns
+            else None
+        )
+
         # No forward sim seeds needed — the chain arrangement IS the plan
         return StepIntent(
             step_type=StepType.CASCADE_CLUSTER,
@@ -147,6 +159,19 @@ class BoosterSetupStrategy:
             wfc_propagators=[
                 NoSpecialSymbolPropagator(self._config.symbols),
                 NoClusterPropagator(self._config.board.min_cluster_size),
+                # Budget-aware spawn cap — blocks WFC from creating components
+                # whose size would spawn an over-budget booster (wild-aware).
+                # committed_spawns prevents WFC from creating ADDITIONAL
+                # spawn-triggering components beyond booster_setup's plan.
+                build_spawn_cap_propagator(
+                    self._spawn_eval,
+                    progress,
+                    wild_positions=frozenset(progress.active_wilds),
+                    committed_spawns={
+                        btype: expected_spawns.count(btype)
+                        for btype in set(expected_spawns)
+                    } if expected_spawns else None,
+                ),
             ],
             wfc_symbol_weights=variance.symbol_weights,
             predicted_post_gravity=None,
@@ -155,6 +180,7 @@ class BoosterSetupStrategy:
             # Setup cluster positions will explode — gates gravity-aware WFC
             planned_explosion=frozenset(constrained),
             is_terminal=False,
+            predicted_landings=predicted_landings,
         )
 
     def _find_viable_cluster(
@@ -176,16 +202,16 @@ class BoosterSetupStrategy:
         upper, vertically concentrated placements (where centroids stay near
         the refill zone). Scores each via the landing evaluator's composite
         criterion; returns the first candidate meeting
-        reasoner.arm_feasibility_threshold, or the best-scoring candidate
+        booster_arm.arm_feasibility_threshold, or the best-scoring candidate
         if the retry budget is exhausted.
 
-        The retry budget (reasoner.arm_feasibility_retry_budget) caps how
+        The retry budget (booster_arm.arm_feasibility_retry_budget) caps how
         many reshape attempts the strategy will try before settling for the
         best available — prevents unbounded spinning on infeasible boards.
         """
         avoid = frozenset(constrained)
-        threshold = self._config.reasoner.arm_feasibility_threshold
-        budget = self._config.reasoner.arm_feasibility_retry_budget
+        threshold = self._config.booster_arm.arm_feasibility_threshold
+        budget = self._config.booster_arm.arm_feasibility_retry_budget
 
         best_result: ClusterPositionResult | None = None
         best_score = -1.0

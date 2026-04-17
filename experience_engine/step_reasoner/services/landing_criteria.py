@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from ...config.schema import BoardConfig
+from ...config.schema import BoardConfig, LandingCriteriaConfig
 from ...primitives.board import Position, orthogonal_neighbors
 from ...primitives.booster_rules import BoosterRules
 
@@ -69,12 +69,14 @@ class WildBridgeCriterion:
 
     __slots__ = ("_needed", "_side_bonus")
 
-    # Bonus when refill spans 2+ columns — improves bridge geometry
-    _MULTI_COLUMN_BONUS: float = 0.2
-
-    def __init__(self, board_config: BoardConfig) -> None:
+    def __init__(
+        self,
+        board_config: BoardConfig,
+        landing_criteria_config: LandingCriteriaConfig,
+    ) -> None:
         # Wild counts as 1 member, so bridge needs (min_size - 1) more adjacents
         self._needed = max(1, board_config.min_cluster_size - 1)
+        self._side_bonus = landing_criteria_config.wild_bridge_multi_column_bonus
 
     def score(self, ctx: LandingContext) -> float:
         adjacent = len(ctx.adjacent_refill)
@@ -85,7 +87,7 @@ class WildBridgeCriterion:
 
         # Cells in multiple columns → bridge more likely to span both sides of the Wild
         cols = {p.reel for p in ctx.adjacent_refill}
-        side_bonus = self._MULTI_COLUMN_BONUS if len(cols) >= 2 else 0.0
+        side_bonus = self._side_bonus if len(cols) >= 2 else 0.0
 
         return min(1.0, base + side_bonus)
 
@@ -105,18 +107,14 @@ class RocketArmCriterion:
     __slots__ = (
         "_booster_rules", "_needed", "_max_manhattan",
         "_desired_orientation", "_arm_weight", "_chain_weight",
+        "_orientation_penalty",
     )
-
-    # Weight split between arm feasibility and chain geometry
-    _ARM_WEIGHT: float = 0.6
-    _CHAIN_WEIGHT: float = 0.4
-    # Penalty multiplier when orientation doesn't match desired direction
-    _ORIENTATION_PENALTY: float = 0.3
 
     def __init__(
         self,
         booster_rules: BoosterRules,
         board_config: BoardConfig,
+        landing_criteria_config: LandingCriteriaConfig,
         desired_orientation: str | None = None,
     ) -> None:
         self._booster_rules = booster_rules
@@ -126,6 +124,9 @@ class RocketArmCriterion:
             1, (board_config.num_reels // 2) + (board_config.num_rows // 2),
         )
         self._desired_orientation = desired_orientation
+        self._arm_weight = landing_criteria_config.rocket_arm_weight
+        self._chain_weight = landing_criteria_config.rocket_chain_weight
+        self._orientation_penalty = landing_criteria_config.rocket_orientation_penalty
 
     def score(self, ctx: LandingContext) -> float:
         adjacent = len(ctx.adjacent_refill)
@@ -142,13 +143,13 @@ class RocketArmCriterion:
         centrality = max(0.0, 1.0 - manhattan_from_center / self._max_manhattan)
         chain_score = max(0.2, centrality)
 
-        combined = arm_score * self._ARM_WEIGHT + chain_score * self._CHAIN_WEIGHT
+        combined = arm_score * self._arm_weight + chain_score * self._chain_weight
 
         # Orientation penalty — wrong firing direction makes the chain impossible
         if self._desired_orientation is not None:
             actual = ctx.cluster_shape_stats.orientation
             if actual != self._desired_orientation:
-                combined *= self._ORIENTATION_PENALTY
+                combined *= self._orientation_penalty
 
         return combined
 
@@ -165,15 +166,16 @@ class BombArmCriterion:
     edge/corner positions lose cells to board clipping.
     """
 
-    __slots__ = ("_booster_rules", "_board_config", "_needed", "_max_blast_area")
-
-    _ARM_WEIGHT: float = 0.6
-    _BLAST_WEIGHT: float = 0.4
+    __slots__ = (
+        "_booster_rules", "_board_config", "_needed", "_max_blast_area",
+        "_arm_weight", "_blast_weight",
+    )
 
     def __init__(
         self,
         booster_rules: BoosterRules,
         board_config: BoardConfig,
+        landing_criteria_config: LandingCriteriaConfig,
     ) -> None:
         self._booster_rules = booster_rules
         self._board_config = board_config
@@ -181,6 +183,8 @@ class BombArmCriterion:
         # Theoretical maximum blast area (no edge clipping) — from config radius
         radius = booster_rules._config.bomb_blast_radius
         self._max_blast_area = (2 * radius + 1) ** 2
+        self._arm_weight = landing_criteria_config.bomb_arm_weight
+        self._blast_weight = landing_criteria_config.bomb_blast_weight
 
     def score(self, ctx: LandingContext) -> float:
         adjacent = len(ctx.adjacent_refill)
@@ -192,7 +196,7 @@ class BombArmCriterion:
         blast = self._booster_rules.bomb_blast(ctx.landing_position)
         blast_coverage = len(blast) / self._max_blast_area
 
-        return arm_score * self._ARM_WEIGHT + blast_coverage * self._BLAST_WEIGHT
+        return arm_score * self._arm_weight + blast_coverage * self._blast_weight
 
 
 # ---------------------------------------------------------------------------

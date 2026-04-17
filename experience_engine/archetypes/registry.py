@@ -24,25 +24,27 @@ from ..primitives.symbols import SymbolTier
 # Family → criteria mapping (single source of truth for family names)
 # ---------------------------------------------------------------------------
 
-REGISTERED_FAMILIES: frozenset[str] = frozenset({
-    "dead", "t1", "wild", "rocket", "bomb",
-    "lb", "slb", "chain", "trigger", "wincap", "reel",
-})
+# B8: family identifiers sourced from the typed ArchetypeFamily StrEnum so
+# the set of legal values is defined once. StrEnum's str-equality means
+# downstream callers comparing sig.family to either form continue to work.
+from .families import ArchetypeFamily
+
+REGISTERED_FAMILIES: frozenset[str] = frozenset(ArchetypeFamily)
 
 FAMILY_CRITERIA: dict[str, str] = {
-    "dead": "0",
-    "t1": "basegame",
-    "wild": "basegame",
-    "rocket": "basegame",
-    "bomb": "basegame",
-    "lb": "basegame",
-    "slb": "basegame",
-    "chain": "basegame",
-    "trigger": "freegame",
-    "wincap": "wincap",
+    ArchetypeFamily.DEAD: "0",
+    ArchetypeFamily.T1: "basegame",
+    ArchetypeFamily.WILD: "basegame",
+    ArchetypeFamily.ROCKET: "basegame",
+    ArchetypeFamily.BOMB: "basegame",
+    ArchetypeFamily.LB: "basegame",
+    ArchetypeFamily.SLB: "basegame",
+    ArchetypeFamily.CHAIN: "basegame",
+    ArchetypeFamily.TRIGGER: "freegame",
+    ArchetypeFamily.WINCAP: "wincap",
     # Reel-strip-driven basegame — the strip determines the outcome;
     # signatures are wide envelopes validated by InstanceValidator.
-    "reel": "basegame",
+    ArchetypeFamily.REEL: "basegame",
 }
 
 

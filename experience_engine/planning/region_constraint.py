@@ -90,3 +90,24 @@ def bridge_hint_for_step(
     if accessor is None:
         return None
     return accessor(step_index)
+
+
+def landing_for_step(
+    guidance: GuidanceSource | None,
+    step_index: int,
+):
+    """Return the predicted booster landing for the given step, or None.
+
+    Duck-typed accessor like bridge_hint_for_step: only AtlasConfiguration
+    exposes landing_at() (routed to PhaseGuidance.booster_landing). Trajectory
+    planners return None — their Tier-2 sketches do not carry pre-validated
+    armability data.
+
+    Returns a Position (imported lazily at call site to avoid circular imports).
+    """
+    if guidance is None:
+        return None
+    accessor = getattr(guidance, "landing_at", None)
+    if accessor is None:
+        return None
+    return accessor(step_index)

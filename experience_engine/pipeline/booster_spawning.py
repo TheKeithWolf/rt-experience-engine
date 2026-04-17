@@ -65,6 +65,7 @@ def spawn_boosters_from_clusters(
     tracker: BoosterTracker,
     rules: BoosterRules,
     spawn_order: tuple[str, ...],
+    preferred_landings: dict[int, Position] | None = None,
 ) -> tuple[SpawnEvent, ...]:
     """Spawn boosters from qualifying clusters in config spawn order.
 
@@ -77,6 +78,12 @@ def spawn_boosters_from_clusters(
       - For rockets only, compute orientation from cluster positions.
       - Place each booster via `place_booster` (board + tracker).
       - Track placed positions in the occupied set for subsequent iterations.
+
+    `preferred_landings` — atlas-derived `BoosterLandingEntry.landing_position`
+    per source_cluster_index. When a cluster's landing is in the preferred
+    dict, it takes precedence over centroid-distance placement because the
+    atlas has already validated armable adjacency. Missing/None falls back
+    to centroid logic; keeps behavior unchanged for non-atlas callers.
     """
     occupied: set[Position] = {b.position for b in tracker.all_boosters()}
     events: list[SpawnEvent] = []
@@ -89,8 +96,14 @@ def spawn_boosters_from_clusters(
                 continue
 
             centroid = rules.compute_centroid(cluster.positions)
+            preferred = (
+                preferred_landings.get(cluster_idx)
+                if preferred_landings is not None
+                else None
+            )
             position = rules.resolve_collision(
                 centroid, cluster.positions, frozenset(occupied),
+                preferred_landing=preferred,
             )
 
             orientation: str | None = None

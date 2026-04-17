@@ -21,6 +21,7 @@ from ..context import BoardContext
 from ..intent import StepIntent, StepType
 from ..progress import ProgressTracker
 from ..services.cluster_builder import ClusterBuilder
+from ..services.constraint_helpers import forbidden_near_miss_symbols_for
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
 from ...variance.hints import VarianceHints
@@ -82,13 +83,19 @@ class TerminalNearMissStrategy:
             placed_groups.append(NearMissGroup(symbol=symbol, positions=positions))
             occupied = occupied | positions
 
-        # Propagators: dead fill with NM isolation awareness
+        # Propagators: dead fill with NM isolation awareness + tier guard.
+        # Wrong-tier near-miss groups forming during dead fill trigger the
+        # validator's `terminal NM symbol LX is low, expected high` failure;
+        # forbidden_near_miss_symbols_for computes the complement-of-allowed
+        # set from the signature's tier and blocks it at fill time.
+        forbidden_nm = forbidden_near_miss_symbols_for(signature, self._config.symbols)
         propagators = [
             NoSpecialSymbolPropagator(self._config.symbols),
             NearMissAwareDeadPropagator(
                 max_component=near_miss_size,
                 protected_groups=placed_groups,
                 board_config=self._config.board,
+                forbidden_near_miss_symbols=forbidden_nm,
             ),
         ]
 

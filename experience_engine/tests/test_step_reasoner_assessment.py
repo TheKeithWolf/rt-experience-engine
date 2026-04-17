@@ -67,7 +67,13 @@ def _make_signature(**overrides) -> ArchetypeSignature:
 
 
 def _make_reasoner_config(**overrides) -> ReasonerConfig:
-    """Build a ReasonerConfig with sensible defaults."""
+    """Build a ReasonerConfig with sensible defaults.
+
+    Booster-arm fields (survivor_affinity_per_cell, arm_feasibility_*) moved
+    to BoosterArmConfig in A7, so they no longer appear here. Cluster scoring
+    weights (B6) added with the same values previously hardcoded in
+    cluster_builder.py — preserves prior behavior at default.
+    """
     defaults = dict(
         payout_low_fraction=0.3,
         payout_high_fraction=0.85,
@@ -76,9 +82,13 @@ def _make_reasoner_config(**overrides) -> ReasonerConfig:
         max_forward_simulations_per_step=10,
         max_strategic_cells_per_step=16,
         lookahead_depth=2,
-        survivor_affinity_per_cell=2.0,
-        arm_feasibility_threshold=0.7,
-        arm_feasibility_retry_budget=3,
+        cluster_merge_acceptable_score=0.6,
+        cluster_merge_overflow_score=0.1,
+        cluster_payout_undertarget_trigger=0.5,
+        cluster_payout_overceiling_trigger=1.5,
+        cluster_payout_score_floor=0.05,
+        cluster_payout_ontrack_smoothing=0.5,
+        cluster_payout_ontrack_floor=0.3,
     )
     defaults.update(overrides)
     return ReasonerConfig(**defaults)

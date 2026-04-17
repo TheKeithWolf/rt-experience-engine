@@ -51,10 +51,11 @@ def sketch_deps(default_config: MasterConfig) -> SketchDependencies:
     rules = BoosterRules(
         default_config.boosters, default_config.board, default_config.symbols
     )
+    lc = default_config.landing_criteria
     criteria = {
-        "W": WildBridgeCriterion(default_config.board),
-        "R": RocketArmCriterion(rules, default_config.board),
-        "B": BombArmCriterion(rules, default_config.board),
+        "W": WildBridgeCriterion(default_config.board, lc),
+        "R": RocketArmCriterion(rules, default_config.board, lc),
+        "B": BombArmCriterion(rules, default_config.board, lc),
         "LB": LightballArmCriterion(default_config.board),
         "SLB": LightballArmCriterion(default_config.board),
     }

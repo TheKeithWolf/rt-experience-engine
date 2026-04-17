@@ -104,6 +104,7 @@ def build_default_registry(
         boundary_analyzer, centipayout_multiplier=config.centipayout.multiplier,
         max_seed_retries=config.solvers.max_seed_retries,
         multi_seed_threshold=config.solvers.multi_seed_threshold,
+        reasoner_config=config.reasoner,
         multi_seed_count=config.solvers.multi_seed_count,
     )
     seed_planner = SeedPlanner(forward_sim, config.board, config.symbols)
@@ -119,15 +120,19 @@ def build_default_registry(
     # refill pool; aggregating with `min` makes the worse score dominate so
     # both constraints must hold.
     landing_criteria = {
-        "W": WildBridgeCriterion(config.board),
+        "W": WildBridgeCriterion(config.board, config.landing_criteria),
         "R": CompositeCriterion(
             (
-                RocketArmCriterion(booster_rules, config.board),
+                RocketArmCriterion(
+                    booster_rules, config.board, config.landing_criteria,
+                ),
                 ArmFeasibilityCriterion(config.board),
             ),
             aggregate=min,
         ),
-        "B": BombArmCriterion(booster_rules, config.board),
+        "B": BombArmCriterion(
+            booster_rules, config.board, config.landing_criteria,
+        ),
         "LB": LightballArmCriterion(config.board),
         "SLB": LightballArmCriterion(config.board),
     }

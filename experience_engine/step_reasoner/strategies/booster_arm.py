@@ -17,7 +17,7 @@ from ...board_filler.propagators import (
 from ...config.schema import MasterConfig
 from ...planning.region_constraint import region_for_step
 from ...primitives.board import Position, orthogonal_neighbors
-from ...primitives.symbols import Symbol, SymbolTier
+from ...primitives.symbols import Symbol, tier_of
 from ..context import BoardContext, DormantBooster
 from ..evaluators import ChainEvaluator
 from ..intent import StepIntent, StepType
@@ -34,6 +34,7 @@ from ..services.utility_scorer import ScoringContext
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
 from ...variance.hints import VarianceHints
+from ..services.constraint_helpers import build_spawn_cap_propagator
 
 
 class BoosterArmStrategy:
@@ -85,6 +86,24 @@ class BoosterArmStrategy:
         # Boundary analysis for merge-aware placement
         boundary = self._cluster_builder.analyze_boundary(context)
 
+        # A1: Cheap pre-check — abort before find_positions when the
+        # refill geometry around the booster cannot support any arming
+        # cluster. The probe uses a synthetic test cluster (per the doc),
+        # which is a strict lower bound on real placement score because
+        # find_positions chooses the cluster shape optimally. We therefore
+        # gate on probe == 0.0 only (true geometric impossibility); the
+        # post-placement check still enforces the full threshold once the
+        # real cluster exists. This earlier reject saves the find_positions
+        # search on doomed targets without false-positive rejecting
+        # placements that would have succeeded.
+        probe_score = self._probe_landing_viability(context, target_booster)
+        if probe_score == 0.0:
+            raise ValueError(
+                f"Pre-placement landing probe for "
+                f"{target_booster.booster_type} found no viable refill "
+                f"geometry (score 0.0)"
+            )
+
         # Scan for survivor components adjacent to the dormant booster —
         # these existing groups can contribute to the arming cluster
         adjacent_survivors = self._booster_adjacent_survivors(booster_pos, boundary)
@@ -92,7 +111,7 @@ class BoosterArmStrategy:
         # Build affinity scores: base 1.0 + per-cell bonus from config
         # Counteracts the merge-safety penalty for symbols that can arm
         # the booster with fewer new cells
-        affinity_per_cell = self._config.reasoner.survivor_affinity_per_cell
+        affinity_per_cell = self._config.booster_arm.survivor_affinity_per_cell
         affinity_scores: dict[Symbol, float] = {
             sym: 1.0 + count * affinity_per_cell
             for sym, count in adjacent_survivors.items()
@@ -117,7 +136,11 @@ class BoosterArmStrategy:
             boundary=boundary, planned_size=cluster_size,
             affinity_scores=affinity_scores,
         )
-        cluster_tier = SymbolTier.ANY# SymbolTier.LOW if cluster_symbol.value <= 4 else SymbolTier.HIGH
+        # Tier of the chosen arm-cluster symbol — drives expected_cluster_tier
+        # in the StepIntent so downstream WFC honors the symbol's pay group.
+        # Sourced from SymbolConfig (low_tier / high_tier lists) so the
+        # boundary moves with the paytable rather than a hardcoded ordinal.
+        cluster_tier = tier_of(cluster_symbol, self._config.symbols)
 
         # Exploit survivors adjacent to the booster — they reduce new cells needed.
         # Avoid otherwise (no useful survivors to leverage).
@@ -147,26 +170,33 @@ class BoosterArmStrategy:
         )
         cluster_positions = result.planned_positions
 
-        # Plan chain arrangement if this booster can initiate a chain
+        # A6: Always run the forward simulation when there are positions to
+        # arm. This unblocks plan_arm_seeds for non-chain rocket/bomb/lb/slb
+        # arcs, which previously skipped seed planning and over-constrained
+        # the WFC refill on the next cascade step.
+        hypothetical = self._forward_sim.build_hypothetical(
+            context.board,
+            {pos: cluster_symbol for pos in cluster_positions},
+        )
+        settle_result = self._forward_sim.simulate_explosion(
+            hypothetical, cluster_positions,
+        )
+
+        # Per-step exclusions applied to seed planning regardless of chain —
+        # arm seeds must not merge into the arming cluster.
+        exclusions = build_cluster_exclusions(
+            [(frozenset(cluster_positions), cluster_symbol)],
+            self._config.board,
+        )
+
         strategic_cells: dict[Position, Symbol] = {}
         reserve_zone: frozenset[Position] | None = None
-        if self._needs_chain(target_booster, progress, signature):
-            hypothetical = self._forward_sim.build_hypothetical(
-                context.board,
-                {pos: cluster_symbol for pos in cluster_positions},
-            )
-            settle_result = self._forward_sim.simulate_explosion(
-                hypothetical, cluster_positions,
-            )
+        utility_scores: dict[Position, float] | None = None
 
-            # Score the arming cluster's own secondary spawn viability — if it's
-            # large enough to spawn a booster, verify the landing won't obstruct
-            # the chain sequence. A score of 0.0 means ArmFeasibilityCriterion's
-            # BFS flood-fill found no reachable post-settle empty region near
-            # the landing — no subsequent cluster can form there no matter how
-            # many times we retry the seed. Raise so the outer retry selects a
-            # different cluster placement rather than burning retries on a
-            # geometrically impossible continuation.
+        if self._needs_chain(target_booster, progress, signature):
+            # Chain-only: post-placement landing-score check (defense in
+            # depth — even a probe-passing booster can land on a placement
+            # whose specific shape blocks the continuation cluster).
             _ctx, landing_score = self._landing_eval.evaluate_and_score(
                 frozenset(cluster_positions), hypothetical,
                 target_booster.booster_type,
@@ -178,15 +208,9 @@ class BoosterArmStrategy:
                     f"continuation cluster"
                 )
 
-            # Prevent arm seeds from merging into the arming cluster
-            exclusions = build_cluster_exclusions(
-                [(frozenset(cluster_positions), cluster_symbol)],
-                self._config.board,
-            )
-
-            # Compute utility scores for arm seed placement — gravity alignment
-            # and booster adjacency steer seeds toward the arming zone
-            utility_scores: dict[Position, float] | None = None
+            # Chain-only: utility scoring for seed selection. Gravity
+            # alignment + booster adjacency steer seeds toward the arming
+            # zone, but only chain steps need this extra signal.
             if self._spatial:
                 demand = DemandSpec(
                     centroid=booster_pos,
@@ -207,6 +231,11 @@ class BoosterArmStrategy:
                     list(settle_result.empty_positions), scoring_ctx,
                 )
 
+        # A6: Always plan arm seeds when refill space exists. Empty
+        # settle_result.empty_positions short-circuits inside the planner
+        # (returns {}), preserving the prior non-chain behavior in that
+        # degenerate case.
+        if settle_result.empty_positions:
             strategic_cells = self._seed_planner.plan_arm_seeds(
                 booster_pos, settle_result, variance, self._rng,
                 exclusions=exclusions,
@@ -228,6 +257,14 @@ class BoosterArmStrategy:
             wfc_propagators=[
                 NoSpecialSymbolPropagator(self._config.symbols),
                 NoClusterPropagator(self._config.board.min_cluster_size),
+                # Budget-aware spawn cap — prevents the arm cluster's noise
+                # fill from forming an additional over-budget booster-spawning
+                # component (wild-aware through active_wilds).
+                build_spawn_cap_propagator(
+                    self._cluster_builder._spawn_eval,  # type: ignore[attr-defined]
+                    progress,
+                    wild_positions=frozenset(progress.active_wilds),
+                ),
                 # Prevent WFC from placing the arm-cluster symbol adjacent to
                 # the constrained cluster cells — without this, strays merge
                 # into the planned cluster and distort its shape so it no
@@ -247,6 +284,66 @@ class BoosterArmStrategy:
             is_terminal=False,
             reserve_zone=reserve_zone,
         )
+
+    def _probe_landing_viability(
+        self,
+        context: BoardContext,
+        target_booster: DormantBooster,
+    ) -> float:
+        """A1: Cheap pre-check — score the landing of a synthetic test cluster
+        placed at the booster's neighbor cells.
+
+        Reuses the same forward simulation + landing evaluator as the
+        post-placement check, so the early reject path applies the same
+        scoring rule. Returns 0.0 when the booster lacks even
+        min_cluster_size adjacent empties — geometrically impossible to arm.
+        """
+        booster_pos = target_booster.position
+        min_size = self._config.board.min_cluster_size
+        # Candidate cells = booster's empty neighbors plus their empty
+        # neighbors (BFS one ring out). Mirrors the area where any real
+        # arming cluster will end up living.
+        empty_set = frozenset(context.empty_cells)
+        first_ring = [
+            p for p in orthogonal_neighbors(booster_pos, self._config.board)
+            if p in empty_set
+        ]
+        if not first_ring:
+            return 0.0
+        test_positions: list[Position] = []
+        seen: set[Position] = set()
+        for seed in first_ring:
+            if seed in seen:
+                continue
+            seen.add(seed)
+            test_positions.append(seed)
+            if len(test_positions) >= min_size:
+                break
+            for nbr in orthogonal_neighbors(seed, self._config.board):
+                if nbr in empty_set and nbr not in seen and nbr != booster_pos:
+                    seen.add(nbr)
+                    test_positions.append(nbr)
+                    if len(test_positions) >= min_size:
+                        break
+            if len(test_positions) >= min_size:
+                break
+        if len(test_positions) < min_size:
+            return 0.0
+        # The landing evaluator only inspects geometry of the post-explosion
+        # refill — the symbol identity doesn't affect the score, so we use
+        # the first standard symbol as a stable placeholder.
+        placeholder = next(iter(self._config.symbols.standard))
+        placeholder_symbol = Symbol[placeholder]
+        hypothetical = self._forward_sim.build_hypothetical(
+            context.board,
+            {pos: placeholder_symbol for pos in test_positions},
+        )
+        _ctx, score = self._landing_eval.evaluate_and_score(
+            frozenset(test_positions),
+            hypothetical,
+            target_booster.booster_type,
+        )
+        return score
 
     def _select_booster_to_arm(
         self,

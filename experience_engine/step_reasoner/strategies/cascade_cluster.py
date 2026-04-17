@@ -19,7 +19,7 @@ from ...board_filler.propagators import (
     NoSpecialSymbolPropagator,
 )
 from ...config.schema import MasterConfig
-from ...primitives.board import Position
+from ...primitives.board import Position, orthogonal_neighbors
 from ...primitives.cluster_detection import detect_clusters
 from ...primitives.symbols import Symbol, SymbolTier, symbols_in_tier
 from ..context import BoardContext
@@ -36,7 +36,9 @@ from ..services.spatial_context import StepSpatialContext
 from ..services.utility_scorer import ScoringContext
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
+from ...planning.region_constraint import landing_for_step
 from ...variance.hints import VarianceHints
+from ..services.constraint_helpers import build_spawn_cap_propagator
 
 
 class CascadeClusterStrategy:
@@ -100,6 +102,14 @@ class CascadeClusterStrategy:
             boundary, target_size, progress, signature, variance, tier,
         )
 
+        # Dormant-booster arming suppression — when the archetype requires
+        # a specific booster type to stay dormant on the terminal board
+        # (e.g. wild_rocket_tease), forbid the cascade cluster from landing
+        # on or adjacent to that booster's position. Clusters adjacent to
+        # a dormant booster would arm it during transition, violating the
+        # `dormant R not found on terminal board` constraint.
+        avoid_positions = self._dormant_avoidance_zone(progress, signature)
+
         # Try each symbol with its appropriate merge policy until one succeeds
         result: ClusterPositionResult | None = None
         cluster_symbol: Symbol | None = None
@@ -112,6 +122,7 @@ class CascadeClusterStrategy:
                 result = self._cluster_builder.find_positions(
                     context, target_size, self._rng, variance,
                     symbol=symbol, boundary=boundary, merge_policy=policy,
+                    avoid_positions=avoid_positions,
                 )
             except ValueError:
                 continue
@@ -179,6 +190,18 @@ class CascadeClusterStrategy:
 
         constrained = {pos: cluster_symbol for pos in result.planned_positions}
 
+        # Atlas-derived landing for THIS cascade step's booster, keyed by
+        # cluster_index=0 (single-cluster cascade step). When the atlas
+        # produced PhaseGuidance with a booster_landing for this phase,
+        # propagate it so post-gravity placement matches the armable cell
+        # AtlasQuery validated; None falls through to centroid-distance logic.
+        atlas_landing = landing_for_step(progress.guidance, progress.steps_completed)
+        predicted_landings = (
+            {0: atlas_landing}
+            if atlas_landing is not None and booster_type
+            else None
+        )
+
         return StepIntent(
             step_type=StepType.CASCADE_CLUSTER,
             constrained_cells=constrained,
@@ -192,6 +215,20 @@ class CascadeClusterStrategy:
             wfc_propagators=[
                 NoSpecialSymbolPropagator(self._config.symbols),
                 NoClusterPropagator(self._config.board.min_cluster_size),
+                # Budget-aware spawn cap — prevents WFC from forming components
+                # whose size would spawn a booster with zero remaining budget.
+                # Wild-aware so wild-bridged merges count toward projected size.
+                # committed_spawns accounts for the CSP-planned spawn on this
+                # step so WFC cannot create an ADDITIONAL component that would
+                # push the actual spawn count over the signature's max.
+                build_spawn_cap_propagator(
+                    self._spawn_eval,
+                    progress,
+                    wild_positions=frozenset(progress.active_wilds),
+                    committed_spawns=(
+                        {booster_type: 1} if booster_type else None
+                    ),
+                ),
                 # Defense-in-depth: prevent same-symbol survivors at boundary
                 ClusterBoundaryPropagator(
                     frozenset(result.planned_positions),
@@ -206,6 +243,7 @@ class CascadeClusterStrategy:
             planned_explosion=frozenset(result.planned_positions),
             is_terminal=False,
             reserve_zone=reserve_zone,
+            predicted_landings=predicted_landings,
         )
 
     # -- Helpers -----------------------------------------------------------
@@ -224,6 +262,36 @@ class CascadeClusterStrategy:
         if signature.symbol_tier_per_step:
             return signature.symbol_tier_per_step.get(progress.steps_completed)
         return None
+
+    def _dormant_avoidance_zone(
+        self,
+        progress: ProgressTracker,
+        signature: ArchetypeSignature,
+    ) -> frozenset[Position]:
+        """Positions off-limits because arming them would consume a dormant.
+
+        For archetypes whose signature lists a booster type in
+        `dormant_boosters_on_terminal`, each dormant booster of that type
+        on the current board contributes its position plus orthogonal
+        neighbors to the exclusion zone. The ClusterBuilder then refuses
+        to place cluster cells inside this zone, preserving the dormant
+        for the terminal board check.
+
+        Returns an empty frozenset when no dormant-preservation constraint
+        applies (zero cost for unrelated archetypes).
+        """
+        preserved_types = signature.dormant_boosters_on_terminal
+        if not preserved_types:
+            return frozenset()
+        zone: set[Position] = set()
+        for dormant in progress.dormant_boosters:
+            if dormant.booster_type not in preserved_types:
+                continue
+            zone.add(dormant.position)
+            zone.update(orthogonal_neighbors(
+                dormant.position, self._config.board,
+            ))
+        return frozenset(zone)
 
     def _rank_symbols(
         self,

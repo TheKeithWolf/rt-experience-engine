@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from ..config.schema import MasterConfig
 from ..primitives.board import Position
@@ -56,10 +56,6 @@ class DiagnosticsReport:
     freespin_trigger_rate: float
     # Fraction of population that reaches the win cap
     wincap_hit_rate: float
-    # RL Archive health — empty by default for backward compatibility
-    archive_health: tuple = ()
-    # Per-generator-tier instance counts: "static", "cascade", "rl_archive"
-    generation_source_distribution: dict[str, int] = field(default_factory=dict)
 
 
 class DiagnosticsEngine:

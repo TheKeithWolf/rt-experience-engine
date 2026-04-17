@@ -35,7 +35,7 @@ from ..services.spatial_context import StepSpatialContext
 from ..services.utility_scorer import ScoringContext
 from ...archetypes.registry import ArchetypeSignature
 from ...pipeline.protocols import Range
-from ...planning.region_constraint import region_for_step
+from ...planning.region_constraint import landing_for_step, region_for_step
 from ...variance.hints import VarianceHints
 
 
@@ -210,9 +210,17 @@ class InitialWildBridgeStrategy:
         )
         constrained.update(nm_result.constrained_cells)
 
+        # CSP has committed to spawning these boosters this step (pinned
+        # clusters will spawn them during transition); subtract from budget
+        # so WFC cannot add more booster-spawning components.
+        committed_spawns: dict[str, int] = {}
+        for btype in expected_spawns:
+            committed_spawns[btype] = committed_spawns.get(btype, 0) + 1
         propagators = self._select_propagators(
             cluster_groups=cluster_groups,
             near_miss_groups=nm_result.groups or None,
+            progress=progress,
+            committed_spawns=committed_spawns,
         )
 
         return StepIntent(
@@ -239,6 +247,14 @@ class InitialWildBridgeStrategy:
             # as same-symbol, preventing WFC from forming groups that merge
             # through it into booster-spawning clusters
             predicted_wild_positions=frozenset({booster_landing}),
+            # Atlas landing takes precedence when available; landing_eval's
+            # local prediction is the Tier-2 fallback. Both derive from the
+            # same ForwardSimulator physics, so they agree when the atlas
+            # matches this cluster's column profile.
+            predicted_landings={
+                0: landing_for_step(progress.guidance, progress.steps_completed)
+                or booster_landing
+            },
         )
 
     def _all_sizes_spawn_wilds(self, size_ranges: tuple[Range, ...]) -> bool:
@@ -280,6 +296,8 @@ class InitialWildBridgeStrategy:
         self,
         cluster_groups: list[tuple[frozenset[Position], Symbol]] | None = None,
         near_miss_groups: list[NearMissGroup] | None = None,
+        progress: ProgressTracker | None = None,
+        committed_spawns: dict[str, int] | None = None,
     ) -> list:
         """Select WFC propagators for noise fill around the cluster(s).
 
@@ -287,13 +305,23 @@ class InitialWildBridgeStrategy:
         ClusterBoundaryPropagator per cluster group forbids the cluster symbol
         at adjacent cells. MaxComponentPropagator/NearMissAwareDeadPropagator
         caps fill components below near-miss size.
+        BoosterSpawnCapPropagator (when progress is available) prevents WFC
+        from creating components that would spawn an out-of-budget booster.
         """
         from ...board_filler.propagators import MaxComponentPropagator
+        from ..services.constraint_helpers import build_spawn_cap_propagator
 
         propagators = [
             NoSpecialSymbolPropagator(self._config.symbols),
             NoClusterPropagator(self._config.board.min_cluster_size),
         ]
+        if progress is not None:
+            propagators.append(build_spawn_cap_propagator(
+                self._spawn_eval,
+                progress,
+                wild_positions=frozenset(progress.active_wilds),
+                committed_spawns=committed_spawns,
+            ))
         if cluster_groups:
             for positions, symbol in cluster_groups:
                 propagators.append(ClusterBoundaryPropagator(

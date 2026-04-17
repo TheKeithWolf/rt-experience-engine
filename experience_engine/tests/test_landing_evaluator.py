@@ -105,10 +105,11 @@ def evaluator(
     default_config: MasterConfig,
 ) -> BoosterLandingEvaluator:
     """Evaluator with all 5 criteria registered."""
+    lc = default_config.landing_criteria
     criteria = {
-        "W": WildBridgeCriterion(default_config.board),
-        "R": RocketArmCriterion(booster_rules, default_config.board),
-        "B": BombArmCriterion(booster_rules, default_config.board),
+        "W": WildBridgeCriterion(default_config.board, lc),
+        "R": RocketArmCriterion(booster_rules, default_config.board, lc),
+        "B": BombArmCriterion(booster_rules, default_config.board, lc),
         "LB": LightballArmCriterion(default_config.board),
         "SLB": LightballArmCriterion(default_config.board),
     }
@@ -133,7 +134,9 @@ class TestWildBridgeCriterion:
 
     def test_zero_adjacent_returns_zero(self, default_config: MasterConfig) -> None:
         """No adjacent refill → score 0.0 (bridge impossible)."""
-        criterion = WildBridgeCriterion(default_config.board)
+        criterion = WildBridgeCriterion(
+            default_config.board, default_config.landing_criteria,
+        )
         ctx = LandingContext(
             booster_type="W",
             cluster_positions=frozenset({Position(3, 3)}),
@@ -151,7 +154,9 @@ class TestWildBridgeCriterion:
 
     def test_enough_adjacent_scores_high(self, default_config: MasterConfig) -> None:
         """4+ adjacent refill → score >= 0.8 (bridge viable)."""
-        criterion = WildBridgeCriterion(default_config.board)
+        criterion = WildBridgeCriterion(
+            default_config.board, default_config.landing_criteria,
+        )
         # min_cluster_size is 5 for royal_tumble, so needed = 4
         adjacent = tuple(
             Position(r, 0) for r in range(4)
@@ -173,7 +178,9 @@ class TestWildBridgeCriterion:
 
     def test_multi_column_bonus(self, default_config: MasterConfig) -> None:
         """Adjacent cells in 2+ columns get the side bonus."""
-        criterion = WildBridgeCriterion(default_config.board)
+        criterion = WildBridgeCriterion(
+            default_config.board, default_config.landing_criteria,
+        )
         # Two adjacent cells in different columns
         adjacent = (Position(2, 0), Position(4, 0))
         ctx = LandingContext(
@@ -218,7 +225,10 @@ class TestRocketArmCriterion:
         self, booster_rules: BoosterRules, default_config: MasterConfig,
     ) -> None:
         """Landing at reel=0 (board edge) scores lower than center."""
-        criterion = RocketArmCriterion(booster_rules, default_config.board)
+        criterion = RocketArmCriterion(
+            booster_rules, default_config.board,
+            default_config.landing_criteria,
+        )
         # Edge landing with some adjacent cells
         edge_adjacent = tuple(Position(r, 0) for r in range(3))
         ctx_edge = LandingContext(
@@ -257,7 +267,9 @@ class TestRocketArmCriterion:
     ) -> None:
         """Desired "H" but actual "V" → heavy penalty."""
         criterion = RocketArmCriterion(
-            booster_rules, default_config.board, desired_orientation="H",
+            booster_rules, default_config.board,
+            default_config.landing_criteria,
+            desired_orientation="H",
         )
         adjacent = tuple(Position(r, 0) for r in range(4))
         ctx = LandingContext(
@@ -288,7 +300,10 @@ class TestBombArmCriterion:
         self, booster_rules: BoosterRules, default_config: MasterConfig,
     ) -> None:
         """Landing at (0,0) clips the blast to ~4 cells → low blast score."""
-        criterion = BombArmCriterion(booster_rules, default_config.board)
+        criterion = BombArmCriterion(
+            booster_rules, default_config.board,
+            default_config.landing_criteria,
+        )
         adjacent = tuple(Position(r, 0) for r in range(3))
 
         ctx_corner = LandingContext(

@@ -7,6 +7,7 @@ hardcoded literals — all values originate from this schema, loaded from YAML.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 
@@ -589,16 +590,30 @@ class ReasonerConfig:
     max_strategic_cells_per_step: int
     # How many gravity-settle steps ahead strategies may chain-simulate (1 = immediate only)
     lookahead_depth: int
-    # Per-survivor-cell weight bonus during booster arm symbol selection —
-    # counteracts merge-safety penalty for symbols with adjacent survivors
-    survivor_affinity_per_cell: float
-    # Minimum acceptable landing score for a spawn-cluster candidate. Below
-    # this, BoosterSetupStrategy retries with reshape bias to find a landing
-    # whose refill zone can fit the next step's arming cluster.
-    arm_feasibility_threshold: float
-    # Maximum reshape attempts after the first cluster placement fails the
-    # arm_feasibility_threshold. Each attempt re-rolls via compute_reshape_bias.
-    arm_feasibility_retry_budget: int
+    # Cluster scoring weights (B6) — drive ClusterBuilder._merge_score and
+    # ._payout_score. Hoisted here from in-method literals so per-game tuning
+    # of symbol selection bias requires no code edits.
+    # Score returned when a candidate symbol's merged size is acceptable —
+    # moderate penalty vs the safe path so the planner prefers safer choices.
+    cluster_merge_acceptable_score: float
+    # Score returned when a candidate's merge would exceed the allowable size —
+    # heavy penalty so position restriction is the only thing that may save it.
+    cluster_merge_overflow_score: float
+    # Triggers under-target branch when estimated_per_step <
+    # target_per_step * <this>. Lower → more permissive on slow pacing.
+    cluster_payout_undertarget_trigger: float
+    # Triggers over-ceiling branch when estimated_per_step >
+    # ceiling_per_step * <this>. Higher → more permissive on fast pacing.
+    cluster_payout_overceiling_trigger: float
+    # Floor for the under-target / over-ceiling normalized ratio score.
+    # Prevents a single bad estimate from collapsing the symbol's weight to 0.
+    cluster_payout_score_floor: float
+    # Smoothing factor applied to (1 - distance) when on track.
+    # Lower → flatter curve around the target, higher → steeper falloff.
+    cluster_payout_ontrack_smoothing: float
+    # Floor on the on-track regime so even a far-from-target symbol retains
+    # some selection probability vs. dropping out entirely.
+    cluster_payout_ontrack_floor: float
     # Tier-2 trajectory planner tuning. None disables the planner fallback;
     # the atlas (Tier 1) and unguided generation (Tier 3) remain available.
     trajectory: TrajectoryConfig | None = None
@@ -637,17 +652,137 @@ class ReasonerConfig:
             raise ConfigValidationError(
                 "reasoner.lookahead_depth", "must be >= 1"
             )
+        # Cluster scoring fields — bounded ranges keep WFC weight products
+        # numerically stable; the ranges below mirror the literals removed
+        # from cluster_builder.py.
+        for field_name in (
+            "cluster_merge_acceptable_score",
+            "cluster_merge_overflow_score",
+            "cluster_payout_score_floor",
+            "cluster_payout_ontrack_floor",
+        ):
+            value = getattr(self, field_name)
+            if not (0.0 <= value <= 1.0):
+                raise ConfigValidationError(
+                    f"reasoner.{field_name}",
+                    f"must be in [0.0, 1.0], got {value}",
+                )
+        for field_name in (
+            "cluster_payout_undertarget_trigger",
+            "cluster_payout_overceiling_trigger",
+            "cluster_payout_ontrack_smoothing",
+        ):
+            value = getattr(self, field_name)
+            # Trigger multipliers and smoothing factors are positive scalars;
+            # 10.0 is a generous upper bound that catches typos (e.g. 50)
+            # without constraining legitimate aggressive tuning.
+            if not (0.0 < value <= 10.0):
+                raise ConfigValidationError(
+                    f"reasoner.{field_name}",
+                    f"must be in (0.0, 10.0], got {value}",
+                )
+
+
+# ---------------------------------------------------------------------------
+# Booster Arm — strategy-specific tuning (A7)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class BoosterArmConfig:
+    """Tuning parameters specific to BoosterArmStrategy.
+
+    Lifted out of ReasonerConfig so booster-arm concerns live alongside
+    the strategy that owns them rather than mixing with reasoner-wide
+    pacing/computation parameters.
+    """
+
+    # Per-survivor-cell weight bonus during booster arm symbol selection —
+    # counteracts the merge-safety penalty for symbols whose existing
+    # adjacent cells could contribute to the arming cluster.
+    survivor_affinity_per_cell: float
+    # Minimum acceptable landing score for an arming-cluster candidate.
+    # Below this, BoosterSetupStrategy retries with reshape bias to find a
+    # landing whose refill zone can fit the next step's arming cluster.
+    arm_feasibility_threshold: float
+    # Maximum reshape attempts after the initial cluster fails the threshold.
+    # Each attempt re-rolls via compute_reshape_bias.
+    arm_feasibility_retry_budget: int
+
+    def __post_init__(self) -> None:
         if self.survivor_affinity_per_cell < 0.0:
             raise ConfigValidationError(
-                "reasoner.survivor_affinity_per_cell", "must be >= 0.0"
+                "booster_arm.survivor_affinity_per_cell", "must be >= 0.0"
             )
         if not (0.0 <= self.arm_feasibility_threshold <= 1.0):
             raise ConfigValidationError(
-                "reasoner.arm_feasibility_threshold", "must be in [0.0, 1.0]"
+                "booster_arm.arm_feasibility_threshold",
+                "must be in [0.0, 1.0]",
             )
         if self.arm_feasibility_retry_budget < 0:
             raise ConfigValidationError(
-                "reasoner.arm_feasibility_retry_budget", "must be >= 0"
+                "booster_arm.arm_feasibility_retry_budget", "must be >= 0"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Landing Criteria — per-criterion scoring weights (A4)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class LandingCriteriaConfig:
+    """Tuning weights for landing criterion scoring.
+
+    Hoisted from class constants on WildBridgeCriterion / RocketArmCriterion /
+    BombArmCriterion so the value surface is configurable per-game without
+    code edits. Cross-field validation enforces the rocket and bomb composite
+    score weight pairs sum to 1.0, since they're convex combinations of
+    arm vs chain/blast components.
+    """
+
+    # WildBridgeCriterion: bonus when refill spans 2+ columns — improves
+    # bridge geometry by encouraging two-sided rather than one-sided clusters.
+    wild_bridge_multi_column_bonus: float
+    # RocketArmCriterion: convex combination of arm feasibility and chain geometry.
+    rocket_arm_weight: float
+    rocket_chain_weight: float
+    # RocketArmCriterion: penalty multiplier when cluster orientation
+    # doesn't match the desired firing direction.
+    rocket_orientation_penalty: float
+    # BombArmCriterion: convex combination of arm feasibility and blast coverage.
+    bomb_arm_weight: float
+    bomb_blast_weight: float
+
+    def __post_init__(self) -> None:
+        # All fields are weights/multipliers applied to scores already
+        # clipped to [0.0, 1.0] — the field bound mirrors the score bound.
+        for field_name in (
+            "wild_bridge_multi_column_bonus",
+            "rocket_arm_weight", "rocket_chain_weight",
+            "rocket_orientation_penalty",
+            "bomb_arm_weight", "bomb_blast_weight",
+        ):
+            value = getattr(self, field_name)
+            if not (0.0 <= value <= 1.0):
+                raise ConfigValidationError(
+                    f"landing_criteria.{field_name}",
+                    f"must be in [0.0, 1.0], got {value}",
+                )
+        # Convex-combination invariants: paired weights must sum to 1.0.
+        # math.isclose with default tolerances absorbs YAML float-parse drift
+        # (~1e-15) without permitting genuine misconfigurations like 0.6+0.5.
+        if not math.isclose(
+            self.rocket_arm_weight + self.rocket_chain_weight, 1.0,
+        ):
+            raise ConfigValidationError(
+                "landing_criteria",
+                "rocket_arm_weight + rocket_chain_weight must equal 1.0",
+            )
+        if not math.isclose(
+            self.bomb_arm_weight + self.bomb_blast_weight, 1.0,
+        ):
+            raise ConfigValidationError(
+                "landing_criteria",
+                "bomb_arm_weight + bomb_blast_weight must equal 1.0",
             )
 
 
@@ -815,323 +950,6 @@ class SpatialIntelligenceConfig:
 
 
 # ---------------------------------------------------------------------------
-# RL Archive — sub-configs for MAP-Elites archive system
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True, slots=True)
-class DescriptorConfig:
-    """Behavioral descriptor binning for MAP-Elites archive cells.
-
-    Controls how cascade trajectories are discretized into behavioral niches.
-    Spatial bins divide the board into regions; payout bins divide the arc's
-    payout range into equal-width buckets.
-    """
-
-    spatial_col_bins: int
-    spatial_row_bins: int
-    payout_bins: int
-
-    def __post_init__(self) -> None:
-        if self.spatial_col_bins < 1:
-            raise ConfigValidationError(
-                "rl_archive.descriptor.spatial_col_bins", "must be >= 1"
-            )
-        if self.spatial_row_bins < 1:
-            raise ConfigValidationError(
-                "rl_archive.descriptor.spatial_row_bins", "must be >= 1"
-            )
-        if self.payout_bins < 1:
-            raise ConfigValidationError(
-                "rl_archive.descriptor.payout_bins", "must be >= 1"
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class QualityConfig:
-    """Weights for multi-component quality scoring in the MAP-Elites archive.
-
-    Each weight controls how much that quality dimension contributes to the
-    overall score. Setting a weight to 0.0 disables that component.
-    Negative weights are forbidden.
-    """
-
-    payout_centering_weight: float
-    escalation_weight: float
-    cluster_size_weight: float
-    productivity_weight: float
-    multiplier_engagement_weight: float
-
-    def __post_init__(self) -> None:
-        for field_name in (
-            "payout_centering_weight",
-            "escalation_weight",
-            "cluster_size_weight",
-            "productivity_weight",
-            "multiplier_engagement_weight",
-        ):
-            if getattr(self, field_name) < 0.0:
-                raise ConfigValidationError(
-                    f"rl_archive.quality.{field_name}", "must be >= 0.0"
-                )
-
-
-@dataclass(frozen=True, slots=True)
-class EnvironmentConfig:
-    """Cascade environment parameters for RL training episodes.
-
-    Controls episode length, reward shaping for invalid/terminal steps,
-    and how feasibility and progress contribute to the per-step reward.
-    """
-
-    max_episode_steps: int
-    invalid_step_penalty: float
-    completion_bonus: float
-    failure_penalty: float
-    feasibility_weight: float
-    progress_weight: float
-
-    def __post_init__(self) -> None:
-        if self.max_episode_steps < 1:
-            raise ConfigValidationError(
-                "rl_archive.environment.max_episode_steps", "must be >= 1"
-            )
-        if not (0.0 <= self.feasibility_weight <= 1.0):
-            raise ConfigValidationError(
-                "rl_archive.environment.feasibility_weight",
-                "must be in [0.0, 1.0]",
-            )
-        if not (0.0 <= self.progress_weight <= 1.0):
-            raise ConfigValidationError(
-                "rl_archive.environment.progress_weight",
-                "must be in [0.0, 1.0]",
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class RewardConfig:
-    """Weights for the phase-aware reward function.
-
-    Each weight controls how much that reward component contributes.
-    Field-iteration reward: the reward computer iterates over phase constraint
-    fields and adds the corresponding weight when the step result matches.
-    """
-
-    phase_match_reward: float
-    cluster_match_reward: float
-    spawn_match_reward: float
-    fire_match_reward: float
-    wild_behavior_match_reward: float
-    feasibility_empty_cell_weight: float
-    feasibility_adjacency_weight: float
-
-    def __post_init__(self) -> None:
-        for field_name in (
-            "feasibility_empty_cell_weight",
-            "feasibility_adjacency_weight",
-        ):
-            val = getattr(self, field_name)
-            if not (0.0 <= val <= 1.0):
-                raise ConfigValidationError(
-                    f"rl_archive.reward.{field_name}",
-                    f"must be in [0.0, 1.0], got {val}",
-                )
-
-
-@dataclass(frozen=True, slots=True)
-class PolicyConfig:
-    """Neural network architecture parameters for the cascade policy.
-
-    All spatial dimensions are derived from BoardConfig at construction
-    time — this config controls layer counts, widths, and embedding sizes.
-    """
-
-    # Extra non-symbol board channels (multiplier, empty, wild, booster, etc.)
-    board_channels: int
-    cnn_filters: int
-    cnn_layers: int
-    trunk_hidden: int
-    archetype_embedding_dim: int
-    phase_embedding_dim: int
-    entropy_coefficient: float
-
-    def __post_init__(self) -> None:
-        if self.board_channels < 1:
-            raise ConfigValidationError(
-                "rl_archive.policy.board_channels", "must be >= 1"
-            )
-        if self.cnn_filters < 1:
-            raise ConfigValidationError(
-                "rl_archive.policy.cnn_filters", "must be >= 1"
-            )
-        if self.cnn_layers < 1:
-            raise ConfigValidationError(
-                "rl_archive.policy.cnn_layers", "must be >= 1"
-            )
-        if self.trunk_hidden < 1:
-            raise ConfigValidationError(
-                "rl_archive.policy.trunk_hidden", "must be >= 1"
-            )
-        if self.entropy_coefficient < 0.0:
-            raise ConfigValidationError(
-                "rl_archive.policy.entropy_coefficient", "must be >= 0.0"
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class CurriculumPhase:
-    """One phase in the training curriculum schedule.
-
-    Difficulty filters control which archetypes are eligible:
-    "standard" = cascade_depth 2-3, "hard" = depth >= 4, "all" = depth >= 2.
-    """
-
-    episode_threshold: int
-    difficulty_filter: str
-
-    def __post_init__(self) -> None:
-        if self.episode_threshold < 0:
-            raise ConfigValidationError(
-                "rl_archive.training.curriculum.episode_threshold",
-                "must be >= 0",
-            )
-        if self.difficulty_filter not in ("standard", "hard", "all"):
-            raise ConfigValidationError(
-                "rl_archive.training.curriculum.difficulty_filter",
-                f"must be 'standard', 'hard', or 'all', got '{self.difficulty_filter}'",
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class ReporterConfig:
-    """Console reporter tuning parameters for training progress display."""
-
-    completion_rolling_window: int
-    completion_trend_buckets: int
-    plateau_warn_threshold: int
-    condense_above_completion: float
-    report_every_n_batches: int
-
-    def __post_init__(self) -> None:
-        if self.completion_rolling_window < 1:
-            raise ConfigValidationError(
-                "rl_archive.training.reporter.completion_rolling_window",
-                "must be >= 1",
-            )
-        if self.report_every_n_batches < 1:
-            raise ConfigValidationError(
-                "rl_archive.training.reporter.report_every_n_batches",
-                "must be >= 1",
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class TrainingConfig:
-    """PPO training hyperparameters and schedule.
-
-    Controls learning rate, GAE parameters, batch sizing, curriculum
-    scheduling, and reporter verbosity.
-    """
-
-    learning_rate: float
-    gamma: float
-    gae_lambda: float
-    clip_epsilon: float
-    epochs_per_batch: int
-    batch_size: int
-    max_training_episodes: int
-    checkpoint_interval: int
-    imitation_epochs: int
-    imitation_batch_size: int
-    curriculum: tuple[CurriculumPhase, ...]
-    reporter: ReporterConfig
-
-    def __post_init__(self) -> None:
-        if self.learning_rate <= 0.0:
-            raise ConfigValidationError(
-                "rl_archive.training.learning_rate", "must be > 0.0"
-            )
-        if not (0.0 <= self.gamma <= 1.0):
-            raise ConfigValidationError(
-                "rl_archive.training.gamma", "must be in [0.0, 1.0]"
-            )
-        if self.batch_size < 1:
-            raise ConfigValidationError(
-                "rl_archive.training.batch_size", "must be >= 1"
-            )
-        if self.max_training_episodes < 1:
-            raise ConfigValidationError(
-                "rl_archive.training.max_training_episodes", "must be >= 1"
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class GeneratorConfig:
-    """Configuration for the RL archive production generator.
-
-    Controls where trained archives are stored and the minimum coverage
-    level before a warning is emitted during population generation.
-    """
-
-    archive_dir: str
-    min_coverage_warn: float
-
-    def __post_init__(self) -> None:
-        if not (0.0 <= self.min_coverage_warn <= 1.0):
-            raise ConfigValidationError(
-                "rl_archive.generator.min_coverage_warn",
-                "must be in [0.0, 1.0]",
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class RLArchiveDiagnosticsConfig:
-    """Thresholds for archive health reporting.
-
-    Coverage below warn_threshold → "warn" status.
-    Coverage below fail_threshold → "fail" status.
-    """
-
-    coverage_warn_threshold: float
-    coverage_fail_threshold: float
-
-    def __post_init__(self) -> None:
-        if not (0.0 <= self.coverage_warn_threshold <= 1.0):
-            raise ConfigValidationError(
-                "rl_archive.diagnostics.coverage_warn_threshold",
-                "must be in [0.0, 1.0]",
-            )
-        if not (0.0 <= self.coverage_fail_threshold <= 1.0):
-            raise ConfigValidationError(
-                "rl_archive.diagnostics.coverage_fail_threshold",
-                "must be in [0.0, 1.0]",
-            )
-        if self.coverage_fail_threshold > self.coverage_warn_threshold:
-            raise ConfigValidationError(
-                "rl_archive.diagnostics",
-                "coverage_fail_threshold must be <= coverage_warn_threshold",
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class RLArchiveConfig:
-    """Top-level RL archive configuration aggregating all sub-configs.
-
-    Each sub-config is optional (None) until its implementation phase lands.
-    The entire rl_archive section is optional in default.yaml — omitting it
-    preserves full backward compatibility.
-    """
-
-    descriptor: DescriptorConfig | None = None
-    quality: QualityConfig | None = None
-    environment: EnvironmentConfig | None = None
-    reward: RewardConfig | None = None
-    policy: PolicyConfig | None = None
-    training: TrainingConfig | None = None
-    generator: GeneratorConfig | None = None
-    diagnostics: RLArchiveDiagnosticsConfig | None = None
-
-
-# ---------------------------------------------------------------------------
 # Reel Strip
 # ---------------------------------------------------------------------------
 
@@ -1179,14 +997,16 @@ class MasterConfig:
     anticipation: AnticipationConfig
     # Step 5 thresholds + Step 8 computation caps for step reasoning
     reasoner: ReasonerConfig
+    # BoosterArmStrategy tuning — required, holds survivor affinity + arm feasibility
+    booster_arm: BoosterArmConfig
+    # Per-criterion landing-score weights (wild bridge, rocket arm, bomb arm)
+    landing_criteria: LandingCriteriaConfig
     # Phase 14 — optional to preserve backward compatibility with existing tests
     output: OutputConfig | None = None
     # Gravity-aware WFC tuning — optional to preserve backward compatibility
     gravity_wfc: GravityWfcConfig | None = None
     # Spatial intelligence — foresight for cascade seed placement
     spatial_intelligence: SpatialIntelligenceConfig | None = None
-    # RL archive — optional MAP-Elites archive system for deep cascade generation
-    rl_archive: RLArchiveConfig | None = None
     # Refill strategy tuning — optional to preserve backward compatibility
     refill: RefillConfig | None = None
     # Reel strip — optional; present when the `reel` archetype family is in use

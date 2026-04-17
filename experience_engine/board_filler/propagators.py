@@ -478,6 +478,14 @@ class NearMissAwareDeadPropagator:
 
     The component cap uses the shared _propagate_cluster_constraint helper (DRY).
     All isolation maps are precomputed at init for O(1) lookup during propagation.
+
+    `forbidden_near_miss_symbols` — when set, additionally forbids any
+    connected component of size `near_miss_size` made of these symbols.
+    Used when the archetype's `terminal_near_misses.symbol_tier` restricts
+    terminal near-misses to a specific tier; symbols outside that tier are
+    passed in here so the dead fill cannot create wrong-tier near-miss
+    groups that the validator would reject with
+    `terminal NM symbol LX is low, expected high`.
     """
 
     def __init__(
@@ -485,9 +493,17 @@ class NearMissAwareDeadPropagator:
         max_component: int,
         protected_groups: list[NearMissGroup],
         board_config: BoardConfig,
+        forbidden_near_miss_symbols: frozenset[Symbol] | None = None,
     ) -> None:
         # Component cap threshold — components of max_component+1 or more are blocked
         self._threshold = max_component + 1
+        # Near-miss size derived from board config — same value validator uses
+        # when detecting terminal near-miss groups (min_cluster_size - 1)
+        self._near_miss_size = board_config.min_cluster_size - 1
+        # Symbols whose near-miss-sized components must be blocked (wrong tier)
+        self._forbidden_nm_symbols: frozenset[Symbol] = (
+            forbidden_near_miss_symbols or frozenset()
+        )
         # 1-hop border: positions directly adjacent to any NM group → forbidden symbols
         self._forbidden: dict[Position, set[Symbol]] = {}
         # 2-hop border: positions two hops from any NM group → symbols that could bridge
@@ -556,6 +572,29 @@ class NearMissAwareDeadPropagator:
                         if cells[neighbor].remove(placed_sym):
                             changed.add(neighbor)
 
+        # Wrong-tier near-miss prevention — strip forbidden-tier symbols from
+        # uncollapsed neighbors when their placement would form a near-miss-
+        # sized component. The near-miss group the archetype DID place was
+        # pinned via constrained_cells; this guards against the dead fill
+        # creating an ADDITIONAL near-miss of the wrong tier.
+        if self._forbidden_nm_symbols:
+            for neighbor in orthogonal_neighbors(position, board_config):
+                if neighbor not in cells or cells[neighbor].collapsed:
+                    continue
+                to_remove: list[Symbol] = []
+                for sym in cells[neighbor].possibilities:
+                    if sym not in self._forbidden_nm_symbols:
+                        continue
+                    projected = max_component_size(
+                        board, sym, board_config,
+                        extra=frozenset({neighbor}),
+                    )
+                    if projected == self._near_miss_size:
+                        to_remove.append(sym)
+                for sym in to_remove:
+                    if cells[neighbor].remove(sym):
+                        changed.add(neighbor)
+
         return changed
 
     def validate_placement(
@@ -586,6 +625,16 @@ class NearMissAwareDeadPropagator:
                 for neighbor in orthogonal_neighbors(position, board_config):
                     if neighbor in border_for_sym and board.get(neighbor) is sym:
                         return False
+        # Wrong-tier near-miss block — any post-collapse component of exactly
+        # near_miss_size formed by a forbidden-tier symbol violates the
+        # archetype's terminal tier constraint and must be rejected here
+        # (defense-in-depth; propagate() already pruned most cases).
+        if self._forbidden_nm_symbols:
+            sym = board.get(position)
+            if sym in self._forbidden_nm_symbols:
+                size = max_component_size(board, sym, board_config)
+                if size == self._near_miss_size:
+                    return False
         return True
 
 

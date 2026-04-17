@@ -87,6 +87,11 @@ class StepIntent:
     # count wilds as same-symbol during virtual BFS, preventing WFC from
     # building groups that merge through wilds into booster-spawning clusters.
     predicted_wild_positions: frozenset[Position] | None = None
+    # Atlas-derived booster landing positions keyed by source_cluster_index.
+    # Forwarded into BoosterRules.resolve_collision so post-gravity booster
+    # placements match what AtlasQuery already validated as armable.
+    # None falls through to centroid-distance placement (backward compatible).
+    predicted_landings: dict[int, Position] | None = None
 
     @classmethod
     def passthrough(cls) -> StepIntent:

@@ -15,7 +15,7 @@ from ...board_filler.propagators import (
     NoClusterPropagator, NoSpecialSymbolPropagator,
 )
 from ...config.schema import MasterConfig
-from ...planning.region_constraint import region_for_step
+from ...planning.region_constraint import landing_for_step, region_for_step
 from ...primitives.board import Position
 from ...primitives.symbols import Symbol, SymbolTier
 from ..context import BoardContext
@@ -159,10 +159,31 @@ class InitialClusterStrategy:
         constrained.update(nm_result.constrained_cells)
 
         # Propagators for WFC noise fill — one ClusterBoundaryPropagator per cluster
-        # group prevents same-symbol survivors at each cluster's edge
+        # group prevents same-symbol survivors at each cluster's edge.
+        # Pre-count CSP-committed spawns (CSP pins clusters before WFC but the
+        # spawn is recorded only during transition) so the spawn cap blocks
+        # WFC from creating ADDITIONAL booster-spawning components beyond
+        # what the strategy has already committed to.
+        committed_spawns: dict[str, int] = {}
+        for btype in expected_spawns:
+            committed_spawns[btype] = committed_spawns.get(btype, 0) + 1
         propagators = self._select_propagators(
             cluster_groups=cluster_groups,
             near_miss_groups=nm_result.groups or None,
+            progress=progress,
+            committed_spawns=committed_spawns,
+        )
+
+        # Atlas-derived landing — AtlasQuery already validated armable adjacency
+        # for this phase's booster. The first cluster (index 0) is the booster
+        # spawner in single-cluster archetypes; propagate to BoosterRules via
+        # StepIntent.predicted_landings so post-gravity placement matches the
+        # position the atlas filtered for arming-cell count.
+        atlas_landing = landing_for_step(progress.guidance, progress.steps_completed)
+        predicted_landings = (
+            {0: atlas_landing}
+            if atlas_landing is not None and expected_spawns
+            else None
         )
 
         return StepIntent(
@@ -187,6 +208,7 @@ class InitialClusterStrategy:
             is_terminal=False,
             reserve_zone=reserve_zone,
             predicted_wild_positions=predicted_wild_positions,
+            predicted_landings=predicted_landings,
         )
 
     def _plan_strategic_seeds(
@@ -378,6 +400,8 @@ class InitialClusterStrategy:
         self,
         cluster_groups: list[tuple[frozenset[Position], Symbol]] | None = None,
         near_miss_groups: list[NearMissGroup] | None = None,
+        progress: ProgressTracker | None = None,
+        committed_spawns: dict[str, int] | None = None,
     ) -> list:
         """Select WFC propagators for noise fill around the cluster(s).
 
@@ -389,13 +413,28 @@ class InitialClusterStrategy:
         MaxComponentPropagator caps fill components below near-miss size.
         When near-miss groups are present, NearMissAwareDeadPropagator
         replaces it — same component cap plus isolation at group borders.
+        When `progress` is supplied, BoosterSpawnCapPropagator is appended
+        so WFC cannot form 7-8 (or larger) components that would spawn an
+        out-of-budget booster — guards against the `booster_spawn(W)=N
+        outside [X]` failure class.
         """
         from ...board_filler.propagators import MaxComponentPropagator
+        from ..services.constraint_helpers import build_spawn_cap_propagator
 
         propagators = [
             NoSpecialSymbolPropagator(self._config.symbols),
             NoClusterPropagator(self._config.board.min_cluster_size),
         ]
+        # Signature-aware spawn cap — only when progress is available so the
+        # propagator can read live budget state. Always safe: no-op when
+        # every budget has remaining headroom.
+        if progress is not None:
+            propagators.append(build_spawn_cap_propagator(
+                self._spawn_eval,
+                progress,
+                wild_positions=frozenset(progress.active_wilds),
+                committed_spawns=committed_spawns,
+            ))
         # Isolate each cluster's boundary — WFC cannot place the cluster symbol
         # adjacent to cluster positions, preventing merge on the next cascade step
         if cluster_groups:

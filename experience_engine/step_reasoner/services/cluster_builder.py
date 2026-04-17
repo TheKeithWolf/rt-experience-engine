@@ -18,7 +18,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Callable
 
-from ...config.schema import BoardConfig, SymbolConfig
+from ...config.schema import BoardConfig, ReasonerConfig, SymbolConfig
 from ...pipeline.protocols import Range, RangeFloat
 from ...planning.region_constraint import RegionConstraint
 from ...primitives.board import Position, orthogonal_neighbors
@@ -118,6 +118,7 @@ class ClusterBuilder:
         "_spawn_eval", "_payout_eval", "_board_config", "_symbol_config",
         "_boundary_analyzer", "_centipayout_multiplier", "_max_seed_retries",
         "_multi_seed_threshold", "_multi_seed_count", "_region_falloff",
+        "_reasoner_config", "_per_step_floor",
     )
 
     def __init__(
@@ -129,7 +130,16 @@ class ClusterBuilder:
         boundary_analyzer: BoundaryAnalyzer | None = None,
         centipayout_multiplier: int = 100,
         max_seed_retries: int = 5,
-        multi_seed_threshold: int = 11,
+        *,
+        # Required: cluster size at/above which BFS grows from multiple seeds.
+        # Sourced from SolverConfig.multi_seed_threshold (validated >= 2).
+        # No default — every construction site must pass it explicitly so that
+        # the value remains traceable to a single configured source of truth.
+        multi_seed_threshold: int,
+        # Required (B6): cluster scoring weights live on ReasonerConfig.
+        # No default — production wires from MasterConfig, tests pass
+        # default_config.reasoner explicitly.
+        reasoner_config: ReasonerConfig,
         multi_seed_count: int = 3,
         region_falloff: float = 1.0,
     ) -> None:
@@ -156,6 +166,12 @@ class ClusterBuilder:
         if not (0.0 < region_falloff <= 1.0):
             raise ValueError("region_falloff must be in (0.0, 1.0]")
         self._region_falloff = region_falloff
+        self._reasoner_config = reasoner_config
+        # Divide-by-zero guard for per-step payout normalization. Derived from
+        # the centipayout precision: 1/multiplier is the smallest representable
+        # bet-multiplier increment, so any positive target_per_step >= this
+        # value is a real signal, not float noise. Pure game-rule derivation.
+        self._per_step_floor = 1.0 / centipayout_multiplier
 
     # -- Public convenience -------------------------------------------------
 
@@ -295,9 +311,9 @@ class ClusterBuilder:
             merged_size = planned_size + boundary.acceptable_merge_symbols[symbol]
             if self._merged_size_acceptable(merged_size, progress, signature):
                 # Merge within range — moderate penalty to prefer safe symbols
-                return 0.6
+                return self._reasoner_config.cluster_merge_acceptable_score
             # Merge exceeds range — heavy penalty (position restriction may save it)
-            return 0.1
+            return self._reasoner_config.cluster_merge_overflow_score
         # Not in safe or risky — fallback to full weight
         return 1.0
 
@@ -331,20 +347,31 @@ class ClusterBuilder:
         target_per_step = remaining_budget.min_val / steps_left if remaining_budget.min_val > 0 else 0
         ceiling_per_step = remaining_budget.max_val / steps_left if remaining_budget.max_val > 0 else float("inf")
 
-        if target_per_step > 0 and estimated_mult < target_per_step * 0.5:
+        rcfg = self._reasoner_config
+        floor = rcfg.cluster_payout_score_floor
+        if (
+            target_per_step > 0
+            and estimated_mult < target_per_step * rcfg.cluster_payout_undertarget_trigger
+        ):
             # Too cheap — we'll fall short of minimum payout
-            ratio = estimated_mult / max(target_per_step, 0.01)
-            return max(0.05, ratio)
+            ratio = estimated_mult / max(target_per_step, self._per_step_floor)
+            return max(floor, ratio)
 
-        if ceiling_per_step < float("inf") and estimated_mult > ceiling_per_step * 1.5:
+        if (
+            ceiling_per_step < float("inf")
+            and estimated_mult > ceiling_per_step * rcfg.cluster_payout_overceiling_trigger
+        ):
             # Too expensive — we'll overshoot maximum payout
-            ratio = ceiling_per_step / max(estimated_mult, 0.01)
-            return max(0.05, ratio)
+            ratio = ceiling_per_step / max(estimated_mult, self._per_step_floor)
+            return max(floor, ratio)
 
         # On track — slight preference for closer to target
         if target_per_step > 0:
             distance = abs(estimated_mult - target_per_step) / target_per_step
-            return max(0.3, 1.0 - distance * 0.5)
+            return max(
+                rcfg.cluster_payout_ontrack_floor,
+                1.0 - distance * rcfg.cluster_payout_ontrack_smoothing,
+            )
         return 1.0
 
     # -- Position selection -------------------------------------------------

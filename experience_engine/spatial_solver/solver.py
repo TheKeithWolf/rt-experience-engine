@@ -16,6 +16,7 @@ from typing import Any
 from ..config.schema import MasterConfig
 from ..primitives.board import Position, orthogonal_neighbors
 from ..primitives.symbols import Symbol
+from ..primitives.wild_behaviors import WILD_BEHAVIORS
 from .constraints import (
     ClusterConnectivity,
     ClusterNonOverlap,
@@ -251,37 +252,36 @@ class CSPSpatialSolver:
     ) -> Position | None:
         """Find a position for a wild symbol based on its behavior.
 
-        spawn: adjacent to a cluster (ideally at centroid — simplified to near-cluster).
-        bridge: adjacent to 2+ different clusters (connects disconnected groups).
-        idle: not adjacent to 2+ clusters (doesn't accidentally bridge).
+        B2: dispatch is via the WILD_BEHAVIORS registry — one entry per
+        behavior. Adding a new behavior requires only registering a new
+        WildPlacementBehavior; no edits here.
         """
         available = self._available_positions(context)
         if not available:
             return None
+        try:
+            wild_behavior = WILD_BEHAVIORS[behavior]
+        except KeyError as exc:
+            raise KeyError(
+                f"Unknown wild placement behavior: {behavior!r}. "
+                f"Register a WildPlacementBehavior in primitives.wild_behaviors."
+            ) from exc
 
-        if behavior == "spawn":
-            # Place near the first cluster — adjacent to maximize centroid-like placement
-            candidates = self._positions_adjacent_to_clusters(available, context, min_clusters=1)
-            if not candidates:
-                # Fallback: any available position
-                candidates = available
-            return _weighted_choice(candidates, spatial_bias, rng)
+        # Adjacency filter: solver-private helper exposed as a callback so
+        # behaviors don't need access to SolverContext internals.
+        def _filter(
+            positions: list[Position],
+            min_clusters: int,
+            max_clusters: int | None,
+        ) -> list[Position]:
+            return self._positions_adjacent_to_clusters(
+                positions, context,
+                min_clusters=min_clusters, max_clusters=max_clusters,
+            )
 
-        elif behavior == "bridge":
-            # Must be adjacent to 2+ distinct clusters — the bridge constraint validates
-            candidates = self._positions_adjacent_to_clusters(available, context, min_clusters=2)
-            if not candidates:
-                return None
-            return _weighted_choice(candidates, spatial_bias, rng)
-
-        elif behavior == "idle":
-            # Must NOT be adjacent to 2+ clusters — idle constraint validates
-            candidates = self._positions_adjacent_to_clusters(available, context, max_clusters=1)
-            if not candidates:
-                candidates = available
-            return _weighted_choice(candidates, spatial_bias, rng)
-
-        return None
+        return wild_behavior.select_position(
+            available, context, _filter, _weighted_choice, spatial_bias, rng,
+        )
 
     def _positions_adjacent_to_clusters(
         self,

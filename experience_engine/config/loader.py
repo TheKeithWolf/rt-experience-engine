@@ -16,25 +16,17 @@ from .schema import (
     AtlasConfig,
     AtlasDepthBand,
     BoardConfig,
+    BoosterArmConfig,
     BoosterConfig,
     CentipayoutConfig,
     ConfigValidationError,
-    DescriptorConfig,
     DiagnosticTarget,
-    CurriculumPhase,
-    EnvironmentConfig,
-    GeneratorConfig,
-    PolicyConfig,
-    QualityConfig,
-    RLArchiveDiagnosticsConfig,
-    ReporterConfig,
-    RewardConfig,
-    TrainingConfig,
     DiagnosticsConfig,
     FreespinConfig,
     GravityConfig,
     GravityWfcConfig,
     GridMultiplierConfig,
+    LandingCriteriaConfig,
     MasterConfig,
     OutputConfig,
     PaytableConfig,
@@ -42,7 +34,6 @@ from .schema import (
     PopulationConfig,
     RefillConfig,
     ReelStripConfig,
-    RLArchiveConfig,
     ReasonerConfig,
     SolverConfig,
     SpatialIntelligenceConfig,
@@ -87,11 +78,12 @@ def load_config(path: Path) -> MasterConfig:
     anticipation = _build_anticipation(raw.get("anticipation", {}))
     output = _build_output(raw.get("output"))
     reasoner = _build_reasoner(raw.get("reasoner", {}))
+    booster_arm = _build_booster_arm(raw.get("booster_arm", {}))
+    landing_criteria = _build_landing_criteria(raw.get("landing_criteria", {}))
     gravity_wfc = _build_gravity_wfc(raw.get("gravity_wfc"))
     spatial_intelligence = _build_spatial_intelligence(
         raw.get("spatial_intelligence"),
     )
-    rl_archive = _build_rl_archive(raw.get("rl_archive"))
     refill = _build_refill(raw.get("refill"))
     reel_strip = _build_reel_strip(raw.get("reel_strip"))
     atlas = _build_atlas(raw.get("atlas"))
@@ -116,10 +108,11 @@ def load_config(path: Path) -> MasterConfig:
         symbols=symbols,
         anticipation=anticipation,
         reasoner=reasoner,
+        booster_arm=booster_arm,
+        landing_criteria=landing_criteria,
         output=output,
         gravity_wfc=gravity_wfc,
         spatial_intelligence=spatial_intelligence,
-        rl_archive=rl_archive,
         refill=refill,
         reel_strip=reel_strip,
         atlas=atlas,
@@ -355,6 +348,9 @@ def _build_reasoner(data: dict[str, Any]) -> ReasonerConfig:
     """Build ReasonerConfig from YAML data.
 
     Required section — all step reasoner thresholds and computation caps.
+    Booster-arm fields (survivor_affinity_per_cell, arm_feasibility_*) live
+    on BoosterArmConfig as of A7; cluster scoring weights are required as
+    of B6.
     """
     return ReasonerConfig(
         payout_low_fraction=float(
@@ -378,18 +374,91 @@ def _build_reasoner(data: dict[str, Any]) -> ReasonerConfig:
         lookahead_depth=int(
             _require(data, "lookahead_depth", "reasoner.lookahead_depth")
         ),
+        cluster_merge_acceptable_score=float(
+            _require(data, "cluster_merge_acceptable_score",
+                     "reasoner.cluster_merge_acceptable_score")
+        ),
+        cluster_merge_overflow_score=float(
+            _require(data, "cluster_merge_overflow_score",
+                     "reasoner.cluster_merge_overflow_score")
+        ),
+        cluster_payout_undertarget_trigger=float(
+            _require(data, "cluster_payout_undertarget_trigger",
+                     "reasoner.cluster_payout_undertarget_trigger")
+        ),
+        cluster_payout_overceiling_trigger=float(
+            _require(data, "cluster_payout_overceiling_trigger",
+                     "reasoner.cluster_payout_overceiling_trigger")
+        ),
+        cluster_payout_score_floor=float(
+            _require(data, "cluster_payout_score_floor",
+                     "reasoner.cluster_payout_score_floor")
+        ),
+        cluster_payout_ontrack_smoothing=float(
+            _require(data, "cluster_payout_ontrack_smoothing",
+                     "reasoner.cluster_payout_ontrack_smoothing")
+        ),
+        cluster_payout_ontrack_floor=float(
+            _require(data, "cluster_payout_ontrack_floor",
+                     "reasoner.cluster_payout_ontrack_floor")
+        ),
+        trajectory=_build_trajectory(data.get("trajectory")),
+    )
+
+
+def _build_booster_arm(data: dict[str, Any]) -> BoosterArmConfig:
+    """Build BoosterArmConfig from YAML data (A7).
+
+    Required section — fields previously on reasoner.* moved here so the
+    booster-arm-specific tuning surface is cohesive.
+    """
+    return BoosterArmConfig(
         survivor_affinity_per_cell=float(
-            data.get("survivor_affinity_per_cell", 2.0)
+            _require(data, "survivor_affinity_per_cell",
+                     "booster_arm.survivor_affinity_per_cell")
         ),
         arm_feasibility_threshold=float(
             _require(data, "arm_feasibility_threshold",
-                     "reasoner.arm_feasibility_threshold")
+                     "booster_arm.arm_feasibility_threshold")
         ),
         arm_feasibility_retry_budget=int(
             _require(data, "arm_feasibility_retry_budget",
-                     "reasoner.arm_feasibility_retry_budget")
+                     "booster_arm.arm_feasibility_retry_budget")
         ),
-        trajectory=_build_trajectory(data.get("trajectory")),
+    )
+
+
+def _build_landing_criteria(data: dict[str, Any]) -> LandingCriteriaConfig:
+    """Build LandingCriteriaConfig from YAML data (A4).
+
+    Required section — per-criterion scoring weights for wild bridge,
+    rocket arm, and bomb arm criteria.
+    """
+    return LandingCriteriaConfig(
+        wild_bridge_multi_column_bonus=float(
+            _require(data, "wild_bridge_multi_column_bonus",
+                     "landing_criteria.wild_bridge_multi_column_bonus")
+        ),
+        rocket_arm_weight=float(
+            _require(data, "rocket_arm_weight",
+                     "landing_criteria.rocket_arm_weight")
+        ),
+        rocket_chain_weight=float(
+            _require(data, "rocket_chain_weight",
+                     "landing_criteria.rocket_chain_weight")
+        ),
+        rocket_orientation_penalty=float(
+            _require(data, "rocket_orientation_penalty",
+                     "landing_criteria.rocket_orientation_penalty")
+        ),
+        bomb_arm_weight=float(
+            _require(data, "bomb_arm_weight",
+                     "landing_criteria.bomb_arm_weight")
+        ),
+        bomb_blast_weight=float(
+            _require(data, "bomb_blast_weight",
+                     "landing_criteria.bomb_blast_weight")
+        ),
     )
 
 
@@ -575,310 +644,6 @@ def _build_spatial_intelligence(
                      f"{prefix}.reserve_suppression_multiplier"),
         ),
     )
-
-
-# ---------------------------------------------------------------------------
-# RL Archive — optional MAP-Elites archive sub-configs
-# ---------------------------------------------------------------------------
-
-
-def _build_rl_archive(data: dict[str, Any] | None) -> RLArchiveConfig | None:
-    """Build RLArchiveConfig from YAML data, or None if section is absent.
-
-    Optional section — configs without rl_archive get None, which disables
-    the MAP-Elites archive system (cascade generator used as fallback).
-    """
-    if data is None:
-        return None
-
-    descriptor = _build_rl_descriptor(data.get("descriptor"))
-    quality = _build_rl_quality(data.get("quality"))
-    environment = _build_rl_environment(data.get("environment"))
-    reward = _build_rl_reward(data.get("reward"))
-    policy = _build_rl_policy(data.get("policy"))
-    training = _build_rl_training(data.get("training"))
-    generator = _build_rl_generator(data.get("generator"))
-    rl_diagnostics = _build_rl_diagnostics(data.get("diagnostics"))
-
-    return RLArchiveConfig(
-        descriptor=descriptor,
-        quality=quality,
-        environment=environment,
-        reward=reward,
-        policy=policy,
-        training=training,
-        generator=generator,
-        diagnostics=rl_diagnostics,
-    )
-
-
-def _build_rl_descriptor(data: dict[str, Any] | None) -> DescriptorConfig | None:
-    """Build DescriptorConfig for behavioral descriptor binning."""
-    if data is None:
-        return None
-    return DescriptorConfig(
-        spatial_col_bins=int(
-            _require(data, "spatial_col_bins", "rl_archive.descriptor.spatial_col_bins")
-        ),
-        spatial_row_bins=int(
-            _require(data, "spatial_row_bins", "rl_archive.descriptor.spatial_row_bins")
-        ),
-        payout_bins=int(
-            _require(data, "payout_bins", "rl_archive.descriptor.payout_bins")
-        ),
-    )
-
-
-def _build_rl_quality(data: dict[str, Any] | None) -> QualityConfig | None:
-    """Build QualityConfig for MAP-Elites quality scoring weights."""
-    if data is None:
-        return None
-    return QualityConfig(
-        payout_centering_weight=float(
-            _require(data, "payout_centering_weight",
-                     "rl_archive.quality.payout_centering_weight")
-        ),
-        escalation_weight=float(
-            _require(data, "escalation_weight",
-                     "rl_archive.quality.escalation_weight")
-        ),
-        cluster_size_weight=float(
-            _require(data, "cluster_size_weight",
-                     "rl_archive.quality.cluster_size_weight")
-        ),
-        productivity_weight=float(
-            _require(data, "productivity_weight",
-                     "rl_archive.quality.productivity_weight")
-        ),
-        multiplier_engagement_weight=float(
-            _require(data, "multiplier_engagement_weight",
-                     "rl_archive.quality.multiplier_engagement_weight")
-        ),
-    )
-
-
-def _build_rl_environment(data: dict[str, Any] | None) -> EnvironmentConfig | None:
-    """Build EnvironmentConfig for cascade RL training episodes."""
-    if data is None:
-        return None
-    return EnvironmentConfig(
-        max_episode_steps=int(
-            _require(data, "max_episode_steps",
-                     "rl_archive.environment.max_episode_steps")
-        ),
-        invalid_step_penalty=float(
-            _require(data, "invalid_step_penalty",
-                     "rl_archive.environment.invalid_step_penalty")
-        ),
-        completion_bonus=float(
-            _require(data, "completion_bonus",
-                     "rl_archive.environment.completion_bonus")
-        ),
-        failure_penalty=float(
-            _require(data, "failure_penalty",
-                     "rl_archive.environment.failure_penalty")
-        ),
-        feasibility_weight=float(
-            _require(data, "feasibility_weight",
-                     "rl_archive.environment.feasibility_weight")
-        ),
-        progress_weight=float(
-            _require(data, "progress_weight",
-                     "rl_archive.environment.progress_weight")
-        ),
-    )
-
-
-def _build_rl_reward(data: dict[str, Any] | None) -> RewardConfig | None:
-    """Build RewardConfig for phase-aware reward shaping."""
-    if data is None:
-        return None
-    return RewardConfig(
-        phase_match_reward=float(
-            _require(data, "phase_match_reward",
-                     "rl_archive.reward.phase_match_reward")
-        ),
-        cluster_match_reward=float(
-            _require(data, "cluster_match_reward",
-                     "rl_archive.reward.cluster_match_reward")
-        ),
-        spawn_match_reward=float(
-            _require(data, "spawn_match_reward",
-                     "rl_archive.reward.spawn_match_reward")
-        ),
-        fire_match_reward=float(
-            _require(data, "fire_match_reward",
-                     "rl_archive.reward.fire_match_reward")
-        ),
-        wild_behavior_match_reward=float(
-            _require(data, "wild_behavior_match_reward",
-                     "rl_archive.reward.wild_behavior_match_reward")
-        ),
-        feasibility_empty_cell_weight=float(
-            _require(data, "feasibility_empty_cell_weight",
-                     "rl_archive.reward.feasibility_empty_cell_weight")
-        ),
-        feasibility_adjacency_weight=float(
-            _require(data, "feasibility_adjacency_weight",
-                     "rl_archive.reward.feasibility_adjacency_weight")
-        ),
-    )
-
-
-def _build_rl_policy(data: dict[str, Any] | None) -> PolicyConfig | None:
-    """Build PolicyConfig for the cascade policy network architecture."""
-    if data is None:
-        return None
-    return PolicyConfig(
-        board_channels=int(
-            _require(data, "board_channels", "rl_archive.policy.board_channels")
-        ),
-        cnn_filters=int(
-            _require(data, "cnn_filters", "rl_archive.policy.cnn_filters")
-        ),
-        cnn_layers=int(
-            _require(data, "cnn_layers", "rl_archive.policy.cnn_layers")
-        ),
-        trunk_hidden=int(
-            _require(data, "trunk_hidden", "rl_archive.policy.trunk_hidden")
-        ),
-        archetype_embedding_dim=int(
-            _require(data, "archetype_embedding_dim",
-                     "rl_archive.policy.archetype_embedding_dim")
-        ),
-        phase_embedding_dim=int(
-            _require(data, "phase_embedding_dim",
-                     "rl_archive.policy.phase_embedding_dim")
-        ),
-        entropy_coefficient=float(
-            _require(data, "entropy_coefficient",
-                     "rl_archive.policy.entropy_coefficient")
-        ),
-    )
-
-
-def _build_rl_training(data: dict[str, Any] | None) -> TrainingConfig | None:
-    """Build TrainingConfig for PPO training hyperparameters and schedule."""
-    if data is None:
-        return None
-
-    # Build curriculum phases
-    curriculum_raw = _require(data, "curriculum", "rl_archive.training.curriculum")
-    if not isinstance(curriculum_raw, dict):
-        raise ConfigValidationError(
-            "rl_archive.training.curriculum", "must be a mapping"
-        )
-    phases_raw = _require(
-        curriculum_raw, "phases", "rl_archive.training.curriculum.phases"
-    )
-    curriculum_phases = tuple(
-        CurriculumPhase(
-            episode_threshold=int(p.get("episode_threshold", 0)),
-            difficulty_filter=str(p.get("difficulty_filter", "standard")),
-        )
-        for p in phases_raw
-    )
-
-    # Build reporter config
-    reporter_raw = _require(data, "reporter", "rl_archive.training.reporter")
-    reporter = ReporterConfig(
-        completion_rolling_window=int(
-            _require(reporter_raw, "completion_rolling_window",
-                     "rl_archive.training.reporter.completion_rolling_window")
-        ),
-        completion_trend_buckets=int(
-            _require(reporter_raw, "completion_trend_buckets",
-                     "rl_archive.training.reporter.completion_trend_buckets")
-        ),
-        plateau_warn_threshold=int(
-            _require(reporter_raw, "plateau_warn_threshold",
-                     "rl_archive.training.reporter.plateau_warn_threshold")
-        ),
-        condense_above_completion=float(
-            _require(reporter_raw, "condense_above_completion",
-                     "rl_archive.training.reporter.condense_above_completion")
-        ),
-        report_every_n_batches=int(
-            _require(reporter_raw, "report_every_n_batches",
-                     "rl_archive.training.reporter.report_every_n_batches")
-        ),
-    )
-
-    return TrainingConfig(
-        learning_rate=float(
-            _require(data, "learning_rate", "rl_archive.training.learning_rate")
-        ),
-        gamma=float(_require(data, "gamma", "rl_archive.training.gamma")),
-        gae_lambda=float(
-            _require(data, "gae_lambda", "rl_archive.training.gae_lambda")
-        ),
-        clip_epsilon=float(
-            _require(data, "clip_epsilon", "rl_archive.training.clip_epsilon")
-        ),
-        epochs_per_batch=int(
-            _require(data, "epochs_per_batch",
-                     "rl_archive.training.epochs_per_batch")
-        ),
-        batch_size=int(
-            _require(data, "batch_size", "rl_archive.training.batch_size")
-        ),
-        max_training_episodes=int(
-            _require(data, "max_training_episodes",
-                     "rl_archive.training.max_training_episodes")
-        ),
-        checkpoint_interval=int(
-            _require(data, "checkpoint_interval",
-                     "rl_archive.training.checkpoint_interval")
-        ),
-        imitation_epochs=int(
-            _require(data, "imitation_epochs",
-                     "rl_archive.training.imitation_epochs")
-        ),
-        imitation_batch_size=int(
-            _require(data, "imitation_batch_size",
-                     "rl_archive.training.imitation_batch_size")
-        ),
-        curriculum=curriculum_phases,
-        reporter=reporter,
-    )
-
-
-def _build_rl_generator(data: dict[str, Any] | None) -> GeneratorConfig | None:
-    """Build GeneratorConfig for the RL archive production generator."""
-    if data is None:
-        return None
-    return GeneratorConfig(
-        archive_dir=str(
-            _require(data, "archive_dir", "rl_archive.generator.archive_dir")
-        ),
-        min_coverage_warn=float(
-            _require(data, "min_coverage_warn",
-                     "rl_archive.generator.min_coverage_warn")
-        ),
-    )
-
-
-def _build_rl_diagnostics(
-    data: dict[str, Any] | None,
-) -> RLArchiveDiagnosticsConfig | None:
-    """Build RLArchiveDiagnosticsConfig for archive health reporting."""
-    if data is None:
-        return None
-    return RLArchiveDiagnosticsConfig(
-        coverage_warn_threshold=float(
-            _require(data, "coverage_warn_threshold",
-                     "rl_archive.diagnostics.coverage_warn_threshold")
-        ),
-        coverage_fail_threshold=float(
-            _require(data, "coverage_fail_threshold",
-                     "rl_archive.diagnostics.coverage_fail_threshold")
-        ),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Cross-field validators
-# ---------------------------------------------------------------------------
 
 
 def _renormalize_weights(

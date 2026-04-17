@@ -205,6 +205,8 @@ def cluster_builder(
         spawn_evaluator, payout_estimator,
         default_config.board, default_config.symbols,
         boundary_analyzer,
+        multi_seed_threshold=default_config.solvers.multi_seed_threshold,
+        reasoner_config=default_config.reasoner,
     )
 
 
@@ -236,10 +238,11 @@ def landing_evaluator(
     from ..step_reasoner.services.landing_evaluator import BoosterLandingEvaluator
 
     booster_rules = BoosterRules(default_config.boosters, default_config.board, default_config.symbols)
+    lc = default_config.landing_criteria
     criteria = {
-        "W": WildBridgeCriterion(default_config.board),
-        "R": RocketArmCriterion(booster_rules, default_config.board),
-        "B": BombArmCriterion(booster_rules, default_config.board),
+        "W": WildBridgeCriterion(default_config.board, lc),
+        "R": RocketArmCriterion(booster_rules, default_config.board, lc),
+        "B": BombArmCriterion(booster_rules, default_config.board, lc),
         "LB": LightballArmCriterion(default_config.board),
         "SLB": LightballArmCriterion(default_config.board),
     }
