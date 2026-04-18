@@ -48,11 +48,12 @@ from .step_executor import StepExecutor
 from .step_validator import StepValidator, StepValidationFailed
 from .simulator import StepTransitionSimulator
 from ..narrative.transitions import build_transition_rules, try_advance_phase
+from ..board_filler.spawn_cap_propagator import BoosterSpawnCapPropagator
 
 if TYPE_CHECKING:
     from ..boosters.phase_executor import BoosterPhaseExecutor
 
-from ..primitives.cluster_detection import Cluster, detect_clusters, max_component_size
+from ..primitives.cluster_detection import Cluster, detect_clusters
 
 from ..spatial_solver.data_types import BoosterPlacement, SpatialStep
 
@@ -746,33 +747,26 @@ class CascadeInstanceGenerator:
 
         Returns `(board, pos, sym) -> bool` — True when placing `sym` at
         `pos` would NOT form a component large enough to spawn a booster
-        with zero remaining budget. Wild-aware via `progress.active_wilds`
-        so wild-bridged merges count toward the projected size. Mirrors
-        `BoosterSpawnCapPropagator`'s logic for use in the refill path,
-        which runs outside WFC and thus cannot use propagators directly.
-
-        Returning None when no budget is exhausted would save a loop, but
-        the filter is cheap (one BFS per candidate symbol) and keeps the
-        callsite branch-free.
+        with zero remaining budget. Delegates to the same
+        `BoosterSpawnCapPropagator.allows` used by WFC propagation so the
+        refill path and the main-cascade fill enforce identical placement
+        rules — a single source of truth for the budget check.
         """
-        remaining = progress.remaining_booster_spawns()
         wild_positions = (
             frozenset(progress.active_wilds)
             if progress.active_wilds else frozenset()
         )
+        propagator = BoosterSpawnCapPropagator(
+            size_to_booster=lambda size: (
+                sym.name if (sym := self._booster_rules.booster_type_for_size(size))
+                else None
+            ),
+            remaining_spawns=progress.remaining_booster_spawns(),
+            wild_positions=wild_positions,
+        )
+        board_config = self._config.board
 
         def symbol_filter(board: Board, pos: Position, sym: Symbol) -> bool:
-            projected_size = max_component_size(
-                board, sym, self._config.board,
-                extra=frozenset({pos}),
-                wild_positions=wild_positions,
-            )
-            booster_sym = self._booster_rules.booster_type_for_size(projected_size)
-            if booster_sym is None:
-                return True
-            budget = remaining.get(booster_sym.name)
-            if budget is None:
-                return True
-            return budget.max_val > 0
+            return propagator.allows(board, pos, sym, board_config)
 
         return symbol_filter

@@ -248,6 +248,7 @@ def _build_wincap(data: dict[str, Any]) -> WincapConfig:
 
 
 def _build_solvers(data: dict[str, Any]) -> SolverConfig:
+    defaults = SolverConfig.__dataclass_fields__
     return SolverConfig(
         wfc_max_backtracks=_require(data, "wfc_max_backtracks", "solvers.wfc_max_backtracks"),
         wfc_min_symbol_weight=float(
@@ -266,6 +267,26 @@ def _build_solvers(data: dict[str, Any]) -> SolverConfig:
         max_construction_retries=_require(
             data, "max_construction_retries", "solvers.max_construction_retries"
         ),
+        max_validation_retries=int(data.get(
+            "max_validation_retries",
+            defaults["max_validation_retries"].default,
+        )),
+        board_adjacency_max_step=int(data.get(
+            "board_adjacency_max_step",
+            defaults["board_adjacency_max_step"].default,
+        )),
+        max_seed_retries=int(data.get(
+            "max_seed_retries",
+            defaults["max_seed_retries"].default,
+        )),
+        multi_seed_threshold=int(data.get(
+            "multi_seed_threshold",
+            defaults["multi_seed_threshold"].default,
+        )),
+        multi_seed_count=int(data.get(
+            "multi_seed_count",
+            defaults["multi_seed_count"].default,
+        )),
     )
 
 

@@ -167,6 +167,18 @@ class InitialClusterStrategy:
         committed_spawns: dict[str, int] = {}
         for btype in expected_spawns:
             committed_spawns[btype] = committed_spawns.get(btype, 0) + 1
+        # When the current NarrativePhase declares no spawn intent (spawns=None
+        # / empty), saturate every remaining booster-type budget so the
+        # propagator blocks WFC from forming any W/B/R-triggering component
+        # this step. Without this, a phase like wild_late_save.low_cascade
+        # (cluster_sizes=[5,6], spawns=None) permits a secondary 7+ cluster
+        # to form via refill and silently spawn an unwanted W, violating the
+        # arc's total spawn budget.
+        phase = progress.current_phase()
+        phase_allows_spawn = bool(phase.spawns) if phase is not None else True
+        if not phase_allows_spawn:
+            for btype, r in progress.remaining_booster_spawns().items():
+                committed_spawns[btype] = max(committed_spawns.get(btype, 0), r.max_val)
         propagators = self._select_propagators(
             cluster_groups=cluster_groups,
             near_miss_groups=nm_result.groups or None,

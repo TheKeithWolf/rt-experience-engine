@@ -313,6 +313,22 @@ class SolverConfig:
             raise ConfigValidationError("solvers.csp_max_solve_time_ms", "must be >= 1")
         if not (0.0 <= self.asp_rand_freq <= 1.0):
             raise ConfigValidationError("solvers.asp_rand_freq", "must be in [0.0, 1.0]")
+        if self.max_retries_per_instance < 1:
+            raise ConfigValidationError(
+                "solvers.max_retries_per_instance", "must be >= 1"
+            )
+        if self.max_construction_retries < 1:
+            raise ConfigValidationError(
+                "solvers.max_construction_retries", "must be >= 1"
+            )
+        if self.max_validation_retries < 1:
+            raise ConfigValidationError(
+                "solvers.max_validation_retries", "must be >= 1"
+            )
+        if self.board_adjacency_max_step < 0:
+            raise ConfigValidationError(
+                "solvers.board_adjacency_max_step", "must be >= 0"
+            )
         if self.max_seed_retries < 1:
             raise ConfigValidationError("solvers.max_seed_retries", "must be >= 1")
         if self.multi_seed_threshold < 2:

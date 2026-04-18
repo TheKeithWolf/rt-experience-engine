@@ -170,6 +170,24 @@ class BoosterArmStrategy:
         )
         cluster_positions = result.planned_positions
 
+        # Arm contract enforcement: the dormant booster arms only when a
+        # cluster position is orthogonally adjacent. `must_be_adjacent_to`
+        # constrains the BFS seed, but under EXPLOIT/ACCEPT merge policies
+        # the returned planned_positions may be dominated by survivor cells
+        # whose layout loses the adjacency the seed started with. Failing
+        # here raises ValueError which cascade_generator catches for a
+        # fresh instance reroll — cheaper than letting the arm silently
+        # fail and surfacing as booster_fire=0 after validation.
+        booster_neighbours = frozenset(
+            orthogonal_neighbors(booster_pos, self._config.board)
+        )
+        if not (cluster_positions & booster_neighbours):
+            raise ValueError(
+                f"Planned arm cluster for {target_booster.booster_type} at "
+                f"{booster_pos} has no orthogonal-adjacent cell — cluster "
+                f"would not arm the booster"
+            )
+
         # A6: Always run the forward simulation when there are positions to
         # arm. This unblocks plan_arm_seeds for non-chain rocket/bomb/lb/slb
         # arcs, which previously skipped seed planning and over-constrained

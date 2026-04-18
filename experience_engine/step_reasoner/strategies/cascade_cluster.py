@@ -154,6 +154,25 @@ class CascadeClusterStrategy:
         booster_type = self._spawn_eval.booster_for_size(result.total_size)
         expected_spawns = [booster_type] if booster_type else []
 
+        # Per-step spawn authorization: when the current phase declares no
+        # spawn intent (phase.spawns is None/empty), any W/B/R component WFC
+        # accidentally forms beyond the planned cluster must be blocked.
+        # Saturating the propagator's committed budget with the remaining
+        # max for every booster type treats this step as spawn-exhausted
+        # for all types — no new code path, just data the existing
+        # `build_spawn_cap_propagator` helper already understands.
+        phase = progress.current_phase()
+        phase_allows_spawn = bool(phase.spawns) if phase is not None else True
+        if phase_allows_spawn and booster_type:
+            step_committed_spawns: dict[str, int] | None = {booster_type: 1}
+        elif not phase_allows_spawn:
+            step_committed_spawns = {
+                btype: r.max_val
+                for btype, r in progress.remaining_booster_spawns().items()
+            }
+        else:
+            step_committed_spawns = None
+
         # Backward reasoning: seed the next step if not terminal
         strategic_cells: dict[Position, Symbol] = {}
         reserve_zone: frozenset[Position] | None = None
@@ -225,9 +244,7 @@ class CascadeClusterStrategy:
                     self._spawn_eval,
                     progress,
                     wild_positions=frozenset(progress.active_wilds),
-                    committed_spawns=(
-                        {booster_type: 1} if booster_type else None
-                    ),
+                    committed_spawns=step_committed_spawns,
                 ),
                 # Defense-in-depth: prevent same-symbol survivors at boundary
                 ClusterBoundaryPropagator(

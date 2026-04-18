@@ -101,6 +101,25 @@ class BoosterSpawnCapPropagator:
             board, position, sym, board_config,
         )
 
+    def allows(
+        self,
+        board: Board,
+        position: Position,
+        sym: Symbol,
+        board_config,
+    ) -> bool:
+        """Public predicate: True iff placing sym at position is budget-safe.
+
+        Projects the post-placement component via the same BFS the WFC
+        propagator uses, then consults the live remaining-budget map. This
+        is the single source of truth shared between WFC propagation
+        (via `propagate`) and non-WFC refill paths (e.g. ClusterSeekingRefill)
+        so both code paths reject the same placements.
+        """
+        return not self._would_spawn_exhausted_booster(
+            board, position, sym, board_config,
+        )
+
     def _would_spawn_exhausted_booster(
         self,
         board: Board,

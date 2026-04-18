@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from ..config.loader import load_config
-from ..config.schema import ConfigValidationError, MasterConfig, RefillConfig
+from ..config.schema import ConfigValidationError, MasterConfig, RefillConfig, SolverConfig
 
 DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "config" / "default.yaml"
 
@@ -79,6 +79,101 @@ def test_p1_005_config_expands_paytable_entries(default_config: MasterConfig) ->
     assert len(default_config.paytable.entries) == 42
 
 
+def test_solver_config_loads_optional_retry_fields(default_config: MasterConfig) -> None:
+    """Solver tuning fields in default.yaml must override dataclass defaults."""
+    solvers = default_config.solvers
+    assert solvers.max_validation_retries == 250
+    assert solvers.max_seed_retries == 50
+    assert solvers.board_adjacency_max_step == 2
+    assert solvers.multi_seed_threshold == 11
+    assert solvers.multi_seed_count == 3
+
+
+def test_solver_config_honors_yaml_overrides(tmp_path: Path) -> None:
+    """Non-default solver retry and seed values should round-trip from YAML."""
+    with open(DEFAULT_CONFIG_PATH, "r") as fh:
+        config_data = yaml.safe_load(fh)
+
+    config_data["solvers"]["max_validation_retries"] = 7
+    config_data["solvers"]["board_adjacency_max_step"] = 4
+    config_data["solvers"]["max_seed_retries"] = 9
+    config_data["solvers"]["multi_seed_threshold"] = 13
+    config_data["solvers"]["multi_seed_count"] = 5
+
+    config_file = tmp_path / "solver_overrides.yaml"
+    config_file.write_text(yaml.dump(config_data))
+
+    config = load_config(config_file)
+    assert config.solvers.max_validation_retries == 7
+    assert config.solvers.board_adjacency_max_step == 4
+    assert config.solvers.max_seed_retries == 9
+    assert config.solvers.multi_seed_threshold == 13
+    assert config.solvers.multi_seed_count == 5
+
+
+def test_solver_config_uses_defaults_when_optional_fields_missing(tmp_path: Path) -> None:
+    """Older configs without new optional solver fields keep schema defaults."""
+    with open(DEFAULT_CONFIG_PATH, "r") as fh:
+        config_data = yaml.safe_load(fh)
+
+    for key in (
+        "max_validation_retries",
+        "board_adjacency_max_step",
+        "max_seed_retries",
+        "multi_seed_threshold",
+        "multi_seed_count",
+    ):
+        del config_data["solvers"][key]
+
+    config_file = tmp_path / "old_solver_config.yaml"
+    config_file.write_text(yaml.dump(config_data))
+
+    config = load_config(config_file)
+    assert config.solvers.max_validation_retries == 1
+    assert config.solvers.board_adjacency_max_step == 2
+    assert config.solvers.max_seed_retries == 5
+    assert config.solvers.multi_seed_threshold == 11
+    assert config.solvers.multi_seed_count == 3
+
+
+def _valid_solver_config(**overrides: object) -> SolverConfig:
+    data = {
+        "wfc_max_backtracks": 500,
+        "wfc_min_symbol_weight": 0.01,
+        "csp_max_solve_time_ms": 5000,
+        "asp_max_models": 10,
+        "asp_rand_freq": 0.5,
+        "max_retries_per_instance": 150,
+        "max_construction_retries": 100,
+        "max_validation_retries": 250,
+        "board_adjacency_max_step": 2,
+        "max_seed_retries": 50,
+        "multi_seed_threshold": 11,
+        "multi_seed_count": 3,
+    }
+    data.update(overrides)
+    return SolverConfig(**data)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    (
+        ("max_retries_per_instance", 0),
+        ("max_construction_retries", 0),
+        ("max_validation_retries", 0),
+        ("board_adjacency_max_step", -1),
+        ("max_seed_retries", 0),
+    ),
+)
+def test_solver_config_rejects_invalid_retry_values(
+    field: str,
+    bad_value: int,
+) -> None:
+    """Retry and adjacency budgets should fail fast when misconfigured."""
+    with pytest.raises(ConfigValidationError, match=field):
+        _valid_solver_config(**{field: bad_value})
+
+
 # ---------------------------------------------------------------------------
 # TEST-R8-001: MasterConfig loads with reasoner section — all 7 fields present
 # ---------------------------------------------------------------------------
@@ -94,7 +189,7 @@ def test_r8_001_config_loads_with_reasoner(default_config: MasterConfig) -> None
     # Step 8 computation caps
     assert r.max_forward_simulations_per_step == 10
     assert r.max_strategic_cells_per_step == 16
-    assert r.lookahead_depth == 2
+    assert r.lookahead_depth == 3
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +216,7 @@ def test_refill_030_loads_from_default_yaml(default_config: MasterConfig) -> Non
     """TEST-REFILL-030: RefillConfig loads from default.yaml with expected values."""
     assert default_config.refill is not None
     assert default_config.refill.adjacency_boost == 3.0
-    assert default_config.refill.depth_scale == 0.3
+    assert default_config.refill.depth_scale == 0.5
     assert default_config.refill.terminal_max_retries == 10
 
 

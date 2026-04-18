@@ -77,7 +77,11 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
                 id="spawn_wild",
                 intent="Cluster spawns a wild that sits idle on terminal.",
                 repetitions=Range(1, 1),
-                cluster_count=Range(1, 2),
+                # cluster_count capped at 1: derivation multiplies cluster_count.max
+                # by phase.spawns to produce the W-spawn budget. With wild_count_on_terminal=[1,1]
+                # and no bridge phase to consume wilds, allowing 2 clusters guarantees failure on
+                # the upper bound pick.
+                cluster_count=Range(1, 1),
                 cluster_sizes=(Range(7, 8),),
                 cluster_symbol_tier=None,
                 spawns=("W",),
@@ -170,7 +174,10 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
                 id="spawn_wild",
                 intent="Initial cluster spawns wild.",
                 repetitions=Range(1, 1),
-                cluster_count=Range(1, 2),
+                # cluster_count capped at 1: wild_count_on_terminal=[0,0] allows only 1
+                # W spawn (consumed by the single bridge_large phase below). Two spawns
+                # would leave a residual wild on terminal.
+                cluster_count=Range(1, 1),
                 cluster_sizes=(Range(7, 8),),
                 cluster_symbol_tier=None,
                 spawns=("W",),
@@ -527,7 +534,10 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
             NarrativePhase(
                 id="spawn_dual_wilds",
                 intent="Two clusters each spawn a wild near near-miss groups.",
-                repetitions=Range(1, 2),
+                # repetitions fixed to 1: dual-wild intent is expressed by cluster_count=[1,2]
+                # alone. Leaving repetitions=[1,2] combines multiplicatively to [1,4] W spawns
+                # while terminal is [1,2] — guaranteed failure on upper picks.
+                repetitions=Range(1, 1),
                 cluster_count=Range(1, 2),
                 cluster_sizes=(Range(7, 8),),
                 cluster_symbol_tier=None,
@@ -567,7 +577,9 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
                 id="spawn_wild_idle",
                 intent="Cluster spawns wild that idles near HIGH near-miss groups.",
                 repetitions=Range(1, 1),
-                cluster_count=Range(1, 2),
+                # cluster_count capped at 1: wild_count_on_terminal=[1,1] with no bridge
+                # consumption — two clusters would spawn two idle wilds and fail validation.
+                cluster_count=Range(1, 1),
                 # FIX: Was Range(5, 6) — impossible to spawn W from clusters < 7.
                 cluster_sizes=(Range(7, 8),),
                 cluster_symbol_tier=SymbolTier.LOW,
@@ -622,8 +634,10 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
             NarrativePhase(
                 id="wild_save",
                 intent="Unconstrained late step where wild spawn rescues the cascade.",
-                repetitions=Range(1, 3),
-                cluster_count=Range(1, 2),
+                # repetitions=cluster_count=[1,1]: wild_count_on_terminal=[0,1] with no
+                # subsequent consumption phase — the save spawns exactly one wild.
+                repetitions=Range(1, 1),
+                cluster_count=Range(1, 1),
                 # FIX: Was Range(5, 8). Must be 7-8 to guarantee W spawn.
                 # Sizes 5-6 cannot spawn a wild, causing booster_spawn(W)=0 failures.
                 cluster_sizes=(Range(7, 8),),
@@ -674,8 +688,10 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
             NarrativePhase(
                 id="high_wild_save",
                 intent="Late HIGH wild cluster is the payoff — dramatic tier escalation.",
-                repetitions=Range(1, 3),
-                cluster_count=Range(1, 2),
+                # repetitions=cluster_count=[1,1]: terminal=[0,1] with no consumption phase.
+                # Mirrors the wild_late_save fix.
+                repetitions=Range(1, 1),
+                cluster_count=Range(1, 1),
                 # FIX: Was Range(5, 8). Must be 7-8 to guarantee W spawn.
                 cluster_sizes=(Range(7, 8),),
                 cluster_symbol_tier=None,
@@ -826,7 +842,9 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
     # Simple archetype — single step, works well as direct signature
     registry.register(ArchetypeSignature(
         id="wild_scatter_tease",
-        required_cluster_count=Range(1, 2),
+        # required_cluster_count=[1,1]: required_booster_spawns={"W":[1,1]} demands
+        # exactly one wild. A 2-cluster run at cluster_sizes [7,8] forces 2 spawns.
+        required_cluster_count=Range(1, 1),
         required_cluster_sizes=(Range(7, 8),),
         required_cluster_symbols=None,
         required_scatter_count=Range(3, 3),
@@ -961,7 +979,11 @@ def register_wild_archetypes(registry: ArchetypeRegistry) -> None:
                 id="spawn_wild",
                 intent="Initial cluster spawns wild.",
                 repetitions=Range(1, 1),
-                cluster_count=Range(1, 2),
+                # cluster_count capped at 1: wild_count_on_terminal=[0,1] with one bridge
+                # phase below (max 1 consumption). 2 spawns + 1 consumption = residual 1,
+                # compatible with terminal upper bound only — but a bridge that doesn't
+                # consume yields 2 wilds on terminal, violating validation.
+                cluster_count=Range(1, 1),
                 cluster_sizes=(Range(7, 8),),
                 cluster_symbol_tier=None,
                 spawns=("W",),
